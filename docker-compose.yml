@@ -1,0 +1,18 @@
+services:
+  arcloom:
+    build:
+      context: .
+      args:
+        # Override to pin exact engine versions.
+        TERRAFORM_VERSION: 1.9.8
+        OPENTOFU_VERSION: 1.8.8
+    image: arcloom:latest
+    ports:
+      - "8080:8080"
+    environment:
+      ARCLOOM_ENGINE: tofu
+    volumes:
+      - arcloom-cache:/var/lib/arcloom
+
+volumes:
+  arcloom-cache:

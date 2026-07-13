@@ -1,0 +1,95 @@
+// Mirrors internal/schema/types.go and internal/api/dto.go.
+
+export type WidgetKind =
+	| 'text'
+	| 'textarea'
+	| 'number'
+	| 'checkbox'
+	| 'list'
+	| 'map'
+	| 'object'
+	| 'block';
+
+export interface Field {
+	name: string;
+	widget: WidgetKind;
+	type: string;
+	description?: string;
+	required: boolean;
+	optional: boolean;
+	computed: boolean;
+	sensitive: boolean;
+	deprecated?: boolean;
+	minItems?: number;
+	maxItems?: number;
+	elem?: Field;
+	fields?: Field[];
+}
+
+export interface NormalizedSchema {
+	provider: string;
+	resourceType: string;
+	version: number;
+	fields: Field[];
+}
+
+export type ValueMode = 'literal' | 'reference' | 'expression' | 'secret';
+
+// AttrValue is the wire form sent back to the server. `literal` is a raw JSON
+// value whose cty type is inferred server-side.
+export interface AttrValue {
+	mode: ValueMode;
+	literal?: unknown;
+	ref?: string;
+	expr?: string;
+	secretRef?: string;
+}
+
+export interface Engine {
+	engine: string;
+	execPath: string;
+	version: string;
+}
+
+export interface EnginesResponse {
+	defaultEngine: string;
+	engines: Engine[];
+}
+
+export interface ProviderResponse {
+	provider: string;
+	resourceTypes: string[];
+}
+
+export interface Resource {
+	id: string;
+	type: string;
+	name: string;
+	attrs: Record<string, AttrValue>;
+}
+
+export interface ProviderInstance {
+	key: string;
+	source: string;
+	version?: string;
+}
+
+export interface Project {
+	id: string;
+	name: string;
+	engine: string;
+	providers: ProviderInstance[];
+	resources: Resource[];
+}
+
+export interface ProjectSummary {
+	id: string;
+	name: string;
+	engine: string;
+	resourceCount: number;
+}
+
+// A computed-only field is read-only: shown for reference, never sent as input.
+export function isReadOnly(f: Field): boolean {
+	return f.computed && !f.required && !f.optional;
+}
