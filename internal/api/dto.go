@@ -63,6 +63,7 @@ type resourceRequest struct {
 	Name           string                  `json:"name"`
 	ProviderSource string                  `json:"providerSource,omitempty"`
 	Attrs          map[string]attrValueDTO `json:"attrs"`
+	DependsOn      []string                `json:"dependsOn,omitempty"`
 }
 
 // engineDTO describes an available CLI engine.

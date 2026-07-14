@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, type GraphData } from '$lib/api/client';
-	import type { AttrValue, Engine, NormalizedSchema, Project, ProjectSummary, ProviderInstance } from '$lib/types';
+	import { api, streamPlan } from '$lib/api/client';
+	import type { AttrValue, Engine, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
 	import Modal from '$lib/components/Modal.svelte';
-	import GraphView from '$lib/components/GraphView.svelte';
+	import EditorView from '$lib/editor/EditorView.svelte';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Settings, FileDown, Database, GitBranch
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Settings, FileDown, Database, LayoutDashboard
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -44,8 +44,7 @@
 	let showImportState = $state(false);
 	let importStateText = $state('');
 	let importMsg = $state('');
-	let showGraph = $state(false);
-	let graphData = $state<GraphData | null>(null);
+	let showEditor = $state(false);
 
 	const savedResources = $derived(project?.resources ?? []);
 	const providers = $derived(project?.providers ?? []);
@@ -333,17 +332,67 @@
 		}
 	}
 
-	async function openGraph() {
+	// ---- visual editor callbacks ----
+	function openEditor() {
 		if (!project) return;
 		error = '';
-		busy = 'graph';
+		showEditor = true;
+	}
+
+	async function refreshProject() {
+		if (!project) return;
+		project = await api.getProject(project.id);
+		await refreshProjects();
+		await refreshHcl();
+	}
+
+	// Returns a provider's resource types for the editor palette.
+	async function editorLoadTypes(source: string): Promise<string[]> {
+		const res = await api.addProvider(source, engine);
+		return res.resourceTypes;
+	}
+
+	// Palette "add": leave the editor and open the schema form for a new resource.
+	async function editorAddType(type: string, source: string) {
+		showEditor = false;
+		providerSource = source;
+		await pickType(type);
+	}
+
+	// Clicking a node opens it in the schema form.
+	function editorEditResource(r: Resource) {
+		showEditor = false;
+		editResource(r);
+	}
+
+	async function editorDeleteResource(id: string) {
+		if (!project) return;
 		try {
-			graphData = await api.graph(project.id);
-			showGraph = true;
+			await api.deleteResource(project.id, id);
+			await refreshProject();
 		} catch (err) {
 			error = (err as Error).message;
-		} finally {
-			busy = '';
+		}
+	}
+
+	// Re-save an existing resource with a changed field (name or depends_on),
+	// preserving its type/attrs.
+	async function resaveResource(id: string, patch: { name?: string; dependsOn?: string[] }) {
+		if (!project) return;
+		const r = project.resources.find((x) => x.id === id);
+		if (!r) return;
+		try {
+			await api.upsertResource(project.id, {
+				id: r.id,
+				type: r.type,
+				name: patch.name ?? r.name,
+				providerSource: project.providers.find((p) => p.key === r.type.split('_')[0])?.source,
+				attrs: r.attrs,
+				dependsOn: patch.dependsOn ?? r.dependsOn
+			});
+			await refreshProject();
+		} catch (err) {
+			error = (err as Error).message;
 		}
 	}
 
@@ -460,8 +509,8 @@
 				<div class="space-y-1.5 border-t border-[var(--al-border)] pt-3">
 					<button class={sideBtn} onclick={() => { importMsg=''; showImportHcl = true; }}><FileDown size={14} /> Import HCL</button>
 					<button class={sideBtn} onclick={() => { importMsg=''; showImportState = true; }}><Database size={14} /> Import state</button>
-					<button class={sideBtn} onclick={openGraph} disabled={busy === 'graph'}>
-						{#if busy === 'graph'}<Loader2 size={14} class="animate-spin" />{:else}<GitBranch size={14} />{/if} Graph view
+					<button class={sideBtn} onclick={openEditor}>
+						<LayoutDashboard size={14} /> Visual editor
 					</button>
 				</div>
 			{:else}
@@ -549,9 +598,17 @@
 	{/snippet}
 </Modal>
 
-<!-- Graph modal -->
-<Modal title="Dependency graph" bind:open={showGraph}>
-	{#if graphData}
-		<div class="h-[60vh]"><GraphView graph={graphData} /></div>
-	{/if}
-</Modal>
+<!-- Visual editor (full-screen) -->
+{#if showEditor && project}
+	<EditorView
+		{project}
+		{hcl}
+		loadTypes={editorLoadTypes}
+		onAddType={editorAddType}
+		onEditResource={editorEditResource}
+		onDeleteResource={editorDeleteResource}
+		onRenameResource={(id, name) => resaveResource(id, { name })}
+		onSetDependsOn={(id, deps) => resaveResource(id, { dependsOn: deps })}
+		onClose={() => (showEditor = false)}
+	/>
+{/if}

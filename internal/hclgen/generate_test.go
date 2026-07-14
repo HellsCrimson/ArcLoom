@@ -61,6 +61,33 @@ func TestGenerate_LiteralReferenceExpression(t *testing.T) {
 	}
 }
 
+func TestGenerate_DependsOn(t *testing.T) {
+	p := &model.Project{
+		Providers: []model.ProviderInstance{{Key: "random", Source: "hashicorp/random"}},
+		Resources: []model.Resource{
+			{Type: "random_pet", Name: "srv", Attrs: map[string]model.AttrValue{
+				"length": {Mode: model.ModeLiteral, Literal: cty.NumberIntVal(2)},
+			}},
+			{Type: "random_password", Name: "db",
+				Attrs:     map[string]model.AttrValue{"length": {Mode: model.ModeLiteral, Literal: cty.NumberIntVal(16)}},
+				DependsOn: []string{"random_pet.srv"},
+			},
+		},
+	}
+	out, err := Generate(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "depends_on = [random_pet.srv]") {
+		t.Errorf("depends_on not rendered as a traversal list:\n%s", s)
+	}
+	// Must not be quoted as a string.
+	if strings.Contains(s, `"random_pet.srv"`) {
+		t.Errorf("depends_on emitted as a string literal:\n%s", s)
+	}
+}
+
 func TestGenerate_InvalidExpressionFails(t *testing.T) {
 	p := &model.Project{
 		Resources: []model.Resource{

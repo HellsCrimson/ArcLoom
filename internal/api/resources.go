@@ -163,7 +163,7 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 
 	var saved model.Resource
 	err = s.store.Update(id, func(p *model.Project) error {
-		res := model.Resource{ID: req.ID, Type: req.Type, Name: req.Name, Attrs: attrs}
+		res := model.Resource{ID: req.ID, Type: req.Type, Name: req.Name, Attrs: attrs, DependsOn: req.DependsOn}
 		if res.ID == "" {
 			res.ID = uuid.NewString()
 		}
