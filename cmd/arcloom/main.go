@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -22,7 +23,29 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/webui"
 )
 
+// Build metadata, injected by GoReleaser via -ldflags -X.
+var (
+	version = "dev"
+	commit  = ""
+	date    = ""
+)
+
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version", "--version", "-v":
+			fmt.Printf("arcloom %s", version)
+			if commit != "" {
+				fmt.Printf(" (%s)", commit)
+			}
+			if date != "" {
+				fmt.Printf(" built %s", date)
+			}
+			fmt.Println()
+			return
+		}
+	}
+
 	cfg := config.Load()
 
 	// Build a runner per engine that resolves on PATH. Engines that are not
@@ -72,7 +95,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("ArcLoom listening on %s (default engine: %s)", cfg.Addr, cfg.DefaultEngine)
+		log.Printf("ArcLoom %s listening on %s (default engine: %s)", version, cfg.Addr, cfg.DefaultEngine)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}

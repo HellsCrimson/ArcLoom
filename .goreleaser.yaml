@@ -1,0 +1,100 @@
+# GoReleaser config — builds the arcloom binary (with the SPA embedded) and a
+# multi-arch Docker image published to GHCR on every pushed `v*` tag.
+# Docs: https://goreleaser.com
+version: 2
+
+project_name: arcloom
+
+# Build the SvelteKit SPA and stage it where the Go build embeds it
+# (internal/webui/dist). These write only gitignored paths, so the tree stays
+# clean for `release --clean`.
+before:
+  hooks:
+    - sh -c "cd web && npm ci && npm run build"
+    - sh -c "cp -R web/build/. internal/webui/dist/"
+
+builds:
+  - id: arcloom
+    main: ./cmd/arcloom
+    binary: arcloom
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .ShortCommit }}
+      - -X main.date={{ .Date }}
+
+archives:
+  - id: arcloom
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+# One image per arch, then a manifest that unifies them.
+dockers:
+  - id: amd64
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    image_templates:
+      - "ghcr.io/hellscrimson/arcloom:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.description=Self-hosted, provider-agnostic Infrastructure IDE"
+      - "--label=org.opencontainers.image.source=https://github.com/HellsCrimson/ArcLoom"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+
+  - id: arm64
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile.goreleaser
+    use: buildx
+    image_templates:
+      - "ghcr.io/hellscrimson/arcloom:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.description=Self-hosted, provider-agnostic Infrastructure IDE"
+      - "--label=org.opencontainers.image.source=https://github.com/HellsCrimson/ArcLoom"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.created={{ .Date }}"
+
+docker_manifests:
+  - name_template: "ghcr.io/hellscrimson/arcloom:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/hellscrimson/arcloom:{{ .Version }}-amd64"
+      - "ghcr.io/hellscrimson/arcloom:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/hellscrimson/arcloom:latest"
+    image_templates:
+      - "ghcr.io/hellscrimson/arcloom:{{ .Version }}-amd64"
+      - "ghcr.io/hellscrimson/arcloom:{{ .Version }}-arm64"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  github:
+    owner: HellsCrimson
+    name: ArcLoom
