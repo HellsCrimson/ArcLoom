@@ -112,3 +112,28 @@ func (t *TfExec) Plan(ctx context.Context, hcl []byte, providers []model.Provide
 	}
 	return PlanResult{HasChanges: hasChanges}, nil
 }
+
+// Graph initializes a workspace with the given config and returns the
+// dependency graph as Graphviz DOT.
+func (t *TfExec) Graph(ctx context.Context, hcl []byte) (string, error) {
+	ws, err := newWorkspace(t.workBase, t.execPath, t.pluginCacheDir, map[string][]byte{
+		"main.tf": hcl,
+	})
+	if err != nil {
+		return "", err
+	}
+	defer ws.close()
+
+	tf, err := ws.terraform()
+	if err != nil {
+		return "", err
+	}
+	if err := tf.Init(ctx); err != nil {
+		return "", fmt.Errorf("init: %w", err)
+	}
+	dot, err := tf.Graph(ctx)
+	if err != nil {
+		return "", fmt.Errorf("graph: %w", err)
+	}
+	return dot, nil
+}

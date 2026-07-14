@@ -22,6 +22,11 @@ func Normalize(provider, resourceType string, s *tfjson.Schema) NormalizedSchema
 	if s.Block != nil {
 		ns.Fields = blockFields(s.Block)
 	}
+	// Always return a non-nil slice so JSON encodes [] (not null), which the UI
+	// relies on when reading schema.fields.length.
+	if ns.Fields == nil {
+		ns.Fields = []Field{}
+	}
 	return ns
 }
 

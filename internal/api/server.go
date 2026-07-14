@@ -50,15 +50,20 @@ func (s *Server) Handler() http.Handler {
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/engines", s.handleEngines)
 		r.Post("/providers", s.handleAddProvider)
+		r.Get("/providers/{source}/schema", s.handleProviderSchema)
 		r.Get("/providers/{source}/resources/{type}/schema", s.handleResourceSchema)
 
 		r.Get("/projects", s.handleListProjects)
 		r.Post("/projects", s.handleCreateProject)
 		r.Get("/projects/{id}", s.handleGetProject)
 		r.Delete("/projects/{id}", s.handleDeleteProject)
+		r.Put("/projects/{id}/providers/{key}", s.handleSetProviderConfig)
 		r.Post("/projects/{id}/resources", s.handleUpsertResource)
 		r.Delete("/projects/{id}/resources/{rid}", s.handleDeleteResource)
 		r.Get("/projects/{id}/hcl", s.handleProjectHCL)
+		r.Post("/projects/{id}/import/hcl", s.handleImportHCL)
+		r.Post("/projects/{id}/import/state", s.handleImportState)
+		r.Get("/projects/{id}/graph", s.handleGraph)
 		r.Get("/projects/{id}/plan", s.handlePlan)
 	})
 

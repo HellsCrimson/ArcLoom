@@ -79,6 +79,13 @@ type providerRequest struct {
 	Version string `json:"version,omitempty"`
 }
 
+// providerConfigRequest sets a provider block's configuration on a project.
+type providerConfigRequest struct {
+	Source  string                  `json:"source,omitempty"`
+	Version string                  `json:"version,omitempty"`
+	Config  map[string]attrValueDTO `json:"config"`
+}
+
 // providerResponse lists a provider's resource types after schema fetch.
 type providerResponse struct {
 	Provider      string   `json:"provider"`

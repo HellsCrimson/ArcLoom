@@ -32,6 +32,22 @@ export const api = {
 			body: JSON.stringify({ source, engine })
 		}).then((r) => json<ProviderResponse>(r)),
 
+	providerSchema: (source: string, engine: string) =>
+		fetch(
+			`/api/providers/${encodeURIComponent(source)}/schema?engine=${encodeURIComponent(engine)}`
+		).then((r) => json<NormalizedSchema>(r)),
+
+	setProviderConfig: (
+		projectId: string,
+		key: string,
+		body: { source?: string; version?: string; config: Record<string, AttrValue> }
+	) =>
+		fetch(`/api/projects/${projectId}/providers/${encodeURIComponent(key)}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body)
+		}).then((r) => json<Project>(r)),
+
 	resourceSchema: (source: string, type: string, engine: string) =>
 		fetch(
 			`/api/providers/${encodeURIComponent(source)}/resources/${encodeURIComponent(type)}/schema?engine=${encodeURIComponent(engine)}`
@@ -74,8 +90,36 @@ export const api = {
 		fetch(`/api/projects/${id}/hcl`).then((r) => {
 			if (!r.ok) throw new Error('failed to generate HCL');
 			return r.text();
-		})
+		}),
+
+	importHCL: (id: string, files: Record<string, string>) =>
+		fetch(`/api/projects/${id}/import/hcl`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ files })
+		}).then((r) => json<ImportResult>(r)),
+
+	importState: (id: string, stateJSON: string) =>
+		fetch(`/api/projects/${id}/import/state`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ state: stateJSON })
+		}).then((r) => json<ImportResult>(r)),
+
+	graph: (id: string) => fetch(`/api/projects/${id}/graph`).then((r) => json<GraphData>(r))
 };
+
+export interface ImportResult {
+	addedResources: number;
+	addedProviders: number;
+	warnings?: string[];
+}
+
+export interface GraphData {
+	nodes: { id: string; type: string }[];
+	edges: { from: string; to: string }[];
+	dot: string;
+}
 
 // PlanEvent types streamed over SSE.
 export type PlanEvent =

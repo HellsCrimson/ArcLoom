@@ -70,6 +70,57 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeleteProject removes a project and its folder.
+// handleSetProviderConfig sets (and persists) a provider block's configuration.
+// The provider is created on the project if it does not yet exist.
+func (s *Server) handleSetProviderConfig(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	key := chi.URLParam(r, "key")
+	var req providerConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	config, err := attrsToModel(req.Config)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	err = s.store.Update(id, func(p *model.Project) error {
+		for i := range p.Providers {
+			if p.Providers[i].Key == key {
+				p.Providers[i].Config = config
+				if req.Source != "" {
+					p.Providers[i].Source = req.Source
+				}
+				if req.Version != "" {
+					p.Providers[i].Version = req.Version
+				}
+				return nil
+			}
+		}
+		// Provider not yet on the project: add it.
+		source := req.Source
+		if source == "" {
+			source = "hashicorp/" + key
+		}
+		p.Providers = append(p.Providers, model.ProviderInstance{
+			Key: key, Source: source, Version: req.Version, Config: config,
+		})
+		return nil
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	p, _ := s.store.Get(id)
+	writeJSON(w, http.StatusOK, p)
+}
+
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.Delete(chi.URLParam(r, "id")); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

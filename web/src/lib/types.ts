@@ -72,6 +72,7 @@ export interface ProviderInstance {
 	key: string;
 	source: string;
 	version?: string;
+	config?: Record<string, AttrValue>;
 }
 
 export interface Project {

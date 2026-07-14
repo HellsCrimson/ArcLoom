@@ -69,6 +69,16 @@ func ctyToNative(v cty.Value) (any, error) {
 	return native, nil
 }
 
+// LiteralFromNative builds a literal AttrValue from a plain Go value (e.g. a
+// decoded JSON/state attribute), implying its cty type.
+func LiteralFromNative(native any) (AttrValue, error) {
+	v, err := nativeToCty(native)
+	if err != nil {
+		return AttrValue{}, err
+	}
+	return AttrValue{Mode: ModeLiteral, Literal: v}, nil
+}
+
 // nativeToCty converts a plain Go value back into a cty value, implying the type
 // from the JSON shape.
 func nativeToCty(native any) (cty.Value, error) {
