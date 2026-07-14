@@ -30,9 +30,40 @@ func Generate(p *model.Project) ([]byte, error) {
 			return nil, err
 		}
 	}
+	// Conventional ordering: variables, locals, data, resources, modules, outputs.
+	for _, v := range p.Variables {
+		body.AppendNewline()
+		if err := writeVariableBlock(body, v); err != nil {
+			return nil, err
+		}
+	}
+	if len(p.Locals) > 0 {
+		body.AppendNewline()
+		if err := writeLocalsBlock(body, p.Locals); err != nil {
+			return nil, err
+		}
+	}
+	for _, d := range p.DataSources {
+		body.AppendNewline()
+		if err := writeBlockWithKeyword(body, "data", d); err != nil {
+			return nil, err
+		}
+	}
 	for _, r := range p.Resources {
 		body.AppendNewline()
-		if err := writeResourceBlock(body, r); err != nil {
+		if err := writeBlockWithKeyword(body, "resource", r); err != nil {
+			return nil, err
+		}
+	}
+	for _, m := range p.Modules {
+		body.AppendNewline()
+		if err := writeModuleBlock(body, m); err != nil {
+			return nil, err
+		}
+	}
+	for _, o := range p.Outputs {
+		body.AppendNewline()
+		if err := writeOutputBlock(body, o); err != nil {
 			return nil, err
 		}
 	}
@@ -79,8 +110,10 @@ func writeProviderBlock(body *hclwrite.Body, prov model.ProviderInstance) error 
 	return writeAttrs(blk.Body(), prov.Config)
 }
 
-func writeResourceBlock(body *hclwrite.Body, r model.Resource) error {
-	blk := body.AppendNewBlock("resource", []string{r.Type, r.Name})
+// writeBlockWithKeyword writes a resource or data block (keyword = "resource"
+// or "data"), including attributes, depends_on, and nested blocks.
+func writeBlockWithKeyword(body *hclwrite.Body, keyword string, r model.Resource) error {
+	blk := body.AppendNewBlock(keyword, []string{r.Type, r.Name})
 	if err := writeAttrs(blk.Body(), r.Attrs); err != nil {
 		return err
 	}
@@ -108,41 +141,105 @@ func writeResourceBlock(body *hclwrite.Body, r model.Resource) error {
 	return nil
 }
 
-// writeAttrs emits attributes in sorted key order, dispatching on value mode.
+func writeVariableBlock(body *hclwrite.Body, v model.Variable) error {
+	blk := body.AppendNewBlock("variable", []string{v.Name})
+	b := blk.Body()
+	if v.Type != "" {
+		toks, err := tokensForExpr(v.Type)
+		if err != nil {
+			return fmt.Errorf("variable %q type: %w", v.Name, err)
+		}
+		b.SetAttributeRaw("type", toks)
+	}
+	if v.Default != nil {
+		if err := setAttr(b, "default", *v.Default); err != nil {
+			return fmt.Errorf("variable %q default: %w", v.Name, err)
+		}
+	}
+	if v.Description != "" {
+		b.SetAttributeValue("description", cty.StringVal(v.Description))
+	}
+	if v.Sensitive {
+		b.SetAttributeValue("sensitive", cty.True)
+	}
+	return nil
+}
+
+func writeLocalsBlock(body *hclwrite.Body, locals []model.Local) error {
+	blk := body.AppendNewBlock("locals", nil)
+	attrs := make(map[string]model.AttrValue, len(locals))
+	for _, l := range locals {
+		attrs[l.Name] = l.Value
+	}
+	return writeAttrs(blk.Body(), attrs)
+}
+
+func writeOutputBlock(body *hclwrite.Body, o model.Output) error {
+	blk := body.AppendNewBlock("output", []string{o.Name})
+	b := blk.Body()
+	if err := setAttr(b, "value", o.Value); err != nil {
+		return fmt.Errorf("output %q value: %w", o.Name, err)
+	}
+	if o.Description != "" {
+		b.SetAttributeValue("description", cty.StringVal(o.Description))
+	}
+	if o.Sensitive {
+		b.SetAttributeValue("sensitive", cty.True)
+	}
+	return nil
+}
+
+func writeModuleBlock(body *hclwrite.Body, m model.Module) error {
+	blk := body.AppendNewBlock("module", []string{m.Name})
+	b := blk.Body()
+	b.SetAttributeValue("source", cty.StringVal(m.Source))
+	if m.Version != "" {
+		b.SetAttributeValue("version", cty.StringVal(m.Version))
+	}
+	return writeAttrs(b, m.Config)
+}
+
+// writeAttrs emits attributes in sorted key order.
 func writeAttrs(body *hclwrite.Body, attrs map[string]model.AttrValue) error {
 	names := make([]string, 0, len(attrs))
 	for n := range attrs {
 		names = append(names, n)
 	}
 	sort.Strings(names)
-
 	for _, name := range names {
-		v := attrs[name]
-		switch v.Mode {
-		case model.ModeLiteral:
-			body.SetAttributeValue(name, v.Literal)
-		case model.ModeReference:
-			trav, err := parseTraversal(v.Ref)
-			if err != nil {
-				return fmt.Errorf("attribute %q: %w", name, err)
-			}
-			body.SetAttributeTraversal(name, trav)
-		case model.ModeExpression:
-			toks, err := tokensForExpr(v.Expr)
-			if err != nil {
-				return fmt.Errorf("attribute %q: %w", name, err)
-			}
-			body.SetAttributeRaw(name, toks)
-		case model.ModeSecret:
-			// Stub: reference a variable named after the secret, never inline.
-			trav, err := parseTraversal("var." + secretVarName(v.SecretRef))
-			if err != nil {
-				return fmt.Errorf("attribute %q: %w", name, err)
-			}
-			body.SetAttributeTraversal(name, trav)
-		default:
-			return fmt.Errorf("attribute %q: unknown value mode %q", name, v.Mode)
+		if err := setAttr(body, name, attrs[name]); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// setAttr writes one attribute, dispatching on value mode.
+func setAttr(body *hclwrite.Body, name string, v model.AttrValue) error {
+	switch v.Mode {
+	case model.ModeLiteral:
+		body.SetAttributeValue(name, v.Literal)
+	case model.ModeReference:
+		trav, err := parseTraversal(v.Ref)
+		if err != nil {
+			return fmt.Errorf("attribute %q: %w", name, err)
+		}
+		body.SetAttributeTraversal(name, trav)
+	case model.ModeExpression:
+		toks, err := tokensForExpr(v.Expr)
+		if err != nil {
+			return fmt.Errorf("attribute %q: %w", name, err)
+		}
+		body.SetAttributeRaw(name, toks)
+	case model.ModeSecret:
+		// Stub: reference a variable named after the secret, never inline.
+		trav, err := parseTraversal("var." + secretVarName(v.SecretRef))
+		if err != nil {
+			return fmt.Errorf("attribute %q: %w", name, err)
+		}
+		body.SetAttributeTraversal(name, trav)
+	default:
+		return fmt.Errorf("attribute %q: unknown value mode %q", name, v.Mode)
 	}
 	return nil
 }

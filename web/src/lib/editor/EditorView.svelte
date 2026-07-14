@@ -2,7 +2,7 @@
 	import type { Project, Resource } from '$lib/types';
 	import { highlightHcl } from './highlight';
 	import { deriveEdges, typeColor, typeLetter, type Edge } from './graph';
-	import { X, Plus, Search, Loader2 } from 'lucide-svelte';
+	import { X, Plus, Minus, Search, Loader2 } from 'lucide-svelte';
 
 	let {
 		project,
@@ -40,6 +40,12 @@
 	let dragMoved = $state(false); // distinguishes a drag from a click
 	let connecting = $state<{ fromId: string; x: number; y: number } | null>(null);
 	let selectedId = $state<string | null>(null);
+
+	// Viewport pan/zoom (world = (screen - t) / scale).
+	let tx = $state(0);
+	let ty = $state(0);
+	let scale = $state(1);
+	let panning = $state<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
 
 	// Provider palette
 	let activeProvider = $state('');
@@ -152,24 +158,48 @@
 
 	const hclLines = $derived(highlightHcl(hcl || ''));
 
-	function canvasXY(e: MouseEvent) {
+	// World extent large enough to hold all nodes with slack for panning.
+	const worldSize = $derived.by(() => {
+		let w = 1600,
+			h = 1000;
+		for (const n of nodes) {
+			w = Math.max(w, n.x + NODE_W + 400);
+			h = Math.max(h, n.y + NODE_H + 400);
+		}
+		return { w, h };
+	});
+
+	// Screen -> world coordinates, accounting for pan and zoom.
+	function toWorld(e: MouseEvent) {
 		const rect = canvasEl!.getBoundingClientRect();
-		return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+		return { x: (e.clientX - rect.left - tx) / scale, y: (e.clientY - rect.top - ty) / scale };
 	}
 
 	function onNodeDown(e: MouseEvent, id: string) {
 		if (e.button !== 0) return;
+		e.stopPropagation(); // don't start a canvas pan
 		const n = nodes.find((x) => x.id === id);
 		if (!n) return;
-		const { x, y } = canvasXY(e);
+		const { x, y } = toWorld(e);
 		selectedId = id;
 		dragMoved = false;
 		dragging = { id, ox: x - n.x, oy: y - n.y };
 	}
 
+	function onCanvasDown(e: MouseEvent) {
+		if (e.button !== 0) return;
+		selectedId = null;
+		panning = { sx: e.clientX, sy: e.clientY, ox: tx, oy: ty };
+	}
+
 	function onMove(e: MouseEvent) {
 		if (!canvasEl) return;
-		const { x, y } = canvasXY(e);
+		if (panning) {
+			tx = panning.ox + (e.clientX - panning.sx);
+			ty = panning.oy + (e.clientY - panning.sy);
+			return;
+		}
+		const { x, y } = toWorld(e);
 		if (dragging) {
 			dragMoved = true;
 			positions = { ...positions, [dragging.id]: { x: Math.max(0, x - dragging.ox), y: Math.max(0, y - dragging.oy) } };
@@ -184,12 +214,49 @@
 			dragging = null;
 		}
 		if (connecting) connecting = null;
+		panning = null;
+	}
+
+	function onWheel(e: WheelEvent) {
+		e.preventDefault();
+		const rect = canvasEl!.getBoundingClientRect();
+		const mx = e.clientX - rect.left;
+		const my = e.clientY - rect.top;
+		const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+		const ns = Math.min(2.5, Math.max(0.2, scale * factor));
+		// Keep the world point under the cursor fixed.
+		const wx = (mx - tx) / scale;
+		const wy = (my - ty) / scale;
+		tx = mx - wx * ns;
+		ty = my - wy * ns;
+		scale = ns;
+	}
+
+	function zoomBy(f: number) {
+		const ns = Math.min(2.5, Math.max(0.2, scale * f));
+		if (!canvasEl) {
+			scale = ns;
+			return;
+		}
+		const cx = canvasEl.clientWidth / 2;
+		const cy = canvasEl.clientHeight / 2;
+		const wx = (cx - tx) / scale;
+		const wy = (cy - ty) / scale;
+		tx = cx - wx * ns;
+		ty = cy - wy * ns;
+		scale = ns;
+	}
+
+	function resetView() {
+		tx = 0;
+		ty = 0;
+		scale = 1;
 	}
 
 	function onDotDown(e: MouseEvent, id: string, role: string) {
 		e.stopPropagation();
 		if (role !== 'out') return;
-		const { x, y } = canvasXY(e);
+		const { x, y } = toWorld(e);
 		connecting = { fromId: id, x, y };
 	}
 
@@ -266,10 +333,10 @@
 		role="application"
 		tabindex="-1"
 		class="relative flex-1 overflow-hidden"
-		style="background-image:{gridBg};background-size:22px 22px;"
-		onmousedown={(e) => {
-			if (e.target === canvasEl) selectedId = null;
-		}}
+		class:cursor-grabbing={panning}
+		style="background-image:{gridBg};background-size:{22 * scale}px {22 * scale}px;background-position:{tx}px {ty}px;"
+		onmousedown={onCanvasDown}
+		onwheel={onWheel}
 	>
 		<!-- top-center brand -->
 		<div class="pointer-events-none absolute left-1/2 top-3.5 z-[4] flex -translate-x-1/2 items-center gap-2">
@@ -337,54 +404,63 @@
 
 		<!-- hint -->
 		<div class="pointer-events-none absolute bottom-3.5 left-4 z-[4] text-[11px]" style="color:rgba(255,255,255,0.32);">
-			Click Add to create a resource · drag a node to move · drag the right dot to another node to add depends_on · double-click to rename · click a node to edit fields
+			Drag empty space to pan · scroll to zoom · drag a node to move · drag the right dot to another node to add depends_on · click a node to edit · double-click to rename
 		</div>
 
-		<!-- edges -->
-		<svg class="pointer-events-none absolute inset-0 h-full w-full">
-			{#each edges as e (e.id)}
-				<path d={e.d} stroke="transparent" stroke-width="14" fill="none" style="pointer-events:{e.kind === 'depends' ? 'auto' : 'none'};cursor:{e.kind === 'depends' ? 'pointer' : 'default'};" onclick={() => onEdgeClick(e)} role="presentation" />
-			{/each}
-			{#each edges as e (e.id)}
-				<path d={e.d} stroke={e.color} stroke-width="2" fill="none" stroke-dasharray={e.kind === 'depends' ? '5 4' : 'none'} opacity={e.kind === 'depends' ? '0.75' : '1'} style="pointer-events:none;" />
-			{/each}
-			{#if tempPath}
-				<path d={tempPath} stroke={accent} stroke-width="2" stroke-dasharray="6 4" fill="none" style="pointer-events:none;" />
-			{/if}
-		</svg>
+		<!-- world layer (pans / zooms together) -->
+		<div style="position:absolute;left:0;top:0;transform:translate({tx}px,{ty}px) scale({scale});transform-origin:0 0;">
+			<!-- edges -->
+			<svg style="position:absolute;left:0;top:0;overflow:visible;pointer-events:none;" width={worldSize.w} height={worldSize.h}>
+				{#each edges as e (e.id)}
+					<path d={e.d} stroke="transparent" stroke-width="14" fill="none" style="pointer-events:{e.kind === 'depends' ? 'auto' : 'none'};cursor:{e.kind === 'depends' ? 'pointer' : 'default'};" onmousedown={(ev) => ev.stopPropagation()} onclick={() => onEdgeClick(e)} role="presentation" />
+				{/each}
+				{#each edges as e (e.id)}
+					<path d={e.d} stroke={e.color} stroke-width="2" fill="none" stroke-dasharray={e.kind === 'depends' ? '5 4' : 'none'} opacity={e.kind === 'depends' ? '0.75' : '1'} style="pointer-events:none;" />
+				{/each}
+				{#if tempPath}
+					<path d={tempPath} stroke={accent} stroke-width="2" stroke-dasharray="6 4" fill="none" style="pointer-events:none;" />
+				{/if}
+			</svg>
 
-		<!-- nodes -->
-		{#each nodes as node (node.id)}
-			<!-- svelte-ignore a11y_click_events_have_key_events -->
-			<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-			<div
-				role="button"
-				tabindex="-1"
-				class="absolute"
-				style="left:{node.x}px;top:{node.y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:#10151f;border:1px solid {node.selected ? accent : 'rgba(255,255,255,0.10)'};box-shadow:{node.selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:grab;z-index:2;"
-				onmousedown={(e) => onNodeDown(e, node.id)}
-				onclick={() => { if (dragMoved) { dragMoved = false; return; } onEditResource(node); }}
-				ondblclick={(e) => { e.stopPropagation(); rename(node.id); }}
-			>
-				<div class="flex items-center gap-2">
-					<div style="width:22px;height:22px;border-radius:6px;background:{node.color};color:#0a0e15;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;">{node.letter}</div>
-					<div style="min-width:0;">
-						<div style="font-size:13px;font-weight:600;color:#e6e9ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{node.name}</div>
-						<div class="font-mono" style="font-size:10px;color:#6b7480;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{node.type}</div>
+			<!-- nodes -->
+			{#each nodes as node (node.id)}
+				<!-- svelte-ignore a11y_click_events_have_key_events -->
+				<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+				<div
+					role="button"
+					tabindex="-1"
+					style="position:absolute;left:{node.x}px;top:{node.y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:#10151f;border:1px solid {node.selected ? accent : 'rgba(255,255,255,0.10)'};box-shadow:{node.selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:grab;z-index:2;"
+					onmousedown={(e) => onNodeDown(e, node.id)}
+					onclick={() => { if (dragMoved) { dragMoved = false; return; } onEditResource(node); }}
+					ondblclick={(e) => { e.stopPropagation(); rename(node.id); }}
+				>
+					<div class="flex items-center gap-2">
+						<div style="width:22px;height:22px;border-radius:6px;background:{node.color};color:#0a0e15;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;">{node.letter}</div>
+						<div style="min-width:0;">
+							<div style="font-size:13px;font-weight:600;color:#e6e9ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{node.name}</div>
+							<div class="font-mono" style="font-size:10px;color:#6b7480;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{node.type}</div>
+						</div>
 					</div>
+					<button
+						title="Delete resource"
+						aria-label="Delete resource"
+						class="absolute right-1.5 top-1.5 leading-none text-white/30 hover:text-white/80"
+						style="font-size:12px;"
+						onmousedown={(e) => e.stopPropagation()}
+						onclick={(e) => { e.stopPropagation(); onDeleteResource(node.id); }}
+					>✕</button>
+					<div title="Drag to connect (depends_on)" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{node.color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, node.id, 'out')} onmouseup={(e) => onDotUp(e, node.id, 'out')}></div>
+					<div title="Drop a connection here" role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{node.color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, node.id, 'in')} onmouseup={(e) => onDotUp(e, node.id, 'in')}></div>
 				</div>
-				<button
-					title="Delete resource"
-					aria-label="Delete resource"
-					class="absolute right-1.5 top-1.5 leading-none text-white/30 hover:text-white/80"
-					style="font-size:12px;"
-					onmousedown={(e) => e.stopPropagation()}
-					onclick={(e) => { e.stopPropagation(); onDeleteResource(node.id); }}
-				>✕</button>
-				<div title="Drag to connect (depends_on)" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{node.color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, node.id, 'out')} onmouseup={(e) => onDotUp(e, node.id, 'out')}></div>
-				<div title="Drop a connection here" role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{node.color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, node.id, 'in')} onmouseup={(e) => onDotUp(e, node.id, 'in')}></div>
-			</div>
-		{/each}
+			{/each}
+		</div>
+
+		<!-- zoom controls -->
+		<div class="absolute bottom-3.5 right-4 z-[5] flex items-center gap-1" style="background:rgba(13,17,23,0.85);backdrop-filter:blur(8px);padding:4px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);">
+			<button class="rounded-md px-2 py-1 text-white/60 hover:bg-white/10 hover:text-white/90" onclick={() => zoomBy(1 / 1.2)} title="Zoom out" aria-label="Zoom out"><Minus size={14} /></button>
+			<button class="min-w-[42px] rounded-md px-1 py-1 text-[11px] text-white/60 hover:bg-white/10 hover:text-white/90" onclick={resetView} title="Reset view">{Math.round(scale * 100)}%</button>
+			<button class="rounded-md px-2 py-1 text-white/60 hover:bg-white/10 hover:text-white/90" onclick={() => zoomBy(1.2)} title="Zoom in" aria-label="Zoom in"><Plus size={14} /></button>
+		</div>
 
 		{#if project.resources.length === 0}
 			<div class="pointer-events-none absolute inset-0 grid place-items-center text-sm text-white/30">

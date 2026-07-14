@@ -98,3 +98,68 @@ type projectRequest struct {
 	Name   string `json:"name"`
 	Engine string `json:"engine,omitempty"`
 }
+
+// projectConfigRequest replaces a project's variables, locals, and outputs.
+type projectConfigRequest struct {
+	Variables []variableDTO `json:"variables"`
+	Locals    []localDTO    `json:"locals"`
+	Outputs   []outputDTO   `json:"outputs"`
+}
+
+type variableDTO struct {
+	Name        string        `json:"name"`
+	Type        string        `json:"type,omitempty"`
+	Default     *attrValueDTO `json:"default,omitempty"`
+	Description string        `json:"description,omitempty"`
+	Sensitive   bool          `json:"sensitive,omitempty"`
+}
+
+type localDTO struct {
+	Name  string       `json:"name"`
+	Value attrValueDTO `json:"value"`
+}
+
+type outputDTO struct {
+	Name        string       `json:"name"`
+	Value       attrValueDTO `json:"value"`
+	Description string       `json:"description,omitempty"`
+	Sensitive   bool         `json:"sensitive,omitempty"`
+}
+
+func (r projectConfigRequest) toModel() (vars []model.Variable, locals []model.Local, outputs []model.Output, err error) {
+	for _, v := range r.Variables {
+		if v.Name == "" {
+			continue
+		}
+		mv := model.Variable{Name: v.Name, Type: v.Type, Description: v.Description, Sensitive: v.Sensitive}
+		if v.Default != nil {
+			av, e := v.Default.toModel()
+			if e != nil {
+				return nil, nil, nil, fmt.Errorf("variable %q default: %w", v.Name, e)
+			}
+			mv.Default = &av
+		}
+		vars = append(vars, mv)
+	}
+	for _, l := range r.Locals {
+		if l.Name == "" {
+			continue
+		}
+		av, e := l.Value.toModel()
+		if e != nil {
+			return nil, nil, nil, fmt.Errorf("local %q: %w", l.Name, e)
+		}
+		locals = append(locals, model.Local{Name: l.Name, Value: av})
+	}
+	for _, o := range r.Outputs {
+		if o.Name == "" {
+			continue
+		}
+		av, e := o.Value.toModel()
+		if e != nil {
+			return nil, nil, nil, fmt.Errorf("output %q: %w", o.Name, e)
+		}
+		outputs = append(outputs, model.Output{Name: o.Name, Value: av, Description: o.Description, Sensitive: o.Sensitive})
+	}
+	return vars, locals, outputs, nil
+}

@@ -2,6 +2,7 @@ import type {
 	EnginesResponse,
 	NormalizedSchema,
 	Project,
+	ProjectConfig,
 	ProjectSummary,
 	ProviderResponse,
 	Resource,
@@ -69,6 +70,13 @@ export const api = {
 		fetch(`/api/projects/${id}`, { method: 'DELETE' }).then((r) => {
 			if (!r.ok && r.status !== 204) throw new Error('failed to delete project');
 		}),
+
+	setConfig: (id: string, config: ProjectConfig) =>
+		fetch(`/api/projects/${id}/config`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(config)
+		}).then((r) => json<Project>(r)),
 
 	deleteResource: (projectId: string, rid: string) =>
 		fetch(`/api/projects/${projectId}/resources/${rid}`, { method: 'DELETE' }).then((r) => {

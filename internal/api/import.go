@@ -21,9 +21,14 @@ type importHCLRequest struct {
 }
 
 type importResponse struct {
-	AddedResources int      `json:"addedResources"`
-	AddedProviders int      `json:"addedProviders"`
-	Warnings       []string `json:"warnings,omitempty"`
+	AddedResources   int      `json:"addedResources"`
+	AddedProviders   int      `json:"addedProviders"`
+	AddedVariables   int      `json:"addedVariables,omitempty"`
+	AddedLocals      int      `json:"addedLocals,omitempty"`
+	AddedOutputs     int      `json:"addedOutputs,omitempty"`
+	AddedDataSources int      `json:"addedDataSources,omitempty"`
+	AddedModules     int      `json:"addedModules,omitempty"`
+	Warnings         []string `json:"warnings,omitempty"`
 }
 
 // handleImportHCL parses submitted .tf files and merges the result into the
@@ -54,6 +59,11 @@ func (s *Server) handleImportHCL(w http.ResponseWriter, r *http.Request) {
 	err = s.store.Update(id, func(p *model.Project) error {
 		resp.AddedProviders = mergeProviders(p, parsed.Providers)
 		resp.AddedResources = mergeResources(p, parsed.Resources)
+		resp.AddedDataSources = mergeDataSources(p, parsed.DataSources)
+		resp.AddedVariables = mergeVariables(p, parsed.Variables)
+		resp.AddedLocals = mergeLocals(p, parsed.Locals)
+		resp.AddedOutputs = mergeOutputs(p, parsed.Outputs)
+		resp.AddedModules = mergeModules(p, parsed.Modules)
 		return nil
 	})
 	if errors.Is(err, store.ErrNotFound) {
@@ -170,6 +180,95 @@ func mergeProviders(p *model.Project, incoming []model.ProviderInstance) int {
 			p.Providers = append(p.Providers, pi)
 			added++
 		}
+	}
+	return added
+}
+
+// mergeDataSources appends imported data sources, renaming on (type,name) clash.
+func mergeDataSources(p *model.Project, incoming []model.Resource) int {
+	taken := map[string]bool{}
+	for _, r := range p.DataSources {
+		taken[r.Type+"."+r.Name] = true
+	}
+	added := 0
+	for _, r := range incoming {
+		base := r.Name
+		n := 1
+		for taken[r.Type+"."+r.Name] {
+			n++
+			r.Name = fmt.Sprintf("%s_%d", base, n)
+		}
+		taken[r.Type+"."+r.Name] = true
+		p.DataSources = append(p.DataSources, r)
+		added++
+	}
+	return added
+}
+
+func mergeVariables(p *model.Project, incoming []model.Variable) int {
+	taken := map[string]bool{}
+	for _, v := range p.Variables {
+		taken[v.Name] = true
+	}
+	added := 0
+	for _, v := range incoming {
+		if taken[v.Name] {
+			continue
+		}
+		taken[v.Name] = true
+		p.Variables = append(p.Variables, v)
+		added++
+	}
+	return added
+}
+
+func mergeLocals(p *model.Project, incoming []model.Local) int {
+	taken := map[string]bool{}
+	for _, l := range p.Locals {
+		taken[l.Name] = true
+	}
+	added := 0
+	for _, l := range incoming {
+		if taken[l.Name] {
+			continue
+		}
+		taken[l.Name] = true
+		p.Locals = append(p.Locals, l)
+		added++
+	}
+	return added
+}
+
+func mergeOutputs(p *model.Project, incoming []model.Output) int {
+	taken := map[string]bool{}
+	for _, o := range p.Outputs {
+		taken[o.Name] = true
+	}
+	added := 0
+	for _, o := range incoming {
+		if taken[o.Name] {
+			continue
+		}
+		taken[o.Name] = true
+		p.Outputs = append(p.Outputs, o)
+		added++
+	}
+	return added
+}
+
+func mergeModules(p *model.Project, incoming []model.Module) int {
+	taken := map[string]bool{}
+	for _, m := range p.Modules {
+		taken[m.Name] = true
+	}
+	added := 0
+	for _, m := range incoming {
+		if taken[m.Name] {
+			continue
+		}
+		taken[m.Name] = true
+		p.Modules = append(p.Modules, m)
+		added++
 	}
 	return added
 }

@@ -75,6 +75,71 @@ resource "random_password" "db" {
 	}
 }
 
+func TestParse_VariablesLocalsOutputsDataModule(t *testing.T) {
+	src := `
+variable "region" {
+  type        = string
+  default     = "eu-west-1"
+  description = "AWS region"
+  sensitive   = false
+}
+
+locals {
+  prefix = "prod"
+  tags   = { env = "prod" }
+}
+
+data "aws_ami" "ubuntu" {
+  most_recent = true
+}
+
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.0.0"
+  cidr    = "10.0.0.0/16"
+}
+
+output "region_out" {
+  value       = var.region
+  description = "the region"
+  sensitive   = true
+}
+`
+	res, err := Parse(map[string][]byte{"main.tf": []byte(src)}, ids())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Variables) != 1 || res.Variables[0].Name != "region" {
+		t.Fatalf("variables: %+v", res.Variables)
+	}
+	v := res.Variables[0]
+	if v.Type != "string" {
+		t.Errorf("variable type: %q", v.Type)
+	}
+	if v.Description != "AWS region" || v.Sensitive {
+		t.Errorf("variable meta: %+v", v)
+	}
+	if v.Default == nil || v.Default.Literal.AsString() != "eu-west-1" {
+		t.Errorf("variable default: %+v", v.Default)
+	}
+	if len(res.Locals) != 2 {
+		t.Errorf("locals: %+v", res.Locals)
+	}
+	if len(res.DataSources) != 1 || res.DataSources[0].Type != "aws_ami" {
+		t.Errorf("data sources: %+v", res.DataSources)
+	}
+	if len(res.Modules) != 1 || res.Modules[0].Source != "terraform-aws-modules/vpc/aws" || res.Modules[0].Version != "5.0.0" {
+		t.Errorf("modules: %+v", res.Modules)
+	}
+	if len(res.Outputs) != 1 || res.Outputs[0].Name != "region_out" || !res.Outputs[0].Sensitive {
+		t.Errorf("outputs: %+v", res.Outputs)
+	}
+	// Output value references a variable -> reference mode.
+	if res.Outputs[0].Value.Mode != model.ModeReference || res.Outputs[0].Value.Ref != "var.region" {
+		t.Errorf("output value: %+v", res.Outputs[0].Value)
+	}
+}
+
 func TestParse_NestedBlocks(t *testing.T) {
 	src := `
 resource "example_thing" "x" {

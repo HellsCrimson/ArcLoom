@@ -11,15 +11,21 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/zclconf/go-cty/cty"
 
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 )
 
 // Result is what a parse produced, ready to merge into a project.
 type Result struct {
-	Providers []model.ProviderInstance
-	Resources []model.Resource
-	Warnings  []string
+	Providers   []model.ProviderInstance
+	Variables   []model.Variable
+	Locals      []model.Local
+	DataSources []model.Resource
+	Resources   []model.Resource
+	Modules     []model.Module
+	Outputs     []model.Output
+	Warnings    []string
 }
 
 // idFunc mints a unique id for an imported resource (injected so callers control
@@ -73,9 +79,29 @@ func Parse(files map[string][]byte, newID idFunc) (*Result, error) {
 			case "terraform":
 				importRequiredProviders(blk, res, provIndex)
 
-			case "variable", "output", "locals", "module", "data":
-				res.Warnings = append(res.Warnings,
-					fmt.Sprintf("%s: %q blocks are not yet modeled and were skipped", name, blk.Type))
+			case "data":
+				if len(blk.Labels) == 2 {
+					res.DataSources = append(res.DataSources, importResource(blk, src, newID()))
+					ensureProviderKey(res, provIndex, model.ProviderLocalName(blk.Labels[0]))
+				}
+
+			case "variable":
+				if len(blk.Labels) == 1 {
+					res.Variables = append(res.Variables, importVariable(blk, src))
+				}
+
+			case "output":
+				if len(blk.Labels) == 1 {
+					res.Outputs = append(res.Outputs, importOutput(blk, src))
+				}
+
+			case "locals":
+				res.Locals = append(res.Locals, importLocals(blk, src)...)
+
+			case "module":
+				if len(blk.Labels) == 1 {
+					res.Modules = append(res.Modules, importModule(blk, src))
+				}
 			}
 		}
 	}
@@ -136,6 +162,89 @@ func importResource(blk *hclsyntax.Block, src []byte, id string) model.Resource 
 		r.Blocks[nested.Type] = append(r.Blocks[nested.Type], nb)
 	}
 	return r
+}
+
+func importVariable(blk *hclsyntax.Block, src []byte) model.Variable {
+	v := model.Variable{Name: blk.Labels[0]}
+	if a, ok := blk.Body.Attributes["type"]; ok {
+		v.Type = rawSource(a.Expr, src)
+	}
+	if a, ok := blk.Body.Attributes["default"]; ok {
+		def := importExpr(a.Expr, src)
+		v.Default = &def
+	}
+	if a, ok := blk.Body.Attributes["description"]; ok {
+		v.Description = literalString(a.Expr)
+	}
+	if a, ok := blk.Body.Attributes["sensitive"]; ok {
+		v.Sensitive = literalBool(a.Expr)
+	}
+	return v
+}
+
+func importOutput(blk *hclsyntax.Block, src []byte) model.Output {
+	o := model.Output{Name: blk.Labels[0]}
+	if a, ok := blk.Body.Attributes["value"]; ok {
+		o.Value = importExpr(a.Expr, src)
+	}
+	if a, ok := blk.Body.Attributes["description"]; ok {
+		o.Description = literalString(a.Expr)
+	}
+	if a, ok := blk.Body.Attributes["sensitive"]; ok {
+		o.Sensitive = literalBool(a.Expr)
+	}
+	return o
+}
+
+func importLocals(blk *hclsyntax.Block, src []byte) []model.Local {
+	names := make([]string, 0, len(blk.Body.Attributes))
+	for n := range blk.Body.Attributes {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]model.Local, 0, len(names))
+	for _, n := range names {
+		out = append(out, model.Local{Name: n, Value: importExpr(blk.Body.Attributes[n].Expr, src)})
+	}
+	return out
+}
+
+func importModule(blk *hclsyntax.Block, src []byte) model.Module {
+	m := model.Module{Name: blk.Labels[0], Config: map[string]model.AttrValue{}}
+	for name, attr := range blk.Body.Attributes {
+		switch name {
+		case "source":
+			m.Source = literalString(attr.Expr)
+		case "version":
+			m.Version = literalString(attr.Expr)
+		default:
+			m.Config[name] = importExpr(attr.Expr, src)
+		}
+	}
+	if len(m.Config) == 0 {
+		m.Config = nil
+	}
+	return m
+}
+
+// rawSource returns the verbatim source text of an expression.
+func rawSource(expr hclsyntax.Expression, src []byte) string {
+	rng := expr.Range()
+	return strings.TrimSpace(string(src[rng.Start.Byte:rng.End.Byte]))
+}
+
+func literalString(expr hclsyntax.Expression) string {
+	if val, diags := expr.Value(nil); !diags.HasErrors() && val.Type() == cty.String {
+		return val.AsString()
+	}
+	return ""
+}
+
+func literalBool(expr hclsyntax.Expression) bool {
+	if val, diags := expr.Value(nil); !diags.HasErrors() && val.Type() == cty.Bool {
+		return val.True()
+	}
+	return false
 }
 
 // importAttrs converts a body's attributes into model AttrValues.

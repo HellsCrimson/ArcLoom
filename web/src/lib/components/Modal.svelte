@@ -20,14 +20,13 @@
 <svelte:window onkeydown={onkey} />
 
 {#if open}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-		role="button"
-		tabindex="-1"
 		onclick={(e) => {
 			if (e.target === e.currentTarget) close();
 		}}
-		onkeydown={() => {}}
 	>
 		<div
 			class="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-[var(--al-border)] bg-[var(--al-panel)] shadow-2xl"

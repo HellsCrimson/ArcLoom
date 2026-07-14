@@ -121,6 +121,37 @@ func (s *Server) handleSetProviderConfig(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, p)
 }
 
+// handleSetConfig replaces a project's variables, locals, and outputs.
+func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req projectConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	vars, locals, outputs, err := req.toModel()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	err = s.store.Update(id, func(p *model.Project) error {
+		p.Variables = vars
+		p.Locals = locals
+		p.Outputs = outputs
+		return nil
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	p, _ := s.store.Get(id)
+	writeJSON(w, http.StatusOK, p)
+}
+
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.Delete(chi.URLParam(r, "id")); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

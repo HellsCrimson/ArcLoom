@@ -10,11 +10,47 @@ const (
 
 // Project is the top-level container the UI edits.
 type Project struct {
-	ID        string             `json:"id" yaml:"id"`
-	Name      string             `json:"name" yaml:"name"`
-	Engine    Engine             `json:"engine" yaml:"engine"`
-	Providers []ProviderInstance `json:"providers" yaml:"providers"`
-	Resources []Resource         `json:"resources" yaml:"resources"`
+	ID          string             `json:"id" yaml:"id"`
+	Name        string             `json:"name" yaml:"name"`
+	Engine      Engine             `json:"engine" yaml:"engine"`
+	Providers   []ProviderInstance `json:"providers" yaml:"providers"`
+	Variables   []Variable         `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Locals      []Local            `json:"locals,omitempty" yaml:"locals,omitempty"`
+	DataSources []Resource         `json:"dataSources,omitempty" yaml:"dataSources,omitempty"`
+	Resources   []Resource         `json:"resources" yaml:"resources"`
+	Modules     []Module           `json:"modules,omitempty" yaml:"modules,omitempty"`
+	Outputs     []Output           `json:"outputs,omitempty" yaml:"outputs,omitempty"`
+}
+
+// Variable is an input variable (variable "name" {}).
+type Variable struct {
+	Name        string     `json:"name" yaml:"name"`
+	Type        string     `json:"type,omitempty" yaml:"type,omitempty"` // raw HCL type expr, e.g. "string"
+	Default     *AttrValue `json:"default,omitempty" yaml:"default,omitempty"`
+	Description string     `json:"description,omitempty" yaml:"description,omitempty"`
+	Sensitive   bool       `json:"sensitive,omitempty" yaml:"sensitive,omitempty"`
+}
+
+// Local is a named local value (locals { name = value }).
+type Local struct {
+	Name  string    `json:"name" yaml:"name"`
+	Value AttrValue `json:"value" yaml:"value"`
+}
+
+// Output is an output value (output "name" {}).
+type Output struct {
+	Name        string    `json:"name" yaml:"name"`
+	Value       AttrValue `json:"value" yaml:"value"`
+	Description string    `json:"description,omitempty" yaml:"description,omitempty"`
+	Sensitive   bool      `json:"sensitive,omitempty" yaml:"sensitive,omitempty"`
+}
+
+// Module is a module call (module "name" {}).
+type Module struct {
+	Name    string               `json:"name" yaml:"name"`
+	Source  string               `json:"source" yaml:"source"`
+	Version string               `json:"version,omitempty" yaml:"version,omitempty"`
+	Config  map[string]AttrValue `json:"config,omitempty" yaml:"config,omitempty"`
 }
 
 // ProviderInstance is a configured provider within a project.
