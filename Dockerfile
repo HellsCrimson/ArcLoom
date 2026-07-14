@@ -39,6 +39,7 @@ COPY --from=gobuild /out/arcloom /usr/local/bin/arcloom
 ENV ARCLOOM_ADDR=:8080 \
 	ARCLOOM_ENGINE=tofu \
 	ARCLOOM_DATA=/var/lib/arcloom/projects \
+	ARCLOOM_SECRETS_DIR=/var/lib/arcloom/secrets \
 	ARCLOOM_CACHE_DIR=/var/lib/arcloom/cache \
 	TF_PLUGIN_CACHE_DIR=/var/lib/arcloom/cache/plugins \
 	ARCLOOM_WORKDIR=/var/lib/arcloom/work

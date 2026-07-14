@@ -40,12 +40,12 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "unknown engine")
 		return
 	}
-	hcl, err := hclgen.Generate(p)
+	files, err := hclgen.GenerateFiles(p)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "generate: "+err.Error())
 		return
 	}
-	dot, err := run.Graph(r.Context(), hcl)
+	dot, err := run.Graph(r.Context(), files)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "graph failed: "+err.Error())
 		return

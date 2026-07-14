@@ -62,6 +62,7 @@ type resourceRequest struct {
 	Type           string                  `json:"type"`
 	Name           string                  `json:"name"`
 	ProviderSource string                  `json:"providerSource,omitempty"`
+	Module         string                  `json:"module,omitempty"` // "" = root, else local module name
 	Attrs          map[string]attrValueDTO `json:"attrs"`
 	DependsOn      []string                `json:"dependsOn,omitempty"`
 }
@@ -99,8 +100,10 @@ type projectRequest struct {
 	Engine string `json:"engine,omitempty"`
 }
 
-// projectConfigRequest replaces a project's variables, locals, and outputs.
+// projectConfigRequest replaces a project's (or a local module's) variables,
+// locals, and outputs.
 type projectConfigRequest struct {
+	Module    string        `json:"module,omitempty"` // "" = root, else local module name
 	Variables []variableDTO `json:"variables"`
 	Locals    []localDTO    `json:"locals"`
 	Outputs   []outputDTO   `json:"outputs"`

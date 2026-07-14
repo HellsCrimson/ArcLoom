@@ -14,6 +14,7 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/config"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
+	"github.com/HellsCrimson/ArcLoom/internal/secrets"
 	"github.com/HellsCrimson/ArcLoom/internal/store"
 )
 
@@ -23,12 +24,13 @@ type Server struct {
 	runners map[model.Engine]runner.Runner
 	store   store.Store
 	cache   *cache.SchemaCache
+	secrets *secrets.Store
 	static  fs.FS // embedded SPA build (may be nil in dev)
 }
 
 // New builds a Server. runners maps each available engine to its runner.
-func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, static fs.FS) *Server {
-	return &Server{cfg: cfg, runners: runners, store: st, cache: sc, static: static}
+func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS) *Server {
+	return &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static}
 }
 
 // runnerFor returns the runner for an engine name, falling back to the
@@ -59,9 +61,23 @@ func (s *Server) Handler() http.Handler {
 		r.Delete("/projects/{id}", s.handleDeleteProject)
 		r.Put("/projects/{id}/providers/{key}", s.handleSetProviderConfig)
 		r.Put("/projects/{id}/config", s.handleSetConfig)
+		r.Post("/projects/{id}/modules/local", s.handleCreateLocalModule)
+		r.Delete("/projects/{id}/modules/local/{name}", s.handleDeleteLocalModule)
+		r.Put("/projects/{id}/modules/local/{name}/inputs", s.handleSetModuleInputs)
+		r.Get("/projects/{id}/secrets", s.handleListSecrets)
+		r.Put("/projects/{id}/secrets/{name}", s.handleSetSecret)
+		r.Delete("/projects/{id}/secrets/{name}", s.handleDeleteSecret)
 		r.Post("/projects/{id}/resources", s.handleUpsertResource)
 		r.Delete("/projects/{id}/resources/{rid}", s.handleDeleteResource)
 		r.Get("/projects/{id}/hcl", s.handleProjectHCL)
+		r.Get("/projects/{id}/git/status", s.handleGitStatus)
+		r.Post("/projects/{id}/git/commit", s.handleGitCommit)
+		r.Get("/projects/{id}/git/log", s.handleGitLog)
+		r.Get("/projects/{id}/git/diff", s.handleGitDiff)
+		r.Post("/projects/{id}/git/restore", s.handleGitRestore)
+		r.Post("/projects/{id}/git/remote", s.handleGitRemote)
+		r.Post("/projects/{id}/git/push", s.handleGitPush)
+		r.Post("/projects/{id}/git/pull", s.handleGitPull)
 		r.Post("/projects/{id}/import/hcl", s.handleImportHCL)
 		r.Post("/projects/{id}/import/state", s.handleImportState)
 		r.Get("/projects/{id}/graph", s.handleGraph)

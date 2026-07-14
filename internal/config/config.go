@@ -23,18 +23,26 @@ type Config struct {
 	PluginCacheDir string
 	// DataDir holds one folder per project (arcloom.yaml + generated/*.tf).
 	DataDir string
+	// SecretsDir holds the encrypted per-project secret stores (never in Git).
+	SecretsDir string
+	// SecretKey is the master passphrase for the local encrypted secrets
+	// backend (from ARCLOOM_SECRET_KEY); empty disables local storage.
+	SecretKey string
 }
 
 // Load reads configuration from the environment, applying sensible defaults.
 func Load() Config {
 	cacheDir := env("ARCLOOM_CACHE_DIR", defaultCacheDir())
+	dataDir := env("ARCLOOM_DATA", defaultDataDir())
 	return Config{
 		Addr:           env("ARCLOOM_ADDR", ":8080"),
 		DefaultEngine:  env("ARCLOOM_ENGINE", "tofu"),
 		WorkDir:        env("ARCLOOM_WORKDIR", filepath.Join(os.TempDir(), "arcloom", "work")),
 		CacheDir:       cacheDir,
 		PluginCacheDir: env("TF_PLUGIN_CACHE_DIR", filepath.Join(cacheDir, "plugins")),
-		DataDir:        env("ARCLOOM_DATA", defaultDataDir()),
+		DataDir:        dataDir,
+		SecretsDir:     env("ARCLOOM_SECRETS_DIR", filepath.Join(filepath.Dir(dataDir), "secrets")),
+		SecretKey:      os.Getenv("ARCLOOM_SECRET_KEY"),
 	}
 }
 

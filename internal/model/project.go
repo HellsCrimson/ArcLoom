@@ -17,9 +17,26 @@ type Project struct {
 	Variables   []Variable         `json:"variables,omitempty" yaml:"variables,omitempty"`
 	Locals      []Local            `json:"locals,omitempty" yaml:"locals,omitempty"`
 	DataSources []Resource         `json:"dataSources,omitempty" yaml:"dataSources,omitempty"`
-	Resources   []Resource         `json:"resources" yaml:"resources"`
-	Modules     []Module           `json:"modules,omitempty" yaml:"modules,omitempty"`
-	Outputs     []Output           `json:"outputs,omitempty" yaml:"outputs,omitempty"`
+	Resources    []Resource     `json:"resources" yaml:"resources"`
+	Modules      []Module       `json:"modules,omitempty" yaml:"modules,omitempty"`
+	LocalModules []LocalModule  `json:"localModules,omitempty" yaml:"localModules,omitempty"`
+	Outputs      []Output       `json:"outputs,omitempty" yaml:"outputs,omitempty"`
+}
+
+// LocalModule is a child module authored in-project as a subfolder
+// (modules/<name>/). It has its own resources/variables/outputs; the root
+// generates a `module "<name>" { source = "./modules/<name>" ... }` call whose
+// arguments come from Inputs.
+type LocalModule struct {
+	Name        string               `json:"name" yaml:"name"`
+	Variables   []Variable           `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Locals      []Local              `json:"locals,omitempty" yaml:"locals,omitempty"`
+	DataSources []Resource           `json:"dataSources,omitempty" yaml:"dataSources,omitempty"`
+	Resources   []Resource           `json:"resources" yaml:"resources"`
+	Outputs     []Output             `json:"outputs,omitempty" yaml:"outputs,omitempty"`
+	// Inputs are the values the root passes to this module (keyed by the
+	// module's variable names).
+	Inputs map[string]AttrValue `json:"inputs,omitempty" yaml:"inputs,omitempty"`
 }
 
 // Variable is an input variable (variable "name" {}).

@@ -6,6 +6,9 @@ import type {
 	ProjectSummary,
 	ProviderResponse,
 	Resource,
+	SecretsResponse,
+	GitStatus,
+	GitCommit,
 	AttrValue
 } from '$lib/types';
 
@@ -71,17 +74,55 @@ export const api = {
 			if (!r.ok && r.status !== 204) throw new Error('failed to delete project');
 		}),
 
-	setConfig: (id: string, config: ProjectConfig) =>
+	setConfig: (id: string, config: ProjectConfig, module?: string) =>
 		fetch(`/api/projects/${id}/config`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(config)
+			body: JSON.stringify({ ...config, module: module ?? '' })
 		}).then((r) => json<Project>(r)),
 
-	deleteResource: (projectId: string, rid: string) =>
-		fetch(`/api/projects/${projectId}/resources/${rid}`, { method: 'DELETE' }).then((r) => {
+	listSecrets: (id: string) =>
+		fetch(`/api/projects/${id}/secrets`).then((r) => json<SecretsResponse>(r)),
+
+	setSecret: (id: string, name: string, value: string) =>
+		fetch(`/api/projects/${id}/secrets/${encodeURIComponent(name)}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ value })
+		}).then((r) => {
+			if (!r.ok && r.status !== 204) return r.json().then((b) => { throw new Error(b.error || 'failed'); });
+		}),
+
+	deleteSecret: (id: string, name: string) =>
+		fetch(`/api/projects/${id}/secrets/${encodeURIComponent(name)}`, { method: 'DELETE' }).then((r) => {
+			if (!r.ok && r.status !== 204) throw new Error('failed to delete secret');
+		}),
+
+	deleteResource: (projectId: string, rid: string, module?: string) =>
+		fetch(`/api/projects/${projectId}/resources/${rid}${module ? `?module=${encodeURIComponent(module)}` : ''}`, {
+			method: 'DELETE'
+		}).then((r) => {
 			if (!r.ok && r.status !== 204) throw new Error('failed to delete resource');
 		}),
+
+	createLocalModule: (projectId: string, name: string) =>
+		fetch(`/api/projects/${projectId}/modules/local`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name })
+		}).then((r) => json<Project>(r)),
+
+	deleteLocalModule: (projectId: string, name: string) =>
+		fetch(`/api/projects/${projectId}/modules/local/${encodeURIComponent(name)}`, {
+			method: 'DELETE'
+		}).then((r) => json<Project>(r)),
+
+	setModuleInputs: (projectId: string, name: string, inputs: Record<string, AttrValue>) =>
+		fetch(`/api/projects/${projectId}/modules/local/${encodeURIComponent(name)}/inputs`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ inputs })
+		}).then((r) => json<Project>(r)),
 
 	upsertResource: (
 		projectId: string,
@@ -90,6 +131,7 @@ export const api = {
 			type: string;
 			name: string;
 			providerSource?: string;
+			module?: string;
 			attrs: Record<string, AttrValue>;
 			dependsOn?: string[];
 		}
@@ -100,8 +142,8 @@ export const api = {
 			body: JSON.stringify(body)
 		}).then((r) => json<Resource>(r)),
 
-	projectHCL: (id: string) =>
-		fetch(`/api/projects/${id}/hcl`).then((r) => {
+	projectHCL: (id: string, module?: string) =>
+		fetch(`/api/projects/${id}/hcl${module ? `?module=${encodeURIComponent(module)}` : ''}`).then((r) => {
 			if (!r.ok) throw new Error('failed to generate HCL');
 			return r.text();
 		}),
@@ -120,8 +162,53 @@ export const api = {
 			body: JSON.stringify({ state: stateJSON })
 		}).then((r) => json<ImportResult>(r)),
 
-	graph: (id: string) => fetch(`/api/projects/${id}/graph`).then((r) => json<GraphData>(r))
+	graph: (id: string) => fetch(`/api/projects/${id}/graph`).then((r) => json<GraphData>(r)),
+
+	git: {
+		status: (id: string) => fetch(`/api/projects/${id}/git/status`).then((r) => json<GitStatus>(r)),
+		log: (id: string) => fetch(`/api/projects/${id}/git/log`).then((r) => json<GitCommit[]>(r)),
+		diff: (id: string, commit?: string) =>
+			fetch(`/api/projects/${id}/git/diff${commit ? `?commit=${commit}` : ''}`).then((r) =>
+				json<{ diff: string }>(r).then((d) => d.diff)
+			),
+		commit: (id: string, message: string) =>
+			fetch(`/api/projects/${id}/git/commit`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ message })
+			}).then((r) => json<{ hash: string }>(r)),
+		restore: (id: string, commit: string) =>
+			fetch(`/api/projects/${id}/git/restore`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ commit })
+			}).then((r) => json<Project>(r)),
+		setRemote: (id: string, url: string) =>
+			gitAction(`/api/projects/${id}/git/remote`, { url }),
+		push: (id: string, username: string, token: string) =>
+			gitAction(`/api/projects/${id}/git/push`, { username, token }),
+		pull: (id: string, username: string, token: string) =>
+			gitAction(`/api/projects/${id}/git/pull`, { username, token })
+	}
 };
+
+async function gitAction(url: string, body: unknown): Promise<void> {
+	const r = await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+	if (!r.ok && r.status !== 204) {
+		let msg = r.statusText;
+		try {
+			const b = await r.json();
+			if (b?.error) msg = b.error;
+		} catch {
+			/* ignore */
+		}
+		throw new Error(msg);
+	}
+}
 
 export interface ImportResult {
 	addedResources: number;

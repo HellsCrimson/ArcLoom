@@ -17,6 +17,7 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
+	"github.com/HellsCrimson/ArcLoom/internal/secrets"
 	"github.com/HellsCrimson/ArcLoom/internal/store"
 	"github.com/HellsCrimson/ArcLoom/internal/webui"
 )
@@ -48,14 +49,21 @@ func main() {
 		log.Printf("default engine adjusted to %s", cfg.DefaultEngine)
 	}
 
-	st, err := store.NewDisk(cfg.DataDir, hclgen.Generate)
+	st, err := store.NewDisk(cfg.DataDir, hclgen.GenerateFiles)
 	if err != nil {
 		log.Fatalf("init store: %v", err)
 	}
 	log.Printf("projects stored in %s", cfg.DataDir)
 	sc := cache.New(cfg.CacheDir)
 
-	srv := api.New(cfg, runners, st, sc, webui.FS())
+	sec := secrets.NewStore(cfg.SecretsDir, cfg.SecretKey)
+	if sec.LocalEnabled() {
+		log.Printf("local secret store enabled (%s)", cfg.SecretsDir)
+	} else {
+		log.Printf("local secret store disabled (set ARCLOOM_SECRET_KEY); env secrets still work")
+	}
+
+	srv := api.New(cfg, runners, st, sc, sec, webui.FS())
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,

@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
+	"github.com/HellsCrimson/ArcLoom/internal/model"
 )
 
 // handlePlan generates HCL for a project and streams init + plan output over
@@ -39,17 +40,33 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 
 	sse := &sseWriter{w: w, flusher: flusher}
 
-	hcl, err := hclgen.Generate(p)
+	files, err := hclgen.GenerateFiles(p)
 	if err != nil {
 		sse.event("error", map[string]string{"error": "generate: " + err.Error()})
 		return
+	}
+
+	// Resolve secrets referenced by the project into TF_VAR_ injections. Values
+	// are held in memory only and never written to disk or HCL.
+	tfVars := map[string]string{}
+	for _, ref := range hclgen.CollectSecretRefs(p) {
+		val, found, serr := s.secrets.Resolve(p.ID, ref)
+		if serr != nil {
+			sse.event("error", map[string]string{"error": "secret " + ref + ": " + serr.Error()})
+			return
+		}
+		if !found {
+			sse.event("log", map[string]string{"line": "warning: secret " + ref + " is not set (plan may prompt or fail)"})
+			continue
+		}
+		tfVars[model.SecretVarName(ref)] = val
 	}
 
 	// Stream CLI output line-by-line as "log" events. The child process is
 	// killed via r.Context() cancellation when the client disconnects.
 	logW := &lineWriter{emit: func(line string) { sse.event("log", map[string]string{"line": line}) }}
 
-	res, err := run.Plan(r.Context(), hcl, p.Providers, logW)
+	res, err := run.Plan(r.Context(), files, p.Providers, tfVars, logW)
 	logW.flush()
 	if err != nil {
 		sse.event("error", map[string]string{"error": err.Error()})

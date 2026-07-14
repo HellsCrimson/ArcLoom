@@ -6,10 +6,17 @@ package model
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/zclconf/go-cty/cty"
 	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
+
+// SecretVarName maps a secret reference to the Terraform variable name it is
+// exposed as (and the TF_VAR_<name> injected at run time).
+func SecretVarName(ref string) string {
+	return strings.NewReplacer("/", "_", "-", "_", ".", "_", " ", "_").Replace(ref)
+}
 
 // ValueMode describes how an attribute value is sourced.
 type ValueMode string

@@ -5,9 +5,10 @@
 	let {
 		title,
 		open = $bindable(false),
+		wide = false,
 		children,
 		footer
-	}: { title: string; open: boolean; children: Snippet; footer?: Snippet } = $props();
+	}: { title: string; open: boolean; wide?: boolean; children: Snippet; footer?: Snippet } = $props();
 
 	function close() {
 		open = false;
@@ -29,7 +30,7 @@
 		}}
 	>
 		<div
-			class="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-[var(--al-border)] bg-[var(--al-panel)] shadow-2xl"
+			class="flex max-h-[85vh] w-full flex-col overflow-hidden rounded-lg border border-[var(--al-border)] bg-[var(--al-panel)] shadow-2xl {wide ? 'max-w-4xl' : 'max-w-2xl'}"
 		>
 			<div class="flex items-center justify-between border-b border-[var(--al-border)] px-4 py-2.5">
 				<h2 class="text-sm font-semibold text-[var(--al-text)]">{title}</h2>

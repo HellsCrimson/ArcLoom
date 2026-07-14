@@ -28,11 +28,12 @@ type Runner interface {
 	// ProvidersSchema initializes the given providers and returns their raw
 	// schemas.
 	ProvidersSchema(ctx context.Context, providers []model.ProviderInstance) (*tfjson.ProviderSchemas, error)
-	// Plan writes the generated HCL into a fresh workspace, initializes it, and
-	// runs plan, streaming CLI output to out. It returns whether changes are
-	// pending.
-	Plan(ctx context.Context, hcl []byte, providers []model.ProviderInstance, out io.Writer) (PlanResult, error)
-	// Graph writes the generated HCL into a fresh workspace, initializes it, and
-	// returns the dependency graph in Graphviz DOT format.
-	Graph(ctx context.Context, hcl []byte) (string, error)
+	// Plan writes the generated files (main.tf plus any modules/<name>/main.tf)
+	// into a fresh workspace, initializes it, and runs plan, streaming CLI output
+	// to out. tfVars are injected as TF_VAR_<name> (used for secret values) and
+	// never written to disk. It returns whether changes are pending.
+	Plan(ctx context.Context, files map[string][]byte, providers []model.ProviderInstance, tfVars map[string]string, out io.Writer) (PlanResult, error)
+	// Graph writes the generated files into a fresh workspace, initializes it,
+	// and returns the dependency graph in Graphviz DOT format.
+	Graph(ctx context.Context, files map[string][]byte) (string, error)
 }
