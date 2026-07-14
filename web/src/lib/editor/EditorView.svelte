@@ -282,22 +282,29 @@
 		paletteTypes = [];
 	}
 
-	async function openPalette() {
-		showPalette = !showPalette;
-		if (showPalette && paletteTypes.length === 0 && activeSource) {
-			loadingTypes = true;
-			try {
-				paletteTypes = await loadTypes(activeSource);
-			} finally {
-				loadingTypes = false;
-			}
+	async function loadPaletteTypes() {
+		if (!activeSource) return;
+		loadingTypes = true;
+		try {
+			paletteTypes = await loadTypes(activeSource);
+		} finally {
+			loadingTypes = false;
 		}
 	}
 
+	function openPalette() {
+		showPalette = !showPalette;
+		if (showPalette && paletteTypes.length === 0) loadPaletteTypes();
+	}
+
+	// When the active provider changes, refresh the palette's type list (reload if
+	// it's open, otherwise just clear the stale list). Must NOT toggle showPalette
+	// here — reading it and calling openPalette() would close the palette the same
+	// tick it opens.
 	$effect(() => {
-		activeProvider; // reset palette when provider changes
+		activeProvider; // track
 		paletteTypes = [];
-		if (showPalette) openPalette();
+		if (showPalette) loadPaletteTypes();
 	});
 
 	const filteredTypes = $derived(
