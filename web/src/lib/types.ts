@@ -66,6 +66,7 @@ export interface Resource {
 	type: string;
 	name: string;
 	attrs: Record<string, AttrValue>;
+	dependsOn?: string[];
 }
 
 export interface ProviderInstance {

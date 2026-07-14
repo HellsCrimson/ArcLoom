@@ -70,6 +70,11 @@ export const api = {
 			if (!r.ok && r.status !== 204) throw new Error('failed to delete project');
 		}),
 
+	deleteResource: (projectId: string, rid: string) =>
+		fetch(`/api/projects/${projectId}/resources/${rid}`, { method: 'DELETE' }).then((r) => {
+			if (!r.ok && r.status !== 204) throw new Error('failed to delete resource');
+		}),
+
 	upsertResource: (
 		projectId: string,
 		body: {
@@ -78,6 +83,7 @@ export const api = {
 			name: string;
 			providerSource?: string;
 			attrs: Record<string, AttrValue>;
+			dependsOn?: string[];
 		}
 	) =>
 		fetch(`/api/projects/${projectId}/resources`, {

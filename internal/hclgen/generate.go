@@ -84,6 +84,13 @@ func writeResourceBlock(body *hclwrite.Body, r model.Resource) error {
 	if err := writeAttrs(blk.Body(), r.Attrs); err != nil {
 		return err
 	}
+	if len(r.DependsOn) > 0 {
+		toks, err := tokensForExpr("[" + strings.Join(r.DependsOn, ", ") + "]")
+		if err != nil {
+			return fmt.Errorf("depends_on: %w", err)
+		}
+		blk.Body().SetAttributeRaw("depends_on", toks)
+	}
 	// Nested blocks, sorted by name for determinism.
 	names := make([]string, 0, len(r.Blocks))
 	for n := range r.Blocks {

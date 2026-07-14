@@ -38,6 +38,9 @@ type Resource struct {
 	Name   string                `json:"name" yaml:"name"`
 	Attrs  map[string]AttrValue  `json:"attrs" yaml:"attrs"`
 	Blocks map[string][]Resource `json:"blocks,omitempty" yaml:"blocks,omitempty"`
+	// DependsOn holds explicit dependency addresses ("aws_vpc.main"), emitted as
+	// the depends_on meta-argument.
+	DependsOn []string `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
 }
 
 // LocalName returns the provider local name inferred from a resource type,
