@@ -277,9 +277,12 @@
 		if (next && next.trim()) onRenameResource(id, next.trim().replace(/[^a-zA-Z0-9_]+/g, '_'));
 	}
 
-	async function switchProvider(key: string) {
+	// Picking a provider pill opens the Add palette on that provider's catalog, so
+	// the pill has a visible effect (the $effect below reloads the type list).
+	function switchProvider(key: string) {
 		activeProvider = key;
 		paletteTypes = [];
+		showPalette = true;
 	}
 
 	async function loadPaletteTypes() {
@@ -402,6 +405,7 @@
 						class="rounded-md px-2.5 py-1.5 text-[11px] font-bold"
 						style="background:{p.key === activeProvider ? accent : 'transparent'};color:{p.key === activeProvider ? '#0a0e15' : '#8b95a5'};"
 						onclick={() => switchProvider(p.key)}
+						title="Browse {p.key} resources to add"
 					>{p.key}</button>
 				{/each}
 				{#if project.providers.length === 0}
