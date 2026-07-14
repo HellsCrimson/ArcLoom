@@ -103,6 +103,16 @@ export interface Module {
 	config?: Record<string, AttrValue>;
 }
 
+export interface LocalModule {
+	name: string;
+	variables?: Variable[];
+	locals?: Local[];
+	dataSources?: Resource[];
+	resources: Resource[];
+	outputs?: Output[];
+	inputs?: Record<string, AttrValue>;
+}
+
 export interface Project {
 	id: string;
 	name: string;
@@ -113,6 +123,7 @@ export interface Project {
 	dataSources?: Resource[];
 	resources: Resource[];
 	modules?: Module[];
+	localModules?: LocalModule[];
 	outputs?: Output[];
 }
 
@@ -121,6 +132,40 @@ export interface ProjectConfig {
 	variables: Variable[];
 	locals: Local[];
 	outputs: Output[];
+}
+
+export interface SecretMeta {
+	name: string;
+	backend: string; // "local" | "env"
+}
+
+export interface SecretsResponse {
+	localEnabled: boolean;
+	secrets: SecretMeta[] | null;
+}
+
+export interface GitFileStatus {
+	path: string;
+	status: string; // modified | added | deleted | untracked
+}
+
+export interface GitStatus {
+	initialized: boolean;
+	branch: string;
+	clean: boolean;
+	files: GitFileStatus[] | null;
+	hasCommits: boolean;
+	hasRemote: boolean;
+	remoteUrl?: string;
+}
+
+export interface GitCommit {
+	hash: string;
+	short: string;
+	message: string;
+	author: string;
+	email: string;
+	date: string;
 }
 
 export interface ProjectSummary {

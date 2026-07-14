@@ -1,15 +1,17 @@
 <script lang="ts">
-	import type { AttrValue, Project, ProjectConfig } from '$lib/types';
+	import type { AttrValue, ProjectConfig } from '$lib/types';
 	import Modal from './Modal.svelte';
 	import { Plus, Trash2, Loader2 } from 'lucide-svelte';
 
 	let {
-		project,
+		config,
+		title = 'Variables, locals & outputs',
 		open = $bindable(false),
 		saving = false,
 		onSave
 	}: {
-		project: Project;
+		config: ProjectConfig;
+		title?: string;
 		open: boolean;
 		saving?: boolean;
 		onSave: (config: ProjectConfig) => void;
@@ -37,18 +39,18 @@
 		return t ? { mode: 'expression', expr: t } : undefined;
 	}
 
-	// Load the project's config whenever the modal opens.
+	// Load the scope's config whenever the modal opens.
 	$effect(() => {
 		if (!open) return;
-		vars = (project.variables ?? []).map((v) => ({
+		vars = (config.variables ?? []).map((v) => ({
 			name: v.name,
 			type: v.type ?? '',
 			def: attrText(v.default),
 			description: v.description ?? '',
 			sensitive: !!v.sensitive
 		}));
-		locals = (project.locals ?? []).map((l) => ({ name: l.name, value: attrText(l.value) }));
-		outputs = (project.outputs ?? []).map((o) => ({
+		locals = (config.locals ?? []).map((l) => ({ name: l.name, value: attrText(l.value) }));
+		outputs = (config.outputs ?? []).map((o) => ({
 			name: o.name,
 			value: attrText(o.value),
 			description: o.description ?? '',
@@ -92,7 +94,7 @@
 	const btn = 'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-40';
 </script>
 
-<Modal title="Variables, locals & outputs" bind:open>
+<Modal {title} bind:open>
 	<div class="space-y-5">
 		<!-- Variables -->
 		<section>

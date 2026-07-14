@@ -135,13 +135,22 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err = s.store.Update(id, func(p *model.Project) error {
-		p.Variables = vars
-		p.Locals = locals
-		p.Outputs = outputs
-		return nil
+		if req.Module == "" {
+			p.Variables, p.Locals, p.Outputs = vars, locals, outputs
+			return nil
+		}
+		for i := range p.LocalModules {
+			if p.LocalModules[i].Name == req.Module {
+				p.LocalModules[i].Variables = vars
+				p.LocalModules[i].Locals = locals
+				p.LocalModules[i].Outputs = outputs
+				return nil
+			}
+		}
+		return store.ErrNotFound
 	})
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, http.StatusNotFound, "project not found")
+		writeErr(w, http.StatusNotFound, "project or module not found")
 		return
 	}
 	if err != nil {
@@ -194,31 +203,34 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 
 	var saved model.Resource
 	err = s.store.Update(id, func(p *model.Project) error {
+		slice, ok := resourceSlice(p, req.Module)
+		if !ok {
+			return store.ErrNotFound
+		}
 		res := model.Resource{ID: req.ID, Type: req.Type, Name: req.Name, Attrs: attrs, DependsOn: req.DependsOn}
 		if res.ID == "" {
 			res.ID = uuid.NewString()
 		}
-		// Ensure a provider instance exists for this resource type, using the
-		// real source supplied by the client (e.g. "hellscrimson/arcane").
+		// Provider instances always live on the root; local modules inherit them.
 		ensureProvider(p, req.Type, req.ProviderSource)
 
-		// Replace by id if present, else append.
+		// Replace by id if present, else append (within the target scope).
 		replaced := false
-		for i := range p.Resources {
-			if p.Resources[i].ID == res.ID {
-				p.Resources[i] = res
+		for i := range *slice {
+			if (*slice)[i].ID == res.ID {
+				(*slice)[i] = res
 				replaced = true
 				break
 			}
 		}
 		if !replaced {
-			p.Resources = append(p.Resources, res)
+			*slice = append(*slice, res)
 		}
 		saved = res
 		return nil
 	})
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, http.StatusNotFound, "project not found")
+		writeErr(w, http.StatusNotFound, "project or module not found")
 		return
 	}
 	if err != nil {
@@ -231,14 +243,19 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	rid := chi.URLParam(r, "rid")
+	module := r.URL.Query().Get("module")
 	err := s.store.Update(id, func(p *model.Project) error {
-		out := p.Resources[:0]
-		for _, res := range p.Resources {
+		slice, ok := resourceSlice(p, module)
+		if !ok {
+			return store.ErrNotFound
+		}
+		out := (*slice)[:0]
+		for _, res := range *slice {
 			if res.ID != rid {
 				out = append(out, res)
 			}
 		}
-		p.Resources = out
+		*slice = out
 		return nil
 	})
 	if errors.Is(err, store.ErrNotFound) {
@@ -254,7 +271,23 @@ func (s *Server) handleProjectHCL(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "project not found")
 		return
 	}
-	out, err := hclgen.Generate(p)
+	var out []byte
+	if m := r.URL.Query().Get("module"); m != "" {
+		found := false
+		for _, lm := range p.LocalModules {
+			if lm.Name == m {
+				out, err = hclgen.GenerateModuleFile(lm)
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeErr(w, http.StatusNotFound, "module not found")
+			return
+		}
+	} else {
+		out, err = hclgen.Generate(p)
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "generate: "+err.Error())
 		return

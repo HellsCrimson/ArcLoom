@@ -8,11 +8,13 @@
 	let {
 		schema,
 		values = $bindable(),
-		references = []
+		references = [],
+		secrets = []
 	}: {
 		schema: NormalizedSchema;
 		values: Record<string, AttrValue>;
 		references?: string[];
+		secrets?: string[];
 	} = $props();
 
 	const required = $derived(schema.fields.filter((f) => f.required));
@@ -52,7 +54,7 @@
 							<p class="mb-1.5 text-xs leading-snug text-[var(--al-muted)]">{f.description}</p>
 						{/if}
 						{#if values[f.name]}
-							<FieldRenderer field={f} bind:value={values[f.name]} {references} />
+							<FieldRenderer field={f} bind:value={values[f.name]} {references} {secrets} />
 						{/if}
 					</div>
 				{/each}

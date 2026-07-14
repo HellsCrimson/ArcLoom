@@ -13,9 +13,9 @@ import (
 
 const configFile = "arcloom.yaml"
 
-// Generator renders a project to HCL. Injected so the store stays independent
-// of the hclgen package.
-type Generator func(*model.Project) ([]byte, error)
+// Generator renders a project to a set of files keyed by path relative to the
+// generated/ directory. Injected so the store stays independent of hclgen.
+type Generator func(*model.Project) (map[string][]byte, error)
 
 // Disk is a Store that keeps one folder per project under root:
 //
@@ -108,12 +108,18 @@ func (d *Disk) persist(p *model.Project) error {
 		return err
 	}
 	// Regenerate the .tf so the folder is a usable Terraform/OpenTofu project.
+	// The generated/ dir is rebuilt each time so removed modules leave no stale
+	// files.
 	if d.gen != nil {
-		hcl, err := d.gen(p)
+		files, err := d.gen(p)
 		if err == nil {
 			genDir := filepath.Join(dir, "generated")
-			if os.MkdirAll(genDir, 0o755) == nil {
-				_ = os.WriteFile(filepath.Join(genDir, "main.tf"), hcl, 0o644)
+			os.RemoveAll(genDir)
+			for rel, content := range files {
+				full := filepath.Join(genDir, rel)
+				if os.MkdirAll(filepath.Dir(full), 0o755) == nil {
+					_ = os.WriteFile(full, content, 0o644)
+				}
 			}
 		}
 	}

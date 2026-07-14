@@ -37,6 +37,23 @@ func Generate(p *model.Project) ([]byte, error) {
 			return nil, err
 		}
 	}
+	// Auto-declare a sensitive input variable for each referenced secret that the
+	// user hasn't already declared, so var.<name> resolves.
+	declared := map[string]bool{}
+	for _, v := range p.Variables {
+		declared[v.Name] = true
+	}
+	for _, ref := range CollectSecretRefs(p) {
+		name := model.SecretVarName(ref)
+		if declared[name] {
+			continue
+		}
+		declared[name] = true
+		body.AppendNewline()
+		if err := writeVariableBlock(body, model.Variable{Name: name, Type: "string", Sensitive: true}); err != nil {
+			return nil, err
+		}
+	}
 	if len(p.Locals) > 0 {
 		body.AppendNewline()
 		if err := writeLocalsBlock(body, p.Locals); err != nil {
@@ -58,6 +75,12 @@ func Generate(p *model.Project) ([]byte, error) {
 	for _, m := range p.Modules {
 		body.AppendNewline()
 		if err := writeModuleBlock(body, m); err != nil {
+			return nil, err
+		}
+	}
+	for _, lm := range p.LocalModules {
+		body.AppendNewline()
+		if err := writeLocalModuleCall(body, lm); err != nil {
 			return nil, err
 		}
 	}
@@ -199,6 +222,79 @@ func writeModuleBlock(body *hclwrite.Body, m model.Module) error {
 	return writeAttrs(b, m.Config)
 }
 
+// writeLocalModuleCall emits the root's call to a local module:
+// module "<name>" { source = "./modules/<name>"; <inputs> }
+func writeLocalModuleCall(body *hclwrite.Body, lm model.LocalModule) error {
+	blk := body.AppendNewBlock("module", []string{lm.Name})
+	b := blk.Body()
+	b.SetAttributeValue("source", cty.StringVal("./modules/"+lm.Name))
+	return writeAttrs(b, lm.Inputs)
+}
+
+// GenerateModuleFile renders a local module's own file (variables, locals, data,
+// resources, outputs) — no terraform{} or provider{} blocks (inherited).
+func GenerateModuleFile(lm model.LocalModule) ([]byte, error) {
+	f := hclwrite.NewEmptyFile()
+	body := f.Body()
+	first := true
+	nl := func() {
+		if !first {
+			body.AppendNewline()
+		}
+		first = false
+	}
+	for _, v := range lm.Variables {
+		nl()
+		if err := writeVariableBlock(body, v); err != nil {
+			return nil, err
+		}
+	}
+	if len(lm.Locals) > 0 {
+		nl()
+		if err := writeLocalsBlock(body, lm.Locals); err != nil {
+			return nil, err
+		}
+	}
+	for _, d := range lm.DataSources {
+		nl()
+		if err := writeBlockWithKeyword(body, "data", d); err != nil {
+			return nil, err
+		}
+	}
+	for _, r := range lm.Resources {
+		nl()
+		if err := writeBlockWithKeyword(body, "resource", r); err != nil {
+			return nil, err
+		}
+	}
+	for _, o := range lm.Outputs {
+		nl()
+		if err := writeOutputBlock(body, o); err != nil {
+			return nil, err
+		}
+	}
+	return hclwrite.Format(f.Bytes()), nil
+}
+
+// GenerateFiles renders the whole project as a set of files keyed by path
+// relative to the generated/ directory: "main.tf" plus one
+// "modules/<name>/main.tf" per local module.
+func GenerateFiles(p *model.Project) (map[string][]byte, error) {
+	root, err := Generate(p)
+	if err != nil {
+		return nil, err
+	}
+	files := map[string][]byte{"main.tf": root}
+	for _, lm := range p.LocalModules {
+		mf, err := GenerateModuleFile(lm)
+		if err != nil {
+			return nil, fmt.Errorf("module %q: %w", lm.Name, err)
+		}
+		files["modules/"+lm.Name+"/main.tf"] = mf
+	}
+	return files, nil
+}
+
 // writeAttrs emits attributes in sorted key order.
 func writeAttrs(body *hclwrite.Body, attrs map[string]model.AttrValue) error {
 	names := make([]string, 0, len(attrs))
@@ -232,8 +328,9 @@ func setAttr(body *hclwrite.Body, name string, v model.AttrValue) error {
 		}
 		body.SetAttributeRaw(name, toks)
 	case model.ModeSecret:
-		// Stub: reference a variable named after the secret, never inline.
-		trav, err := parseTraversal("var." + secretVarName(v.SecretRef))
+		// A secret is referenced as an input variable; its value is injected as
+		// TF_VAR_<name> at run time and never written to HCL.
+		trav, err := parseTraversal("var." + model.SecretVarName(v.SecretRef))
 		if err != nil {
 			return fmt.Errorf("attribute %q: %w", name, err)
 		}
@@ -279,9 +376,4 @@ func tokensForExpr(expr string) (hclwrite.Tokens, error) {
 		return nil, fmt.Errorf("could not parse expression")
 	}
 	return attr.Expr().BuildTokens(nil), nil
-}
-
-func secretVarName(ref string) string {
-	r := strings.NewReplacer("/", "_", "-", "_", ".", "_", " ", "_")
-	return r.Replace(ref)
 }

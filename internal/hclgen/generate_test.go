@@ -88,6 +88,37 @@ func TestGenerate_DependsOn(t *testing.T) {
 	}
 }
 
+func TestGenerate_SecretEmitsSensitiveVariable(t *testing.T) {
+	p := &model.Project{
+		Providers: []model.ProviderInstance{{Key: "random", Source: "hashicorp/random"}},
+		Resources: []model.Resource{
+			{Type: "random_password", Name: "db", Attrs: map[string]model.AttrValue{
+				"override_special": {Mode: model.ModeSecret, SecretRef: "db_pw"},
+			}},
+		},
+	}
+	out, err := Generate(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	// Reference is var.db_pw, and a sensitive variable is declared for it.
+	if !strings.Contains(s, "override_special = var.db_pw") {
+		t.Errorf("secret not referenced as var.db_pw:\n%s", s)
+	}
+	if !strings.Contains(s, `variable "db_pw"`) || !strings.Contains(s, "sensitive = true") {
+		t.Errorf("sensitive variable for secret not declared:\n%s", s)
+	}
+	// The secret value/name must not appear as a literal string anywhere.
+	if strings.Contains(s, `"db_pw"`) && !strings.Contains(s, `variable "db_pw"`) {
+		t.Errorf("unexpected literal secret name")
+	}
+	refs := CollectSecretRefs(p)
+	if len(refs) != 1 || refs[0] != "db_pw" {
+		t.Errorf("CollectSecretRefs: %v", refs)
+	}
+}
+
 func TestGenerate_InvalidExpressionFails(t *testing.T) {
 	p := &model.Project{
 		Resources: []model.Resource{

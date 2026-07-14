@@ -10,13 +10,15 @@
 	let {
 		field,
 		value = $bindable(),
-		references = []
-	}: { field: Field; value: AttrValue; references?: string[] } = $props();
+		references = [],
+		secrets = []
+	}: { field: Field; value: AttrValue; references?: string[]; secrets?: string[] } = $props();
 
 	const modes: { id: ValueMode; label: string }[] = [
 		{ id: 'literal', label: 'Literal' },
 		{ id: 'reference', label: 'Reference' },
-		{ id: 'expression', label: 'Expression' }
+		{ id: 'expression', label: 'Expression' },
+		{ id: 'secret', label: 'Secret' }
 	];
 
 	function setMode(m: ValueMode) {
@@ -56,6 +58,17 @@
 		{/if}
 	{:else if value.mode === 'expression'}
 		<input class="{inputCls} mono" placeholder="raw HCL expression" bind:value={value.expr} />
+	{:else if value.mode === 'secret'}
+		{#if secrets.length > 0}
+			<select class={inputCls} bind:value={value.secretRef}>
+				<option value="" disabled selected={!value.secretRef}>Select a secret…</option>
+				{#each secrets as name (name)}
+					<option value={name}>🔒 {name}</option>
+				{/each}
+			</select>
+		{:else}
+			<input class="{inputCls} mono" placeholder="secret name (add one in Secrets)" bind:value={value.secretRef} />
+		{/if}
 	{:else}
 		<PlainField {field} bind:value={value.literal} />
 	{/if}

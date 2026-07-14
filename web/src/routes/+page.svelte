@@ -5,10 +5,12 @@
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import ProjectConfig from '$lib/components/ProjectConfig.svelte';
+	import SecretsModal from '$lib/components/SecretsModal.svelte';
+	import GitPanel from '$lib/components/GitPanel.svelte';
 	import EditorView from '$lib/editor/EditorView.svelte';
-	import type { ProjectConfig as ProjectConfigT } from '$lib/types';
+	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Settings, FileDown, Database, LayoutDashboard, Variable as VariableIcon
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -20,7 +22,7 @@
 	let project = $state<Project | null>(null);
 	let engine = $state('');
 
-	let providerSource = $state('hashicorp/random');
+	let providerSource = $state('');
 	let resourceTypes = $state<string[]>([]);
 	let selectedType = $state('');
 	let schema = $state<NormalizedSchema | null>(null);
@@ -55,16 +57,58 @@
 
 	// Project config modal (variables / locals / outputs)
 	let showConfig = $state(false);
+	// Import dropdown in the top bar
+	let showImportMenu = $state(false);
 
-	const configCount = $derived(
-		(project?.variables?.length ?? 0) + (project?.locals?.length ?? 0) + (project?.outputs?.length ?? 0)
-	);
+	// Git
+	let showGit = $state(false);
+
+	// Secrets
+	let showSecrets = $state(false);
+	let secretsList = $state<SecretMeta[]>([]);
+	let secretsLocalEnabled = $state(false);
+	const secretNames = $derived(secretsList.map((s) => s.name));
+
+	async function loadSecrets() {
+		if (!project) return;
+		try {
+			const res = await api.listSecrets(project.id);
+			secretsList = res.secrets ?? [];
+			secretsLocalEnabled = res.localEnabled;
+		} catch {
+			secretsList = [];
+		}
+	}
+
+	async function addSecret(name: string, value: string) {
+		if (!project) return;
+		busy = 'secret';
+		try {
+			await api.setSecret(project.id, name, value);
+			await loadSecrets();
+			await refreshHcl();
+		} catch (err) {
+			error = (err as Error).message;
+		} finally {
+			busy = '';
+		}
+	}
+
+	async function deleteSecret(name: string) {
+		if (!project) return;
+		try {
+			await api.deleteSecret(project.id, name);
+			await loadSecrets();
+		} catch (err) {
+			error = (err as Error).message;
+		}
+	}
 
 	async function saveConfig(config: ProjectConfigT) {
 		if (!project) return;
 		busy = 'config';
 		try {
-			project = await api.setConfig(project.id, config);
+			project = await api.setConfig(project.id, config, activeModule ?? undefined);
 			await refreshProjects();
 			await refreshHcl();
 			showConfig = false;
@@ -75,10 +119,32 @@
 		}
 	}
 
-	const savedResources = $derived(project?.resources ?? []);
+	// Module scoping: activeModule = null means the root ("main") module.
+	let activeModule = $state<string | null>(null);
+	const localModules = $derived(project?.localModules ?? []);
+	const activeMod = $derived(activeModule ? (localModules.find((m) => m.name === activeModule) ?? null) : null);
+	const savedResources = $derived(activeMod ? (activeMod.resources ?? []) : (project?.resources ?? []));
 	const providers = $derived(project?.providers ?? []);
-	const references = $derived(
-		savedResources.flatMap((r) => [`${r.type}.${r.name}.id`, `${r.type}.${r.name}.result`])
+	const references = $derived.by(() => {
+		const refs: string[] = [];
+		for (const r of savedResources) refs.push(`${r.type}.${r.name}.id`, `${r.type}.${r.name}.result`);
+		if (!activeMod) {
+			// From the root you can reference each module's outputs.
+			for (const m of localModules) for (const o of m.outputs ?? []) refs.push(`module.${m.name}.${o.name}`);
+		} else {
+			// Inside a module you can reference its own input variables.
+			for (const v of activeMod.variables ?? []) refs.push(`var.${v.name}`);
+		}
+		return refs;
+	});
+	// Config (variables/locals/outputs) for the active scope, fed to the modal.
+	const scopeConfig = $derived({
+		variables: (activeMod ?? project)?.variables ?? [],
+		locals: (activeMod ?? project)?.locals ?? [],
+		outputs: (activeMod ?? project)?.outputs ?? []
+	});
+	const configCount = $derived(
+		scopeConfig.variables.length + scopeConfig.locals.length + scopeConfig.outputs.length
 	);
 
 	onMount(async () => {
@@ -107,6 +173,7 @@
 			engine = project.engine || defaultEngine;
 			localStorage.setItem(LAST_PROJECT_KEY, id);
 			await refreshHcl();
+			await loadSecrets();
 			if (project.providers?.length) providerSource = project.providers[0].source;
 		} catch (err) {
 			error = (err as Error).message;
@@ -162,14 +229,119 @@
 		planLog = [];
 		planResult = '';
 		resourceTypes = [];
+		activeModule = null;
 	}
 
 	async function refreshHcl() {
 		if (!project) return;
 		try {
-			hcl = await api.projectHCL(project.id);
+			hcl = await api.projectHCL(project.id, activeModule ?? undefined);
 		} catch {
 			hcl = '';
+		}
+	}
+
+	// Switch the editing scope (null = root/main, else a local module).
+	async function selectScope(mod: string | null) {
+		activeModule = mod;
+		schema = null;
+		selectedType = '';
+		editingId = null;
+		formKind = 'resource';
+		values = {};
+		await refreshHcl();
+	}
+
+	// ---- local modules ----
+	let showNewModule = $state(false);
+	let nmName = $state('');
+	let showInputs = $state(false);
+
+	async function createModule() {
+		if (!project || !nmName.trim()) return;
+		busy = 'module';
+		try {
+			project = await api.createLocalModule(project.id, nmName.trim());
+			await refreshProjects();
+			showNewModule = false;
+			await selectScope(nmName.trim());
+			nmName = '';
+		} catch (err) {
+			error = (err as Error).message;
+		} finally {
+			busy = '';
+		}
+	}
+
+	async function deleteModule(name: string) {
+		if (!project) return;
+		if (!confirm(`Delete module "${name}" and all its resources?`)) return;
+		try {
+			project = await api.deleteLocalModule(project.id, name);
+			await refreshProjects();
+			if (activeModule === name) await selectScope(null);
+			else await refreshHcl();
+		} catch (err) {
+			error = (err as Error).message;
+		}
+	}
+
+	async function deleteScopedResource(rid: string) {
+		if (!project) return;
+		try {
+			await api.deleteResource(project.id, rid, activeModule ?? undefined);
+			project = await api.getProject(project.id);
+			await refreshProjects();
+			await refreshHcl();
+			if (editingId === rid) resetFormOnly();
+		} catch (err) {
+			error = (err as Error).message;
+		}
+	}
+
+	function resetFormOnly() {
+		schema = null;
+		selectedType = '';
+		editingId = null;
+		values = {};
+	}
+
+	// Draft values for the module-inputs modal (raw HCL text per variable).
+	let inputDraft = $state<Record<string, string>>({});
+	$effect(() => {
+		if (showInputs && activeMod) {
+			const d: Record<string, string> = {};
+			for (const v of activeMod.variables ?? []) {
+				const av = activeMod.inputs?.[v.name];
+				d[v.name] = av
+					? (av.mode === 'expression' ? (av.expr ?? '') : av.mode === 'reference' ? (av.ref ?? '') : av.mode === 'literal' ? JSON.stringify(av.literal ?? '') : '')
+					: '';
+			}
+			inputDraft = d;
+		}
+	});
+
+	function submitInputs() {
+		const inputs: Record<string, AttrValue> = {};
+		for (const [k, text] of Object.entries(inputDraft)) {
+			const t = (text ?? '').trim();
+			if (t) inputs[k] = { mode: 'expression', expr: t };
+		}
+		saveModuleInputs(inputs);
+	}
+
+	async function saveModuleInputs(inputs: Record<string, AttrValue>) {
+		if (!project || !activeModule) return;
+		busy = 'inputs';
+		try {
+			project = await api.setModuleInputs(project.id, activeModule, inputs);
+			await refreshProjects();
+			await refreshHcl();
+			showInputs = false;
+		} catch (err) {
+			error = (err as Error).message;
+		} finally {
+			busy = '';
 		}
 	}
 
@@ -269,6 +441,8 @@
 				out[name] = { mode: 'reference', ref: v.ref };
 			} else if (v.mode === 'expression' && v.expr) {
 				out[name] = { mode: 'expression', expr: v.expr };
+			} else if (v.mode === 'secret' && v.secretRef) {
+				out[name] = { mode: 'secret', secretRef: v.secretRef };
 			}
 		}
 		return out;
@@ -284,12 +458,16 @@
 				type: selectedType,
 				name: resourceName,
 				providerSource,
+				module: activeModule ?? undefined,
 				attrs: buildAttrs()
 			});
 			project = await api.getProject(project.id);
 			await refreshProjects();
 			await refreshHcl();
-			editingId = editingId ?? project.resources.find((r) => r.name === resourceName && r.type === selectedType)?.id ?? null;
+			const scopeRes = activeModule
+				? (project.localModules?.find((m) => m.name === activeModule)?.resources ?? [])
+				: project.resources;
+			editingId = editingId ?? scopeRes.find((r) => r.name === resourceName && r.type === selectedType)?.id ?? null;
 		} catch (err) {
 			error = (err as Error).message;
 		} finally {
@@ -451,9 +629,11 @@
 	const btnPrimary = `${btn} bg-[var(--al-accent)] text-white hover:brightness-110`;
 	const btnGhost = `${btn} border border-[var(--al-border)] text-[var(--al-text)] hover:bg-[var(--al-panel-2)]`;
 	const iconBtn = 'rounded-md p-1.5 text-[var(--al-muted)] hover:bg-[var(--al-panel-2)] hover:text-[var(--al-text)]';
-	const sideBtn = 'flex w-full items-center gap-1.5 rounded-md border border-[var(--al-border)] px-2 py-1.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]';
+	const hdrBtn = 'inline-flex items-center gap-1.5 rounded-md border border-[var(--al-border)] px-2.5 py-1 text-xs font-medium text-[var(--al-text)] hover:bg-[var(--al-panel-2)] disabled:opacity-40';
 	const ta = 'mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-bg)] p-2.5 text-xs text-[var(--al-text)] outline-none focus:border-[var(--al-accent)]';
 </script>
+
+<svelte:window onclick={() => (showImportMenu = false)} />
 
 <div class="flex h-screen flex-col">
 	<header class="flex items-center gap-3 border-b border-[var(--al-border)] bg-[var(--al-panel)] px-4 py-2">
@@ -475,6 +655,33 @@
 				<button class={iconBtn} title="Delete project" onclick={removeProject} aria-label="Delete project"><Trash2 size={16} /></button>
 			{/if}
 		</div>
+
+		{#if project}
+			<div class="ml-3 flex items-center gap-1.5 border-l border-[var(--al-border)] pl-3">
+				<button class={hdrBtn} onclick={openEditor}><LayoutDashboard size={14} /> Editor</button>
+				<button class={hdrBtn} onclick={() => (showConfig = true)}>
+					<VariableIcon size={14} /> Variables{#if configCount > 0}<span class="text-[10px] text-[var(--al-muted)]">{configCount}</span>{/if}
+				</button>
+				<button class={hdrBtn} onclick={() => { loadSecrets(); showSecrets = true; }}>
+					<KeyRound size={14} /> Secrets{#if secretsList.length > 0}<span class="text-[10px] text-[var(--al-muted)]">{secretsList.length}</span>{/if}
+				</button>
+				<button class={hdrBtn} onclick={() => (showGit = true)}>
+					<GitBranch size={14} /> Git
+				</button>
+				<div class="relative">
+					<button class={hdrBtn} onclick={(e) => { e.stopPropagation(); importMsg = ''; showImportMenu = !showImportMenu; }}>
+						<FileDown size={14} /> Import <ChevronDown size={13} />
+					</button>
+					{#if showImportMenu}
+						<div class="absolute left-0 top-full z-20 mt-1 w-40 overflow-hidden rounded-md border border-[var(--al-border)] bg-[var(--al-panel)] shadow-xl">
+							<button class="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]" onclick={() => { showImportMenu = false; showImportHcl = true; }}><FileDown size={13} /> Import HCL</button>
+							<button class="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]" onclick={() => { showImportMenu = false; showImportState = true; }}><Database size={13} /> Import state</button>
+						</div>
+					{/if}
+				</div>
+			</div>
+		{/if}
+
 		<div class="ml-auto flex items-center gap-2 text-sm">
 			<span class="text-xs text-[var(--al-muted)]">engine</span>
 			<span class="mono rounded border border-[var(--al-border)] px-2 py-0.5 text-xs text-[var(--al-muted)]">{engine || defaultEngine}</span>
@@ -494,7 +701,7 @@
 				<div>
 					<label for="provider-source" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Provider</label>
 					<div class="flex gap-1.5">
-						<input id="provider-source" class="min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={providerSource} placeholder="hashicorp/random" />
+						<input id="provider-source" class="min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={providerSource} placeholder="" />
 						<button class={btnGhost} onclick={addProvider} disabled={busy === 'provider'}>
 							{#if busy === 'provider'}<Loader2 size={14} class="animate-spin" />{:else}Add{/if}
 						</button>
@@ -528,28 +735,52 @@
 					</div>
 				{/if}
 
-				{#if savedResources.length > 0}
-					<div>
-						<div class="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">In project</div>
-						<ul class="space-y-0.5">
-							{#each savedResources as r (r.id)}
-								<li>
-									<button class="mono w-full truncate rounded px-2 py-1 text-left text-[11px] {editingId === r.id ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => editResource(r)} title="Edit {r.type}.{r.name}">{r.type}.{r.name}</button>
+				<!-- Structure tree: main + local modules as folders -->
+				<div>
+					<div class="mb-1 flex items-center justify-between">
+						<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Structure</span>
+						<button class={iconBtn} title="New module" aria-label="New module" onclick={() => { nmName = ''; showNewModule = true; }}><Plus size={14} /></button>
+					</div>
+
+					<!-- main (root) -->
+					<button class="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs {activeModule === null ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => selectScope(null)}>
+						<Folder size={12} /> main
+						<span class="ml-auto text-[10px]">{project.resources.length}</span>
+					</button>
+					{#if activeModule === null}
+						<ul class="mb-1 ml-3 space-y-0.5 border-l border-[var(--al-border)] pl-2">
+							{#each project.resources as r (r.id)}
+								<li class="group flex items-center">
+									<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px] {editingId === r.id ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}" onclick={() => editResource(r)} title="Edit {r.type}.{r.name}">{r.type}.{r.name}</button>
+									<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteScopedResource(r.id)} aria-label="Delete"><Trash2 size={11} /></button>
 								</li>
 							{/each}
 						</ul>
-					</div>
-				{/if}
+					{/if}
 
-				<div class="space-y-1.5 border-t border-[var(--al-border)] pt-3">
-					<button class={sideBtn} onclick={() => (showConfig = true)}>
-						<VariableIcon size={14} /> Variables & outputs{#if configCount > 0}<span class="ml-auto text-[10px] text-[var(--al-muted)]">{configCount}</span>{/if}
-					</button>
-					<button class={sideBtn} onclick={() => { importMsg=''; showImportHcl = true; }}><FileDown size={14} /> Import HCL</button>
-					<button class={sideBtn} onclick={() => { importMsg=''; showImportState = true; }}><Database size={14} /> Import state</button>
-					<button class={sideBtn} onclick={openEditor}>
-						<LayoutDashboard size={14} /> Visual editor
-					</button>
+					<!-- local modules -->
+					{#each localModules as m (m.name)}
+						<div class="group flex items-center">
+							<button class="flex flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs {activeModule === m.name ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => selectScope(m.name)}>
+								<FolderGit2 size={12} /> modules/{m.name}
+								<span class="ml-auto text-[10px]">{(m.resources ?? []).length}</span>
+							</button>
+							<button class="px-1 opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteModule(m.name)} aria-label="Delete module"><Trash2 size={12} /></button>
+						</div>
+						{#if activeModule === m.name}
+							<ul class="mb-1 ml-3 space-y-0.5 border-l border-[var(--al-border)] pl-2">
+								{#each m.resources ?? [] as r (r.id)}
+									<li class="group flex items-center">
+										<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px] {editingId === r.id ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}" onclick={() => editResource(r)} title="Edit {r.type}.{r.name}">{r.type}.{r.name}</button>
+										<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteScopedResource(r.id)} aria-label="Delete"><Trash2 size={11} /></button>
+									</li>
+								{/each}
+								<li>
+									<button class="mt-0.5 text-[10px] text-[var(--al-muted)] hover:text-[var(--al-accent)]" onclick={() => (showInputs = true)}>⚙ module inputs</button>
+								</li>
+							</ul>
+						{/if}
+					{/each}
 				</div>
 			{:else}
 				<p class="text-xs text-[var(--al-muted)]">Create a project to begin.</p>
@@ -571,7 +802,7 @@
 				{#if (schema.fields?.length ?? 0) === 0}
 					<p class="text-sm text-[var(--al-muted)]">This provider has no configurable arguments.</p>
 				{:else}
-					<SchemaForm {schema} bind:values {references} />
+					<SchemaForm {schema} bind:values {references} secrets={secretNames} />
 				{/if}
 			{:else if schema}
 				<div class="mb-4 flex items-end gap-3">
@@ -582,7 +813,7 @@
 					<div class="mono text-sm text-[var(--al-muted)]">resource "<span class="text-[var(--al-accent)]">{selectedType}</span>" "{resourceName}"{#if editingId}<span class="ml-1 text-[10px] uppercase">editing</span>{/if}</div>
 					<button class={btnPrimary + ' ml-auto'} onclick={saveResource} disabled={busy === 'save'}><Save size={15} /> {editingId ? 'Update' : 'Save'} resource</button>
 				</div>
-				<SchemaForm {schema} bind:values {references} />
+				<SchemaForm {schema} bind:values {references} secrets={secretNames} />
 			{:else}
 				<div class="grid h-full place-items-center text-center text-sm text-[var(--al-muted)]">
 					Add a provider and pick a resource type, select an existing resource to edit,<br />or import existing HCL / state.
@@ -638,7 +869,60 @@
 </Modal>
 
 {#if project}
-	<ProjectConfig {project} bind:open={showConfig} saving={busy === 'config'} onSave={saveConfig} />
+	<ProjectConfig
+		config={scopeConfig}
+		title={activeModule ? `Module "${activeModule}" — variables, locals & outputs` : 'Variables, locals & outputs'}
+		bind:open={showConfig}
+		saving={busy === 'config'}
+		onSave={saveConfig}
+	/>
+	<SecretsModal
+		bind:open={showSecrets}
+		secrets={secretsList}
+		localEnabled={secretsLocalEnabled}
+		busy={busy === 'secret'}
+		onAdd={addSecret}
+		onDelete={deleteSecret}
+	/>
+	<GitPanel
+		bind:open={showGit}
+		projectId={project.id}
+		onRestored={async (p) => { project = p; await refreshProjects(); await refreshHcl(); }}
+	/>
+
+	<!-- New module modal -->
+	<Modal title="New module" bind:open={showNewModule}>
+		<label for="nm-name" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Module name</label>
+		<input id="nm-name" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="vpc" bind:value={nmName} onkeydown={(e) => { if (e.key === 'Enter') createModule(); }} />
+		<p class="mt-1.5 text-xs text-[var(--al-muted)]">Creates <span class="mono">modules/{nmName || 'name'}/</span> with its own resources, variables, and outputs.</p>
+		{#snippet footer()}
+			<button class={btnGhost} onclick={() => (showNewModule = false)}>Cancel</button>
+			<button class={btnPrimary} onclick={createModule} disabled={busy === 'module' || !nmName.trim()}>{#if busy === 'module'}<Loader2 size={14} class="animate-spin" />{/if} Create</button>
+		{/snippet}
+	</Modal>
+
+	<!-- Module inputs modal -->
+	{#if activeMod}
+		<Modal title={`Module "${activeMod.name}" — inputs from root`} bind:open={showInputs}>
+			{#if (activeMod.variables ?? []).length === 0}
+				<p class="text-sm text-[var(--al-muted)]">This module has no variables yet. Add variables in the module's Variables panel, then set their values here.</p>
+			{:else}
+				<p class="mb-2 text-xs text-[var(--al-muted)]">Values the root passes to <span class="mono">module "{activeMod.name}"</span> (raw HCL).</p>
+				<div class="space-y-2">
+					{#each activeMod.variables ?? [] as v (v.name)}
+						<div class="flex items-center gap-2">
+							<span class="mono w-32 truncate text-xs text-[var(--al-text)]">{v.name}</span>
+							<input class="mono flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" placeholder="value (HCL)" bind:value={inputDraft[v.name]} />
+						</div>
+					{/each}
+				</div>
+			{/if}
+			{#snippet footer()}
+				<button class={btnGhost} onclick={() => (showInputs = false)}>Cancel</button>
+				<button class={btnPrimary} onclick={submitInputs} disabled={busy === 'inputs'}>{#if busy === 'inputs'}<Loader2 size={14} class="animate-spin" />{/if} Save inputs</button>
+			{/snippet}
+		</Modal>
+	{/if}
 {/if}
 
 <!-- Import HCL modal -->
