@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Project, Resource } from '$lib/types';
-	import { highlightHcl } from './highlight';
 	import { deriveEdges, typeColor, typeLetter, layoutPositions, layoutMissing, LAYOUTS, type Edge, type LayoutMode } from './graph';
+	import HclView from './HclView.svelte';
 	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group } from 'lucide-svelte';
 
 	const LAYOUT_ICONS: Record<LayoutMode, typeof Network> = {
@@ -142,8 +142,6 @@
 		if (!from) return null;
 		return `M ${from.x + NODE_W} ${from.y + DOT_Y} L ${connecting.x} ${connecting.y}`;
 	});
-
-	const hclLines = $derived(highlightHcl(hcl || ''));
 
 	// World extent large enough to hold all nodes with slack for panning.
 	const worldSize = $derived.by(() => {
@@ -320,7 +318,7 @@
 <svelte:window onmousemove={onMove} onmouseup={onUp} />
 
 <div
-	class="fixed inset-0 z-50 flex"
+	class="flex h-full w-full min-h-0"
 	style="background:#0a0e15;color:#c9d3dc;font-family:'Inter',system-ui,sans-serif;overflow:hidden;user-select:none;"
 >
 	<!-- Canvas -->
@@ -335,12 +333,6 @@
 		onmousedown={onCanvasDown}
 		onwheel={onWheel}
 	>
-		<!-- top-center brand -->
-		<div class="pointer-events-none absolute left-1/2 top-3.5 z-[4] flex -translate-x-1/2 items-center gap-2">
-			<div style="width:12px;height:12px;border-radius:3px;background:{accent};transform:rotate(45deg);box-shadow:0 0 14px {accent}80;"></div>
-			<div style="font-size:12.5px;font-weight:700;letter-spacing:0.02em;color:rgba(255,255,255,0.55);">ArcLoom · {project.name}</div>
-		</div>
-
 		<!-- layout presets -->
 		{#if project.resources.length > 1}
 			<div class="absolute left-1/2 top-12 z-[5] flex -translate-x-1/2 items-center gap-0.5" style="background:rgba(13,17,23,0.85);backdrop-filter:blur(8px);padding:4px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);box-shadow:0 8px 24px rgba(0,0,0,0.4);">
@@ -485,18 +477,11 @@
 	</div>
 
 	<!-- Live HCL panel -->
-	<div class="flex w-[440px] flex-none flex-col" style="background:#0b0f18;border-left:1px solid rgba(255,255,255,0.08);min-height:0;">
-		<div class="flex h-11 flex-none items-center justify-between border-b px-4" style="border-color:rgba(255,255,255,0.07);">
-			<div class="flex items-center gap-2">
-				<div style="width:6px;height:6px;border-radius:50%;background:#3fb950;"></div>
-				<div class="font-mono" style="font-size:12.5px;font-weight:600;color:#c9d3dc;">main.tf</div>
-			</div>
-			<div class="font-mono" style="font-size:11px;color:#5b6472;">{providerFooter}</div>
-		</div>
-		<div class="flex-1 overflow-auto px-[18px] py-4 font-mono" style="font-size:12.5px;line-height:1.7;">
-			{#each hclLines as line, i (i)}
-				<div>{#each line as tok, j (j)}<span style="color:{tok.c};white-space:pre;">{tok.t}</span>{/each}</div>
-			{/each}
-		</div>
+	<div class="w-[440px] flex-none" style="border-left:1px solid rgba(255,255,255,0.08);min-height:0;">
+		<HclView {hcl}>
+			{#snippet right()}
+				<div class="font-mono" style="font-size:11px;color:#5b6472;">{providerFooter}</div>
+			{/snippet}
+		</HclView>
 	</div>
 </div>

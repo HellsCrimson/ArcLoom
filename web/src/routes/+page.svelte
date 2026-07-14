@@ -8,6 +8,7 @@
 	import SecretsModal from '$lib/components/SecretsModal.svelte';
 	import GitPanel from '$lib/components/GitPanel.svelte';
 	import EditorView from '$lib/editor/EditorView.svelte';
+	import HclView from '$lib/editor/HclView.svelte';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
 		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon
@@ -549,7 +550,7 @@
 	function openEditor() {
 		if (!project) return;
 		error = '';
-		showEditor = true;
+		showEditor = !showEditor;
 	}
 
 	async function refreshProject() {
@@ -631,6 +632,10 @@
 	const iconBtn = 'rounded-md p-1.5 text-[var(--al-muted)] hover:bg-[var(--al-panel-2)] hover:text-[var(--al-text)]';
 	const hdrBtn = 'inline-flex items-center gap-1.5 rounded-md border border-[var(--al-border)] px-2.5 py-1 text-xs font-medium text-[var(--al-text)] hover:bg-[var(--al-panel-2)] disabled:opacity-40';
 	const ta = 'mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-bg)] p-2.5 text-xs text-[var(--al-text)] outline-none focus:border-[var(--al-accent)]';
+
+	// Accent as literal hex (for inline styles that concatenate/tint).
+	const accentHex = '#4c8dff';
+	const accentWeak = '#1f3a5f';
 </script>
 
 <svelte:window onclick={() => (showImportMenu = false)} />
@@ -658,7 +663,10 @@
 
 		{#if project}
 			<div class="ml-3 flex items-center gap-1.5 border-l border-[var(--al-border)] pl-3">
-				<button class={hdrBtn} onclick={openEditor}><LayoutDashboard size={14} /> Editor</button>
+				<button
+					class="{hdrBtn} {showEditor ? 'border-[var(--al-accent)] bg-[var(--al-accent-weak)] text-[var(--al-accent)]' : ''}"
+					onclick={openEditor}
+				><LayoutDashboard size={14} /> Editor</button>
 				<button class={hdrBtn} onclick={() => (showConfig = true)}>
 					<VariableIcon size={14} /> Variables{#if configCount > 0}<span class="text-[10px] text-[var(--al-muted)]">{configCount}</span>{/if}
 				</button>
@@ -696,6 +704,20 @@
 	{/if}
 
 	<div class="flex min-h-0 flex-1">
+		{#if showEditor && project}
+			<EditorView
+				{project}
+				{hcl}
+				accent="#4c8dff"
+				loadTypes={editorLoadTypes}
+				onAddType={editorAddType}
+				onEditResource={editorEditResource}
+				onDeleteResource={editorDeleteResource}
+				onRenameResource={(id, name) => resaveResource(id, { name })}
+				onSetDependsOn={(id, deps) => resaveResource(id, { dependsOn: deps })}
+				onClose={() => (showEditor = false)}
+			/>
+		{:else}
 		<aside class="w-64 shrink-0 space-y-3 overflow-y-auto border-r border-[var(--al-border)] bg-[var(--al-panel)] p-3">
 			{#if project}
 				<div>
@@ -821,20 +843,27 @@
 			{/if}
 		</main>
 
-		<aside class="flex w-[26rem] shrink-0 flex-col border-l border-[var(--al-border)] bg-[var(--al-panel)]">
-			<div class="flex items-center justify-between border-b border-[var(--al-border)] px-3 py-2">
-				<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Generated HCL</span>
-				<button class={btnGhost} onclick={runPlan} disabled={!project || busy === 'plan'}>
-					{#if busy === 'plan'}<Loader2 size={14} class="animate-spin" />{:else}<Play size={14} />{/if} Plan
-				</button>
+		<aside class="flex w-[26rem] shrink-0 flex-col border-l" style="border-color:rgba(255,255,255,0.08);">
+			<!-- Generated HCL — shares the graph editor's viewer for a consistent look -->
+			<div class="min-h-0 flex-[3]">
+				<HclView {hcl}>
+					{#snippet right()}
+						<button class={btnGhost} onclick={runPlan} disabled={!project || busy === 'plan'}>
+							{#if busy === 'plan'}<Loader2 size={14} class="animate-spin" />{:else}<Play size={14} />{/if} Plan
+						</button>
+					{/snippet}
+				</HclView>
 			</div>
-			<pre class="mono max-h-[45%] overflow-auto whitespace-pre-wrap px-3 py-2 text-[11px] text-[var(--al-text)]">{hcl || '// save a resource to preview HCL'}</pre>
-			<div class="border-t border-[var(--al-border)] px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">
-				Plan output
-				{#if planResult}<span class="ml-2 rounded bg-[var(--al-accent-weak)] px-1.5 py-0.5 text-[10px] normal-case text-[var(--al-accent)]">{planResult}</span>{/if}
+			<!-- Plan output -->
+			<div class="flex min-h-0 flex-[2] flex-col border-t" style="border-color:rgba(255,255,255,0.07);background:#0b0f18;">
+				<div class="flex h-11 flex-none items-center border-b px-4" style="border-color:rgba(255,255,255,0.07);">
+					<div class="font-mono" style="font-size:12.5px;font-weight:600;color:#c9d3dc;">plan output</div>
+					{#if planResult}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:{accentWeak};color:{accentHex};">{planResult}</span>{/if}
+				</div>
+				<pre class="flex-1 overflow-auto whitespace-pre-wrap px-[18px] py-3 font-mono" style="font-size:11.5px;line-height:1.6;color:#8b95a5;">{planLog.join('\n') || '// run plan to see output'}</pre>
 			</div>
-			<pre class="mono flex-1 overflow-auto whitespace-pre-wrap bg-[var(--al-bg)] px-3 py-2 text-[11px] text-[var(--al-muted)]">{planLog.join('\n') || '// run plan to see output'}</pre>
 		</aside>
+		{/if}
 	</div>
 </div>
 
@@ -953,18 +982,3 @@
 		</button>
 	{/snippet}
 </Modal>
-
-<!-- Visual editor (full-screen) -->
-{#if showEditor && project}
-	<EditorView
-		{project}
-		{hcl}
-		loadTypes={editorLoadTypes}
-		onAddType={editorAddType}
-		onEditResource={editorEditResource}
-		onDeleteResource={editorDeleteResource}
-		onRenameResource={(id, name) => resaveResource(id, { name })}
-		onSetDependsOn={(id, deps) => resaveResource(id, { dependsOn: deps })}
-		onClose={() => (showEditor = false)}
-	/>
-{/if}
