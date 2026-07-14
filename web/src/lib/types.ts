@@ -76,12 +76,51 @@ export interface ProviderInstance {
 	config?: Record<string, AttrValue>;
 }
 
+export interface Variable {
+	name: string;
+	type?: string;
+	default?: AttrValue;
+	description?: string;
+	sensitive?: boolean;
+}
+
+export interface Local {
+	name: string;
+	value: AttrValue;
+}
+
+export interface Output {
+	name: string;
+	value: AttrValue;
+	description?: string;
+	sensitive?: boolean;
+}
+
+export interface Module {
+	name: string;
+	source: string;
+	version?: string;
+	config?: Record<string, AttrValue>;
+}
+
 export interface Project {
 	id: string;
 	name: string;
 	engine: string;
 	providers: ProviderInstance[];
+	variables?: Variable[];
+	locals?: Local[];
+	dataSources?: Resource[];
 	resources: Resource[];
+	modules?: Module[];
+	outputs?: Output[];
+}
+
+// ProjectConfig is the editable subset (variables / locals / outputs).
+export interface ProjectConfig {
+	variables: Variable[];
+	locals: Local[];
+	outputs: Output[];
 }
 
 export interface ProjectSummary {

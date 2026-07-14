@@ -58,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/projects/{id}", s.handleGetProject)
 		r.Delete("/projects/{id}", s.handleDeleteProject)
 		r.Put("/projects/{id}/providers/{key}", s.handleSetProviderConfig)
+		r.Put("/projects/{id}/config", s.handleSetConfig)
 		r.Post("/projects/{id}/resources", s.handleUpsertResource)
 		r.Delete("/projects/{id}/resources/{rid}", s.handleDeleteResource)
 		r.Get("/projects/{id}/hcl", s.handleProjectHCL)

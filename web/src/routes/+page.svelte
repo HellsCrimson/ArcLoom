@@ -4,9 +4,11 @@
 	import type { AttrValue, Engine, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import ProjectConfig from '$lib/components/ProjectConfig.svelte';
 	import EditorView from '$lib/editor/EditorView.svelte';
+	import type { ProjectConfig as ProjectConfigT } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Settings, FileDown, Database, LayoutDashboard
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Settings, FileDown, Database, LayoutDashboard, Variable as VariableIcon
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -46,6 +48,33 @@
 	let importMsg = $state('');
 	let showEditor = $state(false);
 
+	// New-project modal
+	let showNewProject = $state(false);
+	let npName = $state('my-infra');
+	let npEngine = $state('tofu');
+
+	// Project config modal (variables / locals / outputs)
+	let showConfig = $state(false);
+
+	const configCount = $derived(
+		(project?.variables?.length ?? 0) + (project?.locals?.length ?? 0) + (project?.outputs?.length ?? 0)
+	);
+
+	async function saveConfig(config: ProjectConfigT) {
+		if (!project) return;
+		busy = 'config';
+		try {
+			project = await api.setConfig(project.id, config);
+			await refreshProjects();
+			await refreshHcl();
+			showConfig = false;
+		} catch (err) {
+			error = (err as Error).message;
+		} finally {
+			busy = '';
+		}
+	}
+
 	const savedResources = $derived(project?.resources ?? []);
 	const providers = $derived(project?.providers ?? []);
 	const references = $derived(
@@ -84,12 +113,18 @@
 		}
 	}
 
-	async function newProject() {
-		const name = prompt('New project name?', 'my-infra');
-		if (!name) return;
+	function newProject() {
+		npName = 'my-infra';
+		npEngine = defaultEngine;
+		showNewProject = true;
+	}
+
+	async function createProjectConfirmed() {
+		if (!npName.trim()) return;
 		busy = 'project';
 		try {
-			const p = await api.createProject(name, defaultEngine);
+			const p = await api.createProject(npName.trim(), npEngine);
+			showNewProject = false;
 			await refreshProjects();
 			await selectProject(p.id);
 		} catch (err) {
@@ -507,6 +542,9 @@
 				{/if}
 
 				<div class="space-y-1.5 border-t border-[var(--al-border)] pt-3">
+					<button class={sideBtn} onclick={() => (showConfig = true)}>
+						<VariableIcon size={14} /> Variables & outputs{#if configCount > 0}<span class="ml-auto text-[10px] text-[var(--al-muted)]">{configCount}</span>{/if}
+					</button>
 					<button class={sideBtn} onclick={() => { importMsg=''; showImportHcl = true; }}><FileDown size={14} /> Import HCL</button>
 					<button class={sideBtn} onclick={() => { importMsg=''; showImportState = true; }}><Database size={14} /> Import state</button>
 					<button class={sideBtn} onclick={openEditor}>
@@ -568,6 +606,40 @@
 		</aside>
 	</div>
 </div>
+
+<!-- New project modal -->
+<Modal title="New project" bind:open={showNewProject}>
+	<div class="space-y-3">
+		<div>
+			<label for="np-name" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Name</label>
+			<input
+				id="np-name"
+				class="w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]"
+				bind:value={npName}
+				placeholder="my-infra"
+				onkeydown={(e) => { if (e.key === 'Enter') createProjectConfirmed(); }}
+			/>
+		</div>
+		<div>
+			<label for="np-engine" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Engine</label>
+			<select id="np-engine" class="w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm" bind:value={npEngine}>
+				{#each engines as e (e.engine)}
+					<option value={e.engine}>{e.engine} {e.version}</option>
+				{/each}
+			</select>
+		</div>
+	</div>
+	{#snippet footer()}
+		<button class={btnGhost} onclick={() => (showNewProject = false)}>Cancel</button>
+		<button class={btnPrimary} onclick={createProjectConfirmed} disabled={busy === 'project' || !npName.trim()}>
+			{#if busy === 'project'}<Loader2 size={14} class="animate-spin" />{/if} Create
+		</button>
+	{/snippet}
+</Modal>
+
+{#if project}
+	<ProjectConfig {project} bind:open={showConfig} saving={busy === 'config'} onSave={saveConfig} />
+{/if}
 
 <!-- Import HCL modal -->
 <Modal title="Import existing HCL" bind:open={showImportHcl}>
