@@ -32,4 +32,7 @@ type Runner interface {
 	// runs plan, streaming CLI output to out. It returns whether changes are
 	// pending.
 	Plan(ctx context.Context, hcl []byte, providers []model.ProviderInstance, out io.Writer) (PlanResult, error)
+	// Graph writes the generated HCL into a fresh workspace, initializes it, and
+	// returns the dependency graph in Graphviz DOT format.
+	Graph(ctx context.Context, hcl []byte) (string, error)
 }

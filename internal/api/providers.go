@@ -139,6 +139,46 @@ func (s *Server) handleResourceSchema(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ns)
 }
 
+// providerSchemaKey is the sentinel resource-type used to cache the provider
+// block's own configuration schema.
+const providerSchemaKey = "__provider__"
+
+// handleProviderSchema returns the normalized schema for a provider's own
+// configuration block (host, api_key, etc.).
+func (s *Server) handleProviderSchema(w http.ResponseWriter, r *http.Request) {
+	source, err := url.PathUnescape(chi.URLParam(r, "source"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid source")
+		return
+	}
+	engine := r.URL.Query().Get("engine")
+	run, ok := s.runnerFor(engine)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unknown engine")
+		return
+	}
+
+	if ns, ok := s.cache.Get(cache.Key(string(run.Engine()), source, "", providerSchemaKey)); ok {
+		writeJSON(w, http.StatusOK, ns)
+		return
+	}
+
+	prov := model.ProviderInstance{Key: providerKeyFromSource(source), Source: source}
+	schemas, err := run.ProvidersSchema(r.Context(), []model.ProviderInstance{prov})
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "schema fetch failed: "+err.Error())
+		return
+	}
+	fq, ps := findProviderSchema(schemas, source)
+	if ps == nil {
+		writeErr(w, http.StatusBadGateway, "provider schema not found")
+		return
+	}
+	ns := schema.Normalize(fq, source, ps.ConfigSchema)
+	s.cache.Put(cache.Key(string(run.Engine()), source, "", providerSchemaKey), ns)
+	writeJSON(w, http.StatusOK, ns)
+}
+
 // lookupCached checks the in-memory cache for a resource type regardless of the
 // exact version segment (slice-1 convenience).
 func (s *Server) lookupCached(engine, source, resourceType string) (schema.NormalizedSchema, bool) {
