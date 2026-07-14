@@ -1,8 +1,16 @@
 <script lang="ts">
 	import type { Project, Resource } from '$lib/types';
 	import { highlightHcl } from './highlight';
-	import { deriveEdges, typeColor, typeLetter, type Edge } from './graph';
-	import { X, Plus, Minus, Search, Loader2 } from 'lucide-svelte';
+	import { deriveEdges, typeColor, typeLetter, layoutPositions, layoutMissing, LAYOUTS, type Edge, type LayoutMode } from './graph';
+	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group } from 'lucide-svelte';
+
+	const LAYOUT_ICONS: Record<LayoutMode, typeof Network> = {
+		'layered-h': Network,
+		'layered-v': Rows3,
+		'by-type': Group,
+		grid: LayoutGrid,
+		circle: CircleDashed
+	};
 
 	let {
 		project,
@@ -76,43 +84,22 @@
 		localStorage.setItem(posKey, JSON.stringify(positions));
 	}
 
-	// Auto-layout any resource without a stored position (dependency-layered).
+	// Auto-layout any resource without a stored position (dependency-layered),
+	// preserving nodes the user has already dragged.
 	$effect(() => {
 		const res = project.resources;
-		const missing = res.filter((r) => !positions[r.id]);
-		if (missing.length === 0) return;
-
-		const edges = deriveEdges(res);
-		const level = new Map(res.map((r) => [r.id, 0]));
-		for (let i = 0; i < res.length; i++) {
-			let ch = false;
-			for (const e of edges) {
-				const nl = (level.get(e.from) ?? 0) + 1;
-				if (nl > (level.get(e.to) ?? 0)) {
-					level.set(e.to, nl);
-					ch = true;
-				}
-			}
-			if (!ch) break;
-		}
-		const next = { ...positions };
-		const byLevel = new Map<number, string[]>();
-		for (const r of missing) {
-			const l = level.get(r.id) ?? 0;
-			if (!byLevel.has(l)) byLevel.set(l, []);
-			byLevel.get(l)!.push(r.id);
-		}
-		for (const [l, ids] of byLevel) {
-			let row = Object.values(next).filter((p) => Math.round((p.x - 40) / 240) === l).length;
-			for (const id of ids) {
-				// Origin clears the floating top toolbar (palette / brand / pills).
-				next[id] = { x: 40 + l * 240, y: 110 + row * 120 };
-				row++;
-			}
-		}
-		positions = next;
+		if (res.every((r) => positions[r.id])) return;
+		positions = layoutMissing(res, deriveEdges(res), positions);
 		savePos();
 	});
+
+	// applyLayout re-arranges every node under a chosen preset (an explicit
+	// user action — it discards manual positions in favour of a clean layout).
+	function applyLayout(mode: LayoutMode) {
+		positions = layoutPositions(project.resources, deriveEdges(project.resources), mode);
+		savePos();
+		resetView();
+	}
 
 	const nodes = $derived(
 		project.resources.map((r) => {
@@ -343,6 +330,23 @@
 			<div style="width:12px;height:12px;border-radius:3px;background:{accent};transform:rotate(45deg);box-shadow:0 0 14px {accent}80;"></div>
 			<div style="font-size:12.5px;font-weight:700;letter-spacing:0.02em;color:rgba(255,255,255,0.55);">ArcLoom · {project.name}</div>
 		</div>
+
+		<!-- layout presets -->
+		{#if project.resources.length > 1}
+			<div class="absolute left-1/2 top-12 z-[5] flex -translate-x-1/2 items-center gap-0.5" style="background:rgba(13,17,23,0.85);backdrop-filter:blur(8px);padding:4px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);box-shadow:0 8px 24px rgba(0,0,0,0.4);">
+				<span class="px-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/25">Arrange</span>
+				{#each LAYOUTS as l (l.mode)}
+					{@const Icon = LAYOUT_ICONS[l.mode]}
+					<button
+						class="flex items-center gap-1 rounded-md px-2 py-1.5 text-[11px] font-semibold text-white/60 hover:bg-white/10 hover:text-white/90"
+						onclick={() => applyLayout(l.mode)}
+						title={l.hint}
+					>
+						<Icon size={13} />{l.label}
+					</button>
+				{/each}
+			</div>
+		{/if}
 
 		<!-- palette (add resource) -->
 		<div class="absolute left-4 top-3.5 z-[5]" style="background:rgba(13,17,23,0.85);backdrop-filter:blur(8px);border-radius:11px;border:1px solid rgba(255,255,255,0.08);box-shadow:0 8px 24px rgba(0,0,0,0.4);">
