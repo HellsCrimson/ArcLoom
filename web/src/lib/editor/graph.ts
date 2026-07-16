@@ -1,4 +1,13 @@
-import type { Resource } from '$lib/types';
+import type { AttrValue, Project, Resource } from '$lib/types';
+
+// Shared node geometry (a resource card, and the padding/header of a module box).
+export const NODE_W = 180;
+export const NODE_H = 84;
+export const DOT_Y = 42; // vertical centre of a resource card's connection dots
+export const MOD_HEADER_H = 34;
+export const MOD_PAD = 16;
+export const MOD_GAP_X = 40;
+export const MOD_GAP_Y = 28;
 
 const PALETTE = ['#7aa2f7', '#c297ff', '#7ee787', '#ffb86b', '#79c0ff', '#ff9492', '#f8c555', '#56d4bc'];
 
@@ -22,6 +31,98 @@ export interface Edge {
 }
 
 const ADDR_RE = /([a-z][a-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_-]*)/g;
+const MODULE_RE = /module\.([A-Za-z_][A-Za-z0-9_-]*)/g;
+
+// modId is the canvas node id for a local module group.
+export function modId(name: string): string {
+	return `mod:${name}`;
+}
+
+// attrText returns the reference/expression text of an attribute value (or "").
+function attrText(v: AttrValue): string {
+	if (v.mode === 'reference') return v.ref ?? '';
+	if (v.mode === 'expression') return v.expr ?? '';
+	return '';
+}
+
+// crossScopeEdges derives edges between the root scope and local module groups
+// from the model: a root resource that references `module.<m>.<out>` depends on
+// module m; a module input that references a root `type.name` (or another
+// `module.<m>`) makes the module depend on that resource/module. Endpoints are
+// root resource ids or modId(name).
+export function crossScopeEdges(project: Project): Edge[] {
+	const edges: Edge[] = [];
+	const seen = new Set<string>();
+	const add = (from: string, to: string) => {
+		if (from === to) return;
+		const k = `${from}->${to}`;
+		if (seen.has(k)) return;
+		seen.add(k);
+		edges.push({ id: `x:${k}`, from, to, kind: 'ref' });
+	};
+
+	const localNames = new Set((project.localModules ?? []).map((m) => m.name));
+	const rootAddr = new Map<string, string>(); // "type.name" -> resource id
+	for (const r of project.resources) rootAddr.set(`${r.type}.${r.name}`, r.id);
+
+	// Root resource -> module output reference: module is the dependency.
+	for (const r of project.resources) {
+		for (const v of Object.values(r.attrs ?? {})) {
+			const text = attrText(v);
+			if (!text) continue;
+			let m: RegExpExecArray | null;
+			MODULE_RE.lastIndex = 0;
+			while ((m = MODULE_RE.exec(text))) {
+				if (localNames.has(m[1])) add(modId(m[1]), r.id);
+			}
+		}
+	}
+
+	// Module inputs -> references to root resources / other modules.
+	for (const lm of project.localModules ?? []) {
+		for (const v of Object.values(lm.inputs ?? {})) {
+			const text = attrText(v);
+			if (!text) continue;
+			let a: RegExpExecArray | null;
+			ADDR_RE.lastIndex = 0;
+			while ((a = ADDR_RE.exec(text))) {
+				const id = rootAddr.get(`${a[1]}.${a[2]}`);
+				if (id) add(id, modId(lm.name));
+			}
+			let mm: RegExpExecArray | null;
+			MODULE_RE.lastIndex = 0;
+			while ((mm = MODULE_RE.exec(text))) {
+				if (localNames.has(mm[1]) && mm[1] !== lm.name) add(modId(mm[1]), modId(lm.name));
+			}
+		}
+	}
+	return edges;
+}
+
+// interiorLayout places a module's child resources in a compact grid relative to
+// the module box origin, and returns the box size needed to contain them.
+export function interiorLayout(resources: Resource[]): {
+	pos: Record<string, { x: number; y: number }>;
+	w: number;
+	h: number;
+} {
+	const n = resources.length;
+	const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
+	const rows = Math.max(1, Math.ceil(n / cols));
+	const pos: Record<string, { x: number; y: number }> = {};
+	resources.forEach((r, i) => {
+		pos[r.id] = {
+			x: MOD_PAD + (i % cols) * (NODE_W + MOD_GAP_X),
+			y: MOD_HEADER_H + MOD_PAD + Math.floor(i / cols) * (NODE_H + MOD_GAP_Y)
+		};
+	});
+	const w = Math.max(220, MOD_PAD * 2 + cols * NODE_W + (cols - 1) * MOD_GAP_X);
+	const h =
+		n === 0
+			? MOD_HEADER_H + 56
+			: MOD_HEADER_H + MOD_PAD * 2 + rows * NODE_H + (rows - 1) * MOD_GAP_Y;
+	return { pos, w, h };
+}
 
 // deriveEdges builds dependency edges from the model: explicit depends_on and
 // any attribute reference/expression that mentions another resource's address.

@@ -1,8 +1,13 @@
 <script lang="ts">
 	import type { Project, Resource } from '$lib/types';
-	import { deriveEdges, typeColor, typeLetter, layoutPositions, layoutMissing, LAYOUTS, type Edge, type LayoutMode } from './graph';
+	import {
+		deriveEdges, crossScopeEdges, interiorLayout, modId, typeColor, typeLetter,
+		layoutPositions, layoutMissing, LAYOUTS,
+		NODE_W, NODE_H, DOT_Y, MOD_HEADER_H,
+		type Edge, type LayoutMode
+	} from './graph';
 	import HclView from './HclView.svelte';
-	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group } from 'lucide-svelte';
+	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group, Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-svelte';
 
 	const LAYOUT_ICONS: Record<LayoutMode, typeof Network> = {
 		'layered-h': Network,
@@ -29,21 +34,19 @@
 		accent?: string;
 		loadTypes: (source: string) => Promise<string[]>;
 		onAddType: (type: string, providerSource: string) => void;
-		onEditResource: (r: Resource) => void;
-		onDeleteResource: (id: string) => void;
-		onRenameResource: (id: string, name: string) => void;
-		onSetDependsOn: (id: string, deps: string[]) => void;
+		onEditResource: (r: Resource, module?: string) => void;
+		onDeleteResource: (id: string, module?: string) => void;
+		onRenameResource: (id: string, name: string, module?: string) => void;
+		onSetDependsOn: (id: string, deps: string[], module?: string) => void;
 		onClose: () => void;
 	} = $props();
 
-	const NODE_W = 180;
-	const NODE_H = 84;
-	const DOT_Y = 42;
-
 	let canvasEl = $state<HTMLDivElement>();
 	const posKey = $derived(`arcloom.pos.${project.id}`);
+	const expandKey = $derived(`arcloom.modexp.${project.id}`);
 
 	let positions = $state<Record<string, { x: number; y: number }>>({});
+	let expanded = $state<Record<string, boolean>>({});
 	let dragging = $state<{ id: string; ox: number; oy: number } | null>(null);
 	let dragMoved = $state(false); // distinguishes a drag from a click
 	let connecting = $state<{ fromId: string; x: number; y: number } | null>(null);
@@ -70,7 +73,9 @@
 	);
 	const providerFooter = $derived((activeProvider || 'no') + ' provider');
 
-	// Load stored positions when the project changes.
+	const localModules = $derived(project.localModules ?? []);
+
+	// Persist / restore positions + expand state per project.
 	$effect(() => {
 		posKey; // track
 		try {
@@ -79,29 +84,66 @@
 			positions = {};
 		}
 	});
-
+	$effect(() => {
+		expandKey; // track
+		try {
+			expanded = JSON.parse(localStorage.getItem(expandKey) || '{}');
+		} catch {
+			expanded = {};
+		}
+	});
 	function savePos() {
 		localStorage.setItem(posKey, JSON.stringify(positions));
 	}
+	function toggleExpand(name: string) {
+		expanded = { ...expanded, [name]: !expanded[name] };
+		localStorage.setItem(expandKey, JSON.stringify(expanded));
+	}
 
-	// Auto-layout any resource without a stored position (dependency-layered),
-	// preserving nodes the user has already dragged.
+	// Macro nodes are the things laid out at the top level: every root resource
+	// plus one pseudo-node per local module. Layout helpers only read id/type.
+	const macroNodes = $derived<Resource[]>([
+		...project.resources,
+		...localModules.map((lm) => ({ id: modId(lm.name), type: 'module', name: lm.name, attrs: {} }))
+	]);
+	const macroEdges = $derived<Edge[]>([...deriveEdges(project.resources), ...crossScopeEdges(project)]);
+
+	// Auto-place any macro node without a stored position, preserving dragged ones.
 	$effect(() => {
-		const res = project.resources;
-		if (res.every((r) => positions[r.id])) return;
-		positions = layoutMissing(res, deriveEdges(res), positions);
+		if (macroNodes.every((n) => positions[n.id])) return;
+		positions = layoutMissing(macroNodes, macroEdges, positions);
 		savePos();
 	});
 
-	// applyLayout re-arranges every node under a chosen preset (an explicit
-	// user action — it discards manual positions in favour of a clean layout).
 	function applyLayout(mode: LayoutMode) {
-		positions = layoutPositions(project.resources, deriveEdges(project.resources), mode);
+		positions = layoutPositions(macroNodes, macroEdges, mode);
 		savePos();
 		resetView();
 	}
 
-	const nodes = $derived(
+	// Module boxes: geometry + expand state + interior child layout.
+	const moduleBoxes = $derived(
+		localModules.map((lm) => {
+			const interior = interiorLayout(lm.resources);
+			const open = !!expanded[lm.name];
+			const pos = positions[modId(lm.name)] ?? { x: 40, y: 40 };
+			return {
+				lm,
+				name: lm.name,
+				id: modId(lm.name),
+				count: lm.resources.length,
+				open,
+				interior,
+				pos,
+				w: open ? interior.w : NODE_W,
+				h: open ? interior.h : NODE_H,
+				selected: modId(lm.name) === selectedId
+			};
+		})
+	);
+
+	// Root resource cards.
+	const rootNodes = $derived(
 		project.resources.map((r) => {
 			const pos = positions[r.id] ?? { x: 40, y: 40 };
 			return {
@@ -115,60 +157,88 @@
 		})
 	);
 
+	// Absolute position of a module's interior child card.
+	function childAbs(mb: (typeof moduleBoxes)[number], id: string) {
+		const rel = mb.interior.pos[id] ?? { x: 0, y: 0 };
+		return { x: mb.pos.x + rel.x, y: mb.pos.y + rel.y };
+	}
+
+	// Bounding boxes for every top-level node id (root resource or module group),
+	// used to anchor edges. Anchors sit at the vertical centre of each box.
+	const boxes = $derived.by(() => {
+		const m = new Map<string, { x: number; y: number; w: number; h: number; color: string }>();
+		for (const n of rootNodes) m.set(n.id, { x: n.x, y: n.y, w: NODE_W, h: NODE_H, color: n.color });
+		for (const mb of moduleBoxes) m.set(mb.id, { x: mb.pos.x, y: mb.pos.y, w: mb.w, h: mb.h, color: accent });
+		return m;
+	});
+
+	function edgePath(from: { x: number; y: number; w: number; h: number }, to: { x: number; y: number; w: number; h: number }): string {
+		const x1 = from.x + from.w,
+			y1 = from.y + from.h / 2,
+			x2 = to.x,
+			y2 = to.y + to.h / 2;
+		const mid = (x1 + x2) / 2;
+		return `M ${x1} ${y1} C ${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`;
+	}
+
 	const edges = $derived.by(() => {
-		const byId = new Map(nodes.map((n) => [n.id, n]));
-		return deriveEdges(project.resources)
-			.map((e: Edge) => {
-				const from = byId.get(e.from);
-				const to = byId.get(e.to);
-				if (!from || !to) return null;
-				const x1 = from.x + NODE_W,
-					y1 = from.y + DOT_Y,
-					x2 = to.x,
-					y2 = to.y + DOT_Y;
-				const mid = (x1 + x2) / 2;
-				return {
-					...e,
-					color: from.color,
-					d: `M ${x1} ${y1} C ${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`
-				};
-			})
-			.filter(Boolean) as Array<Edge & { color: string; d: string }>;
+		const b = boxes;
+		const out: Array<Edge & { color: string; d: string }> = [];
+		const push = (e: Edge, color: string, fromBox?: { x: number; y: number; w: number; h: number }, toBox?: { x: number; y: number; w: number; h: number }) => {
+			const f = fromBox ?? b.get(e.from);
+			const t = toBox ?? b.get(e.to);
+			if (!f || !t) return;
+			out.push({ ...e, color, d: edgePath(f, t) });
+		};
+		// Root ↔ root.
+		for (const e of deriveEdges(project.resources)) push(e, b.get(e.from)?.color ?? accent);
+		// Cross-scope (root ↔ module, module ↔ module).
+		for (const e of crossScopeEdges(project)) push(e, accent);
+		// Interior edges for expanded modules.
+		for (const mb of moduleBoxes) {
+			if (!mb.open) continue;
+			for (const e of deriveEdges(mb.lm.resources)) {
+				const fa = childAbs(mb, e.from);
+				const ta = childAbs(mb, e.to);
+				push(e, mb.selected ? accent : '#5b6472', { ...fa, w: NODE_W, h: NODE_H }, { ...ta, w: NODE_W, h: NODE_H });
+			}
+		}
+		return out;
 	});
 
 	const tempPath = $derived.by(() => {
 		if (!connecting) return null;
-		const from = nodes.find((n) => n.id === connecting!.fromId);
+		const from = boxes.get(connecting.fromId);
 		if (!from) return null;
-		return `M ${from.x + NODE_W} ${from.y + DOT_Y} L ${connecting.x} ${connecting.y}`;
+		return `M ${from.x + from.w} ${from.y + from.h / 2} L ${connecting.x} ${connecting.y}`;
 	});
 
-	// World extent large enough to hold all nodes with slack for panning.
+	// World extent large enough to hold every box with slack for panning.
 	const worldSize = $derived.by(() => {
 		let w = 1600,
 			h = 1000;
-		for (const n of nodes) {
-			w = Math.max(w, n.x + NODE_W + 400);
-			h = Math.max(h, n.y + NODE_H + 400);
+		for (const box of boxes.values()) {
+			w = Math.max(w, box.x + box.w + 400);
+			h = Math.max(h, box.y + box.h + 400);
 		}
 		return { w, h };
 	});
 
-	// Screen -> world coordinates, accounting for pan and zoom.
 	function toWorld(e: MouseEvent) {
 		const rect = canvasEl!.getBoundingClientRect();
 		return { x: (e.clientX - rect.left - tx) / scale, y: (e.clientY - rect.top - ty) / scale };
 	}
 
-	function onNodeDown(e: MouseEvent, id: string) {
+	// Start dragging a top-level box (root resource card or module group).
+	function onBoxDown(e: MouseEvent, id: string) {
 		if (e.button !== 0) return;
-		e.stopPropagation(); // don't start a canvas pan
-		const n = nodes.find((x) => x.id === id);
-		if (!n) return;
+		e.stopPropagation();
+		const box = boxes.get(id);
+		if (!box) return;
 		const { x, y } = toWorld(e);
 		selectedId = id;
 		dragMoved = false;
-		dragging = { id, ox: x - n.x, oy: y - n.y };
+		dragging = { id, ox: x - box.x, oy: y - box.y };
 	}
 
 	function onCanvasDown(e: MouseEvent) {
@@ -209,7 +279,6 @@
 		const my = e.clientY - rect.top;
 		const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
 		const ns = Math.min(2.5, Math.max(0.2, scale * factor));
-		// Keep the world point under the cursor fixed.
 		const wx = (mx - tx) / scale;
 		const wy = (my - ty) / scale;
 		tx = mx - wx * ns;
@@ -260,7 +329,7 @@
 	}
 
 	function onEdgeClick(e: Edge) {
-		if (e.kind !== 'depends') return; // reference edges are read-only here
+		if (e.kind !== 'depends') return; // only root depends_on edges are editable
 		const to = project.resources.find((r) => r.id === e.to);
 		const from = project.resources.find((r) => r.id === e.from);
 		if (!to || !from) return;
@@ -268,15 +337,11 @@
 		onSetDependsOn(to.id, (to.dependsOn ?? []).filter((d) => d.split('.').slice(0, 2).join('.') !== addr));
 	}
 
-	function rename(id: string) {
-		const r = project.resources.find((x) => x.id === id);
-		if (!r) return;
-		const next = window.prompt('Resource name', r.name);
-		if (next && next.trim()) onRenameResource(id, next.trim().replace(/[^a-zA-Z0-9_]+/g, '_'));
+	function rename(id: string, name: string, scope?: string) {
+		const next = window.prompt('Resource name', name);
+		if (next && next.trim()) onRenameResource(id, next.trim().replace(/[^a-zA-Z0-9_]+/g, '_'), scope);
 	}
 
-	// Picking a provider pill opens the Add palette on that provider's catalog, so
-	// the pill has a visible effect (the $effect below reloads the type list).
 	function switchProvider(key: string) {
 		activeProvider = key;
 		paletteTypes = [];
@@ -298,10 +363,6 @@
 		if (showPalette && paletteTypes.length === 0) loadPaletteTypes();
 	}
 
-	// When the active provider changes, refresh the palette's type list (reload if
-	// it's open, otherwise just clear the stale list). Must NOT toggle showPalette
-	// here — reading it and calling openPalette() would close the palette the same
-	// tick it opens.
 	$effect(() => {
 		activeProvider; // track
 		paletteTypes = [];
@@ -314,6 +375,39 @@
 
 	const gridBg = 'radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px)';
 </script>
+
+{#snippet card(id: string, x: number, y: number, name: string, type: string, color: string, letter: string, selected: boolean, connectable: boolean, scope: string | undefined)}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+	<div
+		role="button"
+		tabindex="-1"
+		style="position:absolute;left:{x}px;top:{y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:#10151f;border:1px solid {selected ? accent : 'rgba(255,255,255,0.10)'};box-shadow:{selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:{connectable ? 'grab' : 'pointer'};z-index:2;"
+		onmousedown={(e) => { if (connectable) { onBoxDown(e, id); } else { e.stopPropagation(); } }}
+		onclick={() => { if (dragMoved) { dragMoved = false; return; } onEditResource({ id, type, name, attrs: {} } as Resource, scope); }}
+		ondblclick={(e) => { e.stopPropagation(); rename(id, name, scope); }}
+	>
+		<div class="flex items-center gap-2">
+			<div style="width:22px;height:22px;border-radius:6px;background:{color};color:#0a0e15;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;">{letter}</div>
+			<div style="min-width:0;">
+				<div style="font-size:13px;font-weight:600;color:#e6e9ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{name}</div>
+				<div class="font-mono" style="font-size:10px;color:#6b7480;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{type}</div>
+			</div>
+		</div>
+		<button
+			title="Delete resource"
+			aria-label="Delete resource"
+			class="absolute right-1.5 top-1.5 leading-none text-white/30 hover:text-white/80"
+			style="font-size:12px;"
+			onmousedown={(e) => e.stopPropagation()}
+			onclick={(e) => { e.stopPropagation(); onDeleteResource(id, scope); }}
+		>✕</button>
+		{#if connectable}
+			<div title="Drag to connect (depends_on)" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'out')} onmouseup={(e) => onDotUp(e, id, 'out')}></div>
+			<div title="Drop a connection here" role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'in')} onmouseup={(e) => onDotUp(e, id, 'in')}></div>
+		{/if}
+	</div>
+{/snippet}
 
 <svelte:window onmousemove={onMove} onmouseup={onUp} />
 
@@ -334,7 +428,7 @@
 		onwheel={onWheel}
 	>
 		<!-- layout presets -->
-		{#if project.resources.length > 1}
+		{#if macroNodes.length > 1}
 			<div class="absolute left-1/2 top-12 z-[5] flex -translate-x-1/2 items-center gap-0.5" style="background:rgba(13,17,23,0.85);backdrop-filter:blur(8px);padding:4px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);box-shadow:0 8px 24px rgba(0,0,0,0.4);">
 				<span class="px-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/25">Arrange</span>
 				{#each LAYOUTS as l (l.mode)}
@@ -411,7 +505,7 @@
 
 		<!-- hint -->
 		<div class="pointer-events-none absolute bottom-3.5 left-4 z-[4] text-[11px]" style="color:rgba(255,255,255,0.32);">
-			Drag empty space to pan · scroll to zoom · drag a node to move · drag the right dot to another node to add depends_on · click a node to edit · double-click to rename
+			Drag empty space to pan · scroll to zoom · drag a node to move · drag the right dot to another node to add depends_on · click a module to expand · click a node to edit
 		</div>
 
 		<!-- world layer (pans / zooms together) -->
@@ -429,36 +523,71 @@
 				{/if}
 			</svg>
 
-			<!-- nodes -->
-			{#each nodes as node (node.id)}
-				<!-- svelte-ignore a11y_click_events_have_key_events -->
-				<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-				<div
-					role="button"
-					tabindex="-1"
-					style="position:absolute;left:{node.x}px;top:{node.y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:#10151f;border:1px solid {node.selected ? accent : 'rgba(255,255,255,0.10)'};box-shadow:{node.selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:grab;z-index:2;"
-					onmousedown={(e) => onNodeDown(e, node.id)}
-					onclick={() => { if (dragMoved) { dragMoved = false; return; } onEditResource(node); }}
-					ondblclick={(e) => { e.stopPropagation(); rename(node.id); }}
-				>
-					<div class="flex items-center gap-2">
-						<div style="width:22px;height:22px;border-radius:6px;background:{node.color};color:#0a0e15;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;">{node.letter}</div>
-						<div style="min-width:0;">
-							<div style="font-size:13px;font-weight:600;color:#e6e9ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{node.name}</div>
-							<div class="font-mono" style="font-size:10px;color:#6b7480;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{node.type}</div>
+			<!-- module groups -->
+			{#each moduleBoxes as mb (mb.id)}
+				{#if mb.open}
+					<!-- expanded container background -->
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+					<div
+						role="button"
+						tabindex="-1"
+						style="position:absolute;left:{mb.pos.x}px;top:{mb.pos.y}px;width:{mb.w}px;height:{mb.h}px;border-radius:14px;background:rgba(124,162,247,0.05);border:1.5px dashed {mb.selected ? accent : 'rgba(124,162,247,0.35)'};z-index:1;"
+						onmousedown={(e) => onBoxDown(e, mb.id)}
+					>
+						<div
+							class="flex items-center gap-1.5"
+							style="height:{MOD_HEADER_H}px;padding:0 10px;cursor:grab;"
+							onclick={() => { if (dragMoved) { dragMoved = false; return; } toggleExpand(mb.name); }}
+							role="presentation"
+						>
+							<FolderOpen size={14} style="color:{accent};flex:none;" />
+							<span style="font-size:12px;font-weight:700;color:#e6e9ef;">module.{mb.name}</span>
+							<span style="font-size:10px;color:#6b7480;">{mb.count} resource{mb.count === 1 ? '' : 's'}</span>
+							<ChevronDown size={13} style="color:#6b7480;margin-left:auto;" />
 						</div>
+						{#if mb.count === 0}
+							<div class="pointer-events-none absolute inset-x-0 flex justify-center text-[11px] text-white/25" style="top:{MOD_HEADER_H + 12}px;">empty module</div>
+						{/if}
 					</div>
-					<button
-						title="Delete resource"
-						aria-label="Delete resource"
-						class="absolute right-1.5 top-1.5 leading-none text-white/30 hover:text-white/80"
-						style="font-size:12px;"
-						onmousedown={(e) => e.stopPropagation()}
-						onclick={(e) => { e.stopPropagation(); onDeleteResource(node.id); }}
-					>✕</button>
-					<div title="Drag to connect (depends_on)" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{node.color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, node.id, 'out')} onmouseup={(e) => onDotUp(e, node.id, 'out')}></div>
-					<div title="Drop a connection here" role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{node.color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, node.id, 'in')} onmouseup={(e) => onDotUp(e, node.id, 'in')}></div>
-				</div>
+				{:else}
+					<!-- collapsed module node -->
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+					<div
+						role="button"
+						tabindex="-1"
+						style="position:absolute;left:{mb.pos.x}px;top:{mb.pos.y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:#121826;border:1px solid {mb.selected ? accent : 'rgba(124,162,247,0.30)'};box-shadow:{mb.selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:grab;z-index:2;"
+						onmousedown={(e) => onBoxDown(e, mb.id)}
+						onclick={() => { if (dragMoved) { dragMoved = false; return; } toggleExpand(mb.name); }}
+					>
+						<div class="flex items-center gap-2">
+							<div style="width:22px;height:22px;border-radius:6px;background:{accent}22;color:{accent};display:flex;align-items:center;justify-content:center;flex:none;"><Folder size={13} /></div>
+							<div style="min-width:0;">
+								<div style="font-size:13px;font-weight:700;color:#e6e9ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{mb.name}</div>
+								<div class="font-mono" style="font-size:10px;color:#6b7480;">module · {mb.count} resource{mb.count === 1 ? '' : 's'}</div>
+							</div>
+							<ChevronRight size={14} style="color:#6b7480;margin-left:auto;flex:none;" />
+						</div>
+						<div title="Drag to connect (depends_on)" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{accent};border:2px solid #0a0e15;z-index:3;"></div>
+						<div role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{accent};border:2px solid #0a0e15;z-index:3;"></div>
+					</div>
+				{/if}
+			{/each}
+
+			<!-- root resource nodes -->
+			{#each rootNodes as node (node.id)}
+				{@render card(node.id, node.x, node.y, node.name, node.type, node.color, node.letter, node.selected, true, undefined)}
+			{/each}
+
+			<!-- expanded modules' interior resource nodes -->
+			{#each moduleBoxes as mb (mb.id)}
+				{#if mb.open}
+					{#each mb.lm.resources as r (r.id)}
+						{@const c = childAbs(mb, r.id)}
+						{@render card(r.id, c.x, c.y, r.name, r.type, typeColor(r.type), typeLetter(r.type), r.id === selectedId, false, mb.name)}
+					{/each}
+				{/if}
 			{/each}
 		</div>
 
@@ -469,7 +598,7 @@
 			<button class="rounded-md px-2 py-1 text-white/60 hover:bg-white/10 hover:text-white/90" onclick={() => zoomBy(1.2)} title="Zoom in" aria-label="Zoom in"><Plus size={14} /></button>
 		</div>
 
-		{#if project.resources.length === 0}
+		{#if macroNodes.length === 0}
 			<div class="pointer-events-none absolute inset-0 grid place-items-center text-sm text-white/30">
 				No resources yet — click <span class="mx-1 font-semibold" style="color:{accent}">Add</span> to create one.
 			</div>

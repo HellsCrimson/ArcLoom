@@ -5,8 +5,8 @@
 # Not used for local `docker build` — see ./Dockerfile for the from-source build.
 FROM debian:bookworm-slim
 
-ARG TERRAFORM_VERSION=1.9.8
-ARG OPENTOFU_VERSION=1.8.8
+ARG TERRAFORM_VERSION=1.15.8
+ARG OPENTOFU_VERSION=1.12.4
 # TARGETARCH (amd64 / arm64) is provided automatically by buildx.
 ARG TARGETARCH
 

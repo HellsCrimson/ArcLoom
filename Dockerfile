@@ -16,8 +16,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/arcloom ./cmd/arcloom
 
 FROM debian:bookworm-slim AS runtime
 
-ARG TERRAFORM_VERSION=1.9.8
-ARG OPENTOFU_VERSION=1.8.8
+ARG TERRAFORM_VERSION=1.15.8
+ARG OPENTOFU_VERSION=1.12.4
 ARG TARGETARCH=amd64
 
 RUN set -eux; \

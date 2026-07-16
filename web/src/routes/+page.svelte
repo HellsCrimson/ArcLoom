@@ -584,16 +584,27 @@
 		await pickType(type);
 	}
 
-	// Clicking a node opens it in the schema form.
-	function editorEditResource(r: Resource) {
-		showEditor = false;
-		editResource(r);
+	// scopeResources returns the resource list for a scope (module name or root).
+	function scopeResources(moduleName?: string): Resource[] {
+		if (!project) return [];
+		return moduleName
+			? (project.localModules?.find((m) => m.name === moduleName)?.resources ?? [])
+			: project.resources;
 	}
 
-	async function editorDeleteResource(id: string) {
+	// Clicking a node opens it in the schema form (in the node's own scope). The
+	// canvas passes a shallow node, so we resolve the full resource (with attrs).
+	function editorEditResource(r: Resource, moduleName?: string) {
+		const real = scopeResources(moduleName).find((x) => x.id === r.id) ?? r;
+		activeModule = moduleName ?? null;
+		showEditor = false;
+		editResource(real);
+	}
+
+	async function editorDeleteResource(id: string, moduleName?: string) {
 		if (!project) return;
 		try {
-			await api.deleteResource(project.id, id);
+			await api.deleteResource(project.id, id, moduleName);
 			await refreshProject();
 		} catch (err) {
 			error = (err as Error).message;
@@ -601,10 +612,10 @@
 	}
 
 	// Re-save an existing resource with a changed field (name or depends_on),
-	// preserving its type/attrs.
-	async function resaveResource(id: string, patch: { name?: string; dependsOn?: string[] }) {
+	// preserving its type/attrs, within its scope.
+	async function resaveResource(id: string, patch: { name?: string; dependsOn?: string[] }, moduleName?: string) {
 		if (!project) return;
-		const r = project.resources.find((x) => x.id === id);
+		const r = scopeResources(moduleName).find((x) => x.id === id);
 		if (!r) return;
 		try {
 			await api.upsertResource(project.id, {
@@ -612,6 +623,7 @@
 				type: r.type,
 				name: patch.name ?? r.name,
 				providerSource: project.providers.find((p) => p.key === r.type.split('_')[0])?.source,
+				module: moduleName,
 				attrs: r.attrs,
 				dependsOn: patch.dependsOn ?? r.dependsOn
 			});
@@ -734,8 +746,8 @@
 				onAddType={editorAddType}
 				onEditResource={editorEditResource}
 				onDeleteResource={editorDeleteResource}
-				onRenameResource={(id, name) => resaveResource(id, { name })}
-				onSetDependsOn={(id, deps) => resaveResource(id, { dependsOn: deps })}
+				onRenameResource={(id, name, mod) => resaveResource(id, { name }, mod)}
+				onSetDependsOn={(id, deps, mod) => resaveResource(id, { dependsOn: deps }, mod)}
 				onClose={() => (showEditor = false)}
 			/>
 		{:else}
