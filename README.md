@@ -162,7 +162,7 @@ by their provider subject.
 
 | Variable | Purpose |
 |---|---|
-| `ARCLOOM_OIDC_ISSUER` | Identity provider issuer URL, e.g. `https://accounts.google.com`. Enables SSO with `ARCLOOM_OIDC_CLIENT_ID`. |
+| `ARCLOOM_OIDC_ISSUER` | Identity provider issuer URL, e.g. `https://oidc.example.com`. Enables SSO with `ARCLOOM_OIDC_CLIENT_ID`. |
 | `ARCLOOM_OIDC_CLIENT_ID` / `ARCLOOM_OIDC_CLIENT_SECRET` | Registered app credentials. |
 | `ARCLOOM_OIDC_REDIRECT_URL` | Callback registered with the IdP, e.g. `https://arcloom.example.com/api/auth/sso/oidc/callback`. |
 | `ARCLOOM_OIDC_SCOPES` | Extra space-separated scopes (`openid` is always requested). |
