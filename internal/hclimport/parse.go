@@ -18,14 +18,15 @@ import (
 
 // Result is what a parse produced, ready to merge into a project.
 type Result struct {
-	Providers   []model.ProviderInstance
-	Variables   []model.Variable
-	Locals      []model.Local
-	DataSources []model.Resource
-	Resources   []model.Resource
-	Modules     []model.Module
-	Outputs     []model.Output
-	Warnings    []string
+	Providers    []model.ProviderInstance
+	Variables    []model.Variable
+	Locals       []model.Local
+	DataSources  []model.Resource
+	Resources    []model.Resource
+	Modules      []model.Module
+	LocalModules []model.LocalModule
+	Outputs      []model.Output
+	Warnings     []string
 }
 
 // idFunc mints a unique id for an imported resource (injected so callers control
@@ -33,9 +34,17 @@ type Result struct {
 type idFunc func() string
 
 // Parse parses one or more HCL files (name -> contents) into a Result.
+//
+// Files are scoped by path: anything under "modules/<name>/" is parsed into a
+// LocalModule named <name> (its variables/resources/outputs stay in that scope
+// rather than leaking into the root), inverting hclgen.GenerateFiles. Root
+// `module "<name>" { source = "./modules/<name>" ... }` calls are linked to the
+// matching LocalModule, their arguments becoming its Inputs.
 func Parse(files map[string][]byte, newID idFunc) (*Result, error) {
 	res := &Result{}
 	provIndex := map[string]int{} // provider key -> index in res.Providers
+	locals := map[string]*model.LocalModule{}
+	var localOrder []string
 
 	// Deterministic file order.
 	names := make([]string, 0, len(files))
@@ -54,58 +63,178 @@ func Parse(files map[string][]byte, newID idFunc) (*Result, error) {
 		if !ok {
 			continue
 		}
-		for _, blk := range body.Blocks {
-			switch blk.Type {
-			case "resource":
-				if len(blk.Labels) != 2 {
-					res.Warnings = append(res.Warnings, fmt.Sprintf("%s: resource block missing labels", name))
-					continue
-				}
-				r := importResource(blk, src, newID())
-				res.Resources = append(res.Resources, r)
+		if scope := moduleScope(name); scope != "" {
+			lm := locals[scope]
+			if lm == nil {
+				lm = &model.LocalModule{Name: scope}
+				locals[scope] = lm
+				localOrder = append(localOrder, scope)
+			}
+			parseModuleBody(body, src, name, lm, res, provIndex, newID)
+			continue
+		}
+		parseRootBody(body, src, name, res, provIndex, newID)
+	}
+
+	linkLocalModules(res, locals)
+	for _, n := range localOrder {
+		res.LocalModules = append(res.LocalModules, *locals[n])
+	}
+	return res, nil
+}
+
+// parseRootBody imports the blocks of a root-scope file into res.
+func parseRootBody(body *hclsyntax.Body, src []byte, name string, res *Result, provIndex map[string]int, newID idFunc) {
+	for _, blk := range body.Blocks {
+		switch blk.Type {
+		case "resource":
+			if len(blk.Labels) != 2 {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("%s: resource block missing labels", name))
+				continue
+			}
+			res.Resources = append(res.Resources, importResource(blk, src, newID()))
+			ensureProviderKey(res, provIndex, model.ProviderLocalName(blk.Labels[0]))
+
+		case "provider":
+			if len(blk.Labels) != 1 {
+				continue
+			}
+			key := blk.Labels[0]
+			cfg := importAttrs(blk.Body, src)
+			i := ensureProviderKey(res, provIndex, key)
+			if len(cfg) > 0 {
+				res.Providers[i].Config = cfg
+			}
+
+		case "terraform":
+			importRequiredProviders(blk, res, provIndex)
+
+		case "data":
+			if len(blk.Labels) == 2 {
+				res.DataSources = append(res.DataSources, importResource(blk, src, newID()))
 				ensureProviderKey(res, provIndex, model.ProviderLocalName(blk.Labels[0]))
+			}
 
-			case "provider":
-				if len(blk.Labels) != 1 {
-					continue
-				}
-				key := blk.Labels[0]
-				cfg := importAttrs(blk.Body, src)
-				i := ensureProviderKey(res, provIndex, key)
-				if len(cfg) > 0 {
-					res.Providers[i].Config = cfg
-				}
+		case "variable":
+			if len(blk.Labels) == 1 {
+				res.Variables = append(res.Variables, importVariable(blk, src))
+			}
 
-			case "terraform":
-				importRequiredProviders(blk, res, provIndex)
+		case "output":
+			if len(blk.Labels) == 1 {
+				res.Outputs = append(res.Outputs, importOutput(blk, src))
+			}
 
-			case "data":
-				if len(blk.Labels) == 2 {
-					res.DataSources = append(res.DataSources, importResource(blk, src, newID()))
-					ensureProviderKey(res, provIndex, model.ProviderLocalName(blk.Labels[0]))
-				}
+		case "locals":
+			res.Locals = append(res.Locals, importLocals(blk, src)...)
 
-			case "variable":
-				if len(blk.Labels) == 1 {
-					res.Variables = append(res.Variables, importVariable(blk, src))
-				}
-
-			case "output":
-				if len(blk.Labels) == 1 {
-					res.Outputs = append(res.Outputs, importOutput(blk, src))
-				}
-
-			case "locals":
-				res.Locals = append(res.Locals, importLocals(blk, src)...)
-
-			case "module":
-				if len(blk.Labels) == 1 {
-					res.Modules = append(res.Modules, importModule(blk, src))
-				}
+		case "module":
+			if len(blk.Labels) == 1 {
+				res.Modules = append(res.Modules, importModule(blk, src))
 			}
 		}
 	}
-	return res, nil
+}
+
+// parseModuleBody imports the blocks of a local-module file into lm. Provider
+// keys are still registered at the root (res) since the root declares providers
+// for child modules. terraform{}/provider{}/nested module{} blocks are ignored
+// (a warning is emitted for nested modules).
+func parseModuleBody(body *hclsyntax.Body, src []byte, name string, lm *model.LocalModule, res *Result, provIndex map[string]int, newID idFunc) {
+	for _, blk := range body.Blocks {
+		switch blk.Type {
+		case "resource":
+			if len(blk.Labels) != 2 {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("%s: resource block missing labels", name))
+				continue
+			}
+			lm.Resources = append(lm.Resources, importResource(blk, src, newID()))
+			ensureProviderKey(res, provIndex, model.ProviderLocalName(blk.Labels[0]))
+
+		case "data":
+			if len(blk.Labels) == 2 {
+				lm.DataSources = append(lm.DataSources, importResource(blk, src, newID()))
+				ensureProviderKey(res, provIndex, model.ProviderLocalName(blk.Labels[0]))
+			}
+
+		case "variable":
+			if len(blk.Labels) == 1 {
+				lm.Variables = append(lm.Variables, importVariable(blk, src))
+			}
+
+		case "output":
+			if len(blk.Labels) == 1 {
+				lm.Outputs = append(lm.Outputs, importOutput(blk, src))
+			}
+
+		case "locals":
+			lm.Locals = append(lm.Locals, importLocals(blk, src)...)
+
+		case "module":
+			res.Warnings = append(res.Warnings, fmt.Sprintf("%s: nested module in local module %q is not supported and was skipped", name, lm.Name))
+		}
+	}
+}
+
+// linkLocalModules connects root `module` calls with a local ("./...") source to
+// their imported LocalModule, moving the call's arguments into the module's
+// Inputs and dropping it from the remote Modules list. Local calls whose child
+// files were not imported are kept as remote-style modules with a warning.
+func linkLocalModules(res *Result, locals map[string]*model.LocalModule) {
+	kept := res.Modules[:0]
+	for _, m := range res.Modules {
+		if !isLocalSource(m.Source) {
+			kept = append(kept, m)
+			continue
+		}
+		folder := localSourceFolder(m.Source)
+		lm, ok := locals[folder]
+		if !ok {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("module %q has local source %q but its files were not imported; kept as a plain module call", m.Name, m.Source))
+			kept = append(kept, m)
+			continue
+		}
+		if lm.Inputs == nil && len(m.Config) > 0 {
+			lm.Inputs = m.Config
+		}
+		if m.Name != folder {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("module call %q references %q; imported as local module %q (ArcLoom couples the call name to the folder)", m.Name, m.Source, folder))
+		}
+	}
+	res.Modules = kept
+}
+
+// moduleScope returns the local-module name for a file path (the segment after
+// a "modules/" component), or "" for a root-scope file.
+func moduleScope(name string) string {
+	parts := strings.Split(strings.ReplaceAll(name, "\\", "/"), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "modules" && parts[i+1] != "" {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+// isLocalSource reports whether a module source is a local path (vs a registry
+// or remote address).
+func isLocalSource(source string) bool {
+	return strings.HasPrefix(source, "./") || strings.HasPrefix(source, "../")
+}
+
+// localSourceFolder returns the folder name a local module source resolves to:
+// the segment after "modules/", else the last path segment.
+func localSourceFolder(source string) string {
+	parts := strings.Split(source, "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "modules" && parts[i+1] != "" {
+			return parts[i+1]
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
 }
 
 // ensureProviderKey returns the index of the provider with the given local name,

@@ -26,9 +26,10 @@ type importResponse struct {
 	AddedVariables   int      `json:"addedVariables,omitempty"`
 	AddedLocals      int      `json:"addedLocals,omitempty"`
 	AddedOutputs     int      `json:"addedOutputs,omitempty"`
-	AddedDataSources int      `json:"addedDataSources,omitempty"`
-	AddedModules     int      `json:"addedModules,omitempty"`
-	Warnings         []string `json:"warnings,omitempty"`
+	AddedDataSources  int      `json:"addedDataSources,omitempty"`
+	AddedModules      int      `json:"addedModules,omitempty"`
+	AddedLocalModules int      `json:"addedLocalModules,omitempty"`
+	Warnings          []string `json:"warnings,omitempty"`
 }
 
 // handleImportHCL parses submitted .tf files and merges the result into the
@@ -64,6 +65,7 @@ func (s *Server) handleImportHCL(w http.ResponseWriter, r *http.Request) {
 		resp.AddedLocals = mergeLocals(p, parsed.Locals)
 		resp.AddedOutputs = mergeOutputs(p, parsed.Outputs)
 		resp.AddedModules = mergeModules(p, parsed.Modules)
+		resp.AddedLocalModules = mergeLocalModules(p, parsed.LocalModules)
 		return nil
 	})
 	if errors.Is(err, store.ErrNotFound) {
@@ -268,6 +270,25 @@ func mergeModules(p *model.Project, incoming []model.Module) int {
 		}
 		taken[m.Name] = true
 		p.Modules = append(p.Modules, m)
+		added++
+	}
+	return added
+}
+
+// mergeLocalModules appends imported local modules, skipping any whose name is
+// already present (by name).
+func mergeLocalModules(p *model.Project, incoming []model.LocalModule) int {
+	taken := map[string]bool{}
+	for _, m := range p.LocalModules {
+		taken[m.Name] = true
+	}
+	added := 0
+	for _, m := range incoming {
+		if taken[m.Name] {
+			continue
+		}
+		taken[m.Name] = true
+		p.LocalModules = append(p.LocalModules, m)
 		added++
 	}
 	return added

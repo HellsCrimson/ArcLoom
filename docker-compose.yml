@@ -12,6 +12,17 @@ services:
     environment:
       ARCLOOM_ENGINE: tofu
       ARCLOOM_SECRET_KEY: test_arcloom_secret_dev
+      # Auth is on by default and fails closed. This seeds the first admin on the
+      # first run only (ignored once a user exists). Change it and log in as
+      # "admin".
+      # ARCLOOM_AUTH: false to disable auth entirely.
+      ARCLOOM_ADMIN_PASSWORD: change_me_admin_dev
+      # Allow login over plain HTTP for local dev (no TLS in front).
+      ARCLOOM_COOKIE_SECURE: "false"
+      # ARCLOOM_OIDC_ISSUER: https://oidc.example.com
+      # ARCLOOM_OIDC_CLIENT_ID: your-client-id
+      # ARCLOOM_OIDC_CLIENT_SECRET: your-client-secret
+      # ARCLOOM_OIDC_REDIRECT_URL: http://localhost:8080/api/auth/sso/oidc/callback
     volumes:
       - arcloom-cache:/var/lib/arcloom
 

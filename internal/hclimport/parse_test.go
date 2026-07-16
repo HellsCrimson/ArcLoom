@@ -140,6 +140,96 @@ output "region_out" {
 	}
 }
 
+func TestParse_LocalModuleWithVariablesAndInputs(t *testing.T) {
+	// Inverts hclgen.GenerateFiles: a root call to ./modules/vpc plus the
+	// module's own files under modules/vpc/.
+	root := `
+module "vpc" {
+  source = "./modules/vpc"
+  cidr   = "10.0.0.0/16"
+}
+`
+	child := `
+variable "cidr" {
+  type        = string
+  description = "network range"
+}
+
+resource "random_pet" "name" {
+  length = 2
+}
+
+output "vpc_id" {
+  value = random_pet.name.id
+}
+`
+	res, err := Parse(map[string][]byte{
+		"main.tf":               []byte(root),
+		"modules/vpc/main.tf":   []byte(child),
+	}, ids())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The local call is NOT a remote module.
+	if len(res.Modules) != 0 {
+		t.Fatalf("local module should not appear in res.Modules: %+v", res.Modules)
+	}
+	// The child's variable/resource/output must NOT leak into the root scope.
+	if len(res.Variables) != 0 || len(res.Resources) != 0 || len(res.Outputs) != 0 {
+		t.Fatalf("child blocks leaked into root: vars=%+v res=%+v out=%+v", res.Variables, res.Resources, res.Outputs)
+	}
+
+	if len(res.LocalModules) != 1 {
+		t.Fatalf("expected 1 local module, got %d", len(res.LocalModules))
+	}
+	lm := res.LocalModules[0]
+	if lm.Name != "vpc" {
+		t.Errorf("local module name: %q", lm.Name)
+	}
+	if len(lm.Variables) != 1 || lm.Variables[0].Name != "cidr" {
+		t.Errorf("module variables: %+v", lm.Variables)
+	}
+	if len(lm.Resources) != 1 || lm.Resources[0].Type != "random_pet" {
+		t.Errorf("module resources: %+v", lm.Resources)
+	}
+	if len(lm.Outputs) != 1 || lm.Outputs[0].Name != "vpc_id" {
+		t.Errorf("module outputs: %+v", lm.Outputs)
+	}
+	// The root call's argument became an Input on the module.
+	if got := lm.Inputs["cidr"]; got.Mode != model.ModeLiteral || got.Literal.AsString() != "10.0.0.0/16" {
+		t.Errorf("module input cidr: %+v", lm.Inputs["cidr"])
+	}
+	// The provider used inside the module is registered at the root.
+	if len(res.Providers) != 1 || res.Providers[0].Key != "random" {
+		t.Errorf("module provider not registered at root: %+v", res.Providers)
+	}
+}
+
+func TestParse_LocalModuleCallWithoutFilesStaysRemote(t *testing.T) {
+	// A local source whose child files weren't imported is kept as a plain
+	// module call (with a warning) rather than being dropped.
+	root := `
+module "vpc" {
+  source = "./modules/vpc"
+  cidr   = "10.0.0.0/16"
+}
+`
+	res, err := Parse(map[string][]byte{"main.tf": []byte(root)}, ids())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Modules) != 1 || res.Modules[0].Name != "vpc" {
+		t.Fatalf("expected the call kept as a module: %+v", res.Modules)
+	}
+	if len(res.LocalModules) != 0 {
+		t.Fatalf("no local module should be created: %+v", res.LocalModules)
+	}
+	if len(res.Warnings) == 0 {
+		t.Error("expected a warning about missing local module files")
+	}
+}
+
 func TestParse_NestedBlocks(t *testing.T) {
 	src := `
 resource "example_thing" "x" {

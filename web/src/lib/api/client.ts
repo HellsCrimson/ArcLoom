@@ -11,9 +11,17 @@ import type {
 	GitCommit,
 	AttrValue
 } from '$lib/types';
+import { auth } from '$lib/stores/auth.svelte';
+
+// on401 clears the auth store so the layout gate returns to the login screen
+// when a session expires or is revoked mid-use.
+function on401(status: number) {
+	if (status === 401) auth.clear();
+}
 
 async function json<T>(res: Response): Promise<T> {
 	if (!res.ok) {
+		on401(res.status);
 		let msg = res.statusText;
 		try {
 			const body = await res.json();
@@ -199,6 +207,7 @@ async function gitAction(url: string, body: unknown): Promise<void> {
 		body: JSON.stringify(body)
 	});
 	if (!r.ok && r.status !== 204) {
+		on401(r.status);
 		let msg = r.statusText;
 		try {
 			const b = await r.json();

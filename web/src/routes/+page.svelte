@@ -7,6 +7,8 @@
 	import ProjectConfig from '$lib/components/ProjectConfig.svelte';
 	import SecretsModal from '$lib/components/SecretsModal.svelte';
 	import GitPanel from '$lib/components/GitPanel.svelte';
+	import UserMenu from '$lib/components/UserMenu.svelte';
+	import { auth } from '$lib/stores/auth.svelte';
 	import EditorView from '$lib/editor/EditorView.svelte';
 	import HclView from '$lib/editor/HclView.svelte';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
@@ -693,6 +695,9 @@
 		<div class="ml-auto flex items-center gap-2 text-sm">
 			<span class="text-xs text-[var(--al-muted)]">engine</span>
 			<span class="mono rounded border border-[var(--al-border)] px-2 py-0.5 text-xs text-[var(--al-muted)]">{engine || defaultEngine}</span>
+			{#if auth.authEnabled && auth.user}
+				<UserMenu />
+			{/if}
 		</div>
 	</header>
 

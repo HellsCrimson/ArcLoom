@@ -140,6 +140,35 @@ docker compose up -d
 
 Then open **http://localhost:8080** in your browser.
 
+### Sign in
+
+ArcLoom requires a login by default. On first run it seeds an admin account from
+`ARCLOOM_ADMIN_PASSWORD` (the bundled `docker-compose.yml` sets a dev value — log
+in as **admin** and change it from the account menu). Useful settings:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ARCLOOM_ADMIN_PASSWORD` | — | Seeds the first admin on first run (ignored once a user exists). Required to start unless auth is disabled. |
+| `ARCLOOM_ADMIN_USERNAME` | `admin` | Username for the seeded admin. |
+| `ARCLOOM_AUTH` | `true` | Set `false` to disable auth entirely on a trusted network. |
+| `ARCLOOM_SESSION_TTL` | `168h` | How long a login session stays valid. |
+| `ARCLOOM_COOKIE_SECURE` | `true` | Set `false` to allow login over plain HTTP (no TLS). |
+
+#### Single sign-on (OIDC)
+
+Set these to add a "Sign in with SSO" button alongside local login (local stays
+as a break-glass fallback). SSO users are provisioned on first login and linked
+by their provider subject.
+
+| Variable | Purpose |
+|---|---|
+| `ARCLOOM_OIDC_ISSUER` | Identity provider issuer URL, e.g. `https://accounts.google.com`. Enables SSO with `ARCLOOM_OIDC_CLIENT_ID`. |
+| `ARCLOOM_OIDC_CLIENT_ID` / `ARCLOOM_OIDC_CLIENT_SECRET` | Registered app credentials. |
+| `ARCLOOM_OIDC_REDIRECT_URL` | Callback registered with the IdP, e.g. `https://arcloom.example.com/api/auth/sso/oidc/callback`. |
+| `ARCLOOM_OIDC_SCOPES` | Extra space-separated scopes (`openid` is always requested). |
+
+If discovery fails at startup, ArcLoom logs a warning and continues with local login only.
+
 ## Project status
 
 ArcLoom is **working today** and under active development. It already supports
