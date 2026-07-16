@@ -38,9 +38,26 @@ type meDTO struct {
 }
 
 type userDTO struct {
-	Username string `json:"username"`
-	Email    string `json:"email,omitempty"`
-	Provider string `json:"provider,omitempty"`
+	Username    string   `json:"username"`
+	Email       string   `json:"email,omitempty"`
+	Provider    string   `json:"provider,omitempty"`
+	Admin       bool     `json:"admin"`
+	Permissions []string `json:"permissions"`
+}
+
+// meUserDTO builds the current-user payload the SPA uses to gate its UI.
+func meUserDTO(u *user.User) *userDTO {
+	perms := u.Permissions
+	if perms == nil {
+		perms = []string{}
+	}
+	return &userDTO{
+		Username:    u.Username,
+		Email:       u.Email,
+		Provider:    u.Provider,
+		Admin:       u.Admin,
+		Permissions: perms,
+	}
 }
 
 // requireAuth gates protected routes. It validates the session cookie, loads the
@@ -85,6 +102,50 @@ func userFromContext(r *http.Request) (*user.User, bool) {
 	return u, ok
 }
 
+// requirePerm gates a route on a capability. It runs after requireAuth (so the
+// user is in context). With auth disabled the context has no user and the app is
+// open, so it passes through.
+func (s *Server) requirePerm(perm string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !s.cfg.AuthEnabled {
+				next.ServeHTTP(w, r)
+				return
+			}
+			u, ok := userFromContext(r)
+			if !ok {
+				writeErr(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+			if !u.Can(perm) {
+				writeErr(w, http.StatusForbidden, "you do not have permission to do that")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(r.Context()))
+		})
+	}
+}
+
+// requireAdmin gates a route on the admin flag.
+func (s *Server) requireAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.cfg.AuthEnabled {
+			next.ServeHTTP(w, r)
+			return
+		}
+		u, ok := userFromContext(r)
+		if !ok {
+			writeErr(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		if !u.Admin {
+			writeErr(w, http.StatusForbidden, "admin only")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -100,7 +161,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	local, ok := s.auth.Local()
+	local, ok := s.authn().Local()
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "password login is disabled")
 		return
@@ -117,11 +178,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, s.sessionCookie(sess.Token, sess.ExpiresAt))
-	writeJSON(w, http.StatusOK, meDTO{
-		AuthEnabled:   true,
-		AuthProviders: s.auth.Enabled(),
-		User:          &userDTO{Username: id.DisplayName, Email: id.Email, Provider: id.Provider},
-	})
+	u, _ := s.users.Get(id.Subject)
+	resp := meDTO{AuthEnabled: true, AuthProviders: s.authn().Enabled()}
+	if u != nil {
+		resp.User = meUserDTO(u)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -133,15 +195,16 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	resp := meDTO{AuthEnabled: s.cfg.AuthEnabled, AuthProviders: s.auth.Enabled()}
+	resp := meDTO{AuthEnabled: s.cfg.AuthEnabled, AuthProviders: s.authn().Enabled()}
 	if !s.cfg.AuthEnabled {
-		// Auth off: the app is open; report a placeholder user so the gate opens.
-		resp.User = &userDTO{Username: "local"}
+		// Auth off: the app is open; report a full-access placeholder user so the
+		// gate opens and every action is available.
+		resp.User = &userDTO{Username: "local", Admin: true, Permissions: []string{}}
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	if u, ok := s.currentUser(r); ok {
-		resp.User = &userDTO{Username: u.Username, Email: u.Email, Provider: u.Provider}
+		resp.User = meUserDTO(u)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -258,7 +321,7 @@ func (s *Server) sameOrigin(r *http.Request) bool {
 // stashes them in short-lived cookies, and redirects to the IdP.
 func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "provider")
-	rp, ok := s.auth.Redirect(name)
+	rp, ok := s.authn().Redirect(name)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "unknown SSO provider")
 		return
@@ -275,7 +338,7 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 // provisions the user, mints a session, and redirects to the app.
 func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "provider")
-	rp, ok := s.auth.Redirect(name)
+	rp, ok := s.authn().Redirect(name)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "unknown SSO provider")
 		return

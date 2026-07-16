@@ -10,6 +10,7 @@ package user
 
 import (
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -18,6 +19,20 @@ var ErrNotFound = errors.New("user not found")
 
 // ErrExists is returned when creating a user whose username already exists.
 var ErrExists = errors.New("user already exists")
+
+// Permission capabilities. Admin implies all of them. Any authenticated user
+// may read; these gate the mutating/operational actions.
+const (
+	PermResources = "resources" // create/update/delete resources, modules, variables, providers, secrets, import, projects
+	PermDeploy    = "deploy"     // run plan
+	PermGit       = "git"        // git commit/push/pull/restore/remote
+)
+
+// AllPermissions is the set of grantable (non-admin) permissions, in display
+// order.
+func AllPermissions() []string {
+	return []string{PermResources, PermDeploy, PermGit}
+}
 
 // User is an application account.
 type User struct {
@@ -29,6 +44,16 @@ type User struct {
 	Subject      string    `yaml:"subject"`       // external subject for SSO linkage (empty for pure-local)
 	CreatedAt    time.Time `yaml:"created_at"`
 	Disabled     bool      `yaml:"disabled"`
+	// Admin grants full access, including user management and settings.
+	Admin bool `yaml:"admin,omitempty"`
+	// Permissions is the set of granted capabilities (see Perm* constants);
+	// ignored when Admin is true.
+	Permissions []string `yaml:"permissions,omitempty"`
+}
+
+// Can reports whether the user holds a permission (admins hold everything).
+func (u *User) Can(perm string) bool {
+	return u.Admin || slices.Contains(u.Permissions, perm)
 }
 
 // Store persists users.

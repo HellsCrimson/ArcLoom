@@ -46,12 +46,7 @@ type Store struct {
 // NewStore builds a store. masterKey (from ARCLOOM_SECRET_KEY) enables the local
 // encrypted backend when non-empty; it is hashed to a 32-byte AES key.
 func NewStore(dir, masterKey string) *Store {
-	var key []byte
-	if masterKey != "" {
-		h := sha256.Sum256([]byte(masterKey))
-		key = h[:]
-	}
-	return &Store{dir: dir, key: key}
+	return &Store{dir: dir, key: DeriveKey(masterKey)}
 }
 
 // LocalEnabled reports whether the local encrypted backend is usable.
@@ -193,6 +188,22 @@ func (s *Store) saveLocal(projectID string, m map[string]string) error {
 	}
 	return os.WriteFile(s.path(projectID), enc, 0o600)
 }
+
+// DeriveKey turns a master passphrase into a 32-byte AES key (sha256), or nil
+// when the passphrase is empty. Exposed so other app-level encrypted stores
+// (e.g. internal/settings) share the same key derivation as the secret store.
+func DeriveKey(masterKey string) []byte {
+	if masterKey == "" {
+		return nil
+	}
+	h := sha256.Sum256([]byte(masterKey))
+	return h[:]
+}
+
+// Encrypt/Decrypt expose the AES-256-GCM primitives for app-level encrypted
+// values outside the per-project secret store.
+func Encrypt(key, plaintext []byte) ([]byte, error) { return encrypt(key, plaintext) }
+func Decrypt(key, data []byte) ([]byte, error)      { return decrypt(key, data) }
 
 func encrypt(key, plaintext []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)

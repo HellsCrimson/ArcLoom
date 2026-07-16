@@ -11,6 +11,7 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/config"
 	"github.com/HellsCrimson/ArcLoom/internal/session"
+	"github.com/HellsCrimson/ArcLoom/internal/settings"
 	"github.com/HellsCrimson/ArcLoom/internal/store"
 	"github.com/HellsCrimson/ArcLoom/internal/user"
 )
@@ -36,8 +37,18 @@ func newAuthTestServer(t *testing.T) http.Handler {
 		SessionTTL:  time.Hour,
 	}
 	authn := auth.New(auth.NewLocalProvider(users))
-	srv := New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, session.NewMemory(), users)
+	srv := New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, session.NewMemory(), users, testSettings(t))
 	return srv.Handler()
+}
+
+// testSettings builds an ephemeral settings store (no master key).
+func testSettings(t *testing.T) *settings.Store {
+	t.Helper()
+	set, err := settings.NewStore(t.TempDir()+"/settings.yaml", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return set
 }
 
 func login(t *testing.T, h http.Handler, username, password string) *http.Cookie {
@@ -198,7 +209,7 @@ func newSSOTestServer(t *testing.T, fake *fakeRedirect) (http.Handler, user.Stor
 	sessions := session.NewMemory()
 	cfg := config.Config{AuthEnabled: true, CookieName: "arcloom_session", SessionTTL: time.Hour}
 	authn := auth.New(auth.NewLocalProvider(users), fake)
-	return New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, sessions, users).Handler(), users, sessions
+	return New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, sessions, users, testSettings(t)).Handler(), users, sessions
 }
 
 func TestSSOLogin_RedirectsAndSetsCookies(t *testing.T) {

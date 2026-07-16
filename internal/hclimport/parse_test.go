@@ -206,9 +206,11 @@ output "vpc_id" {
 	}
 }
 
-func TestParse_LocalModuleCallWithoutFilesStaysRemote(t *testing.T) {
-	// A local source whose child files weren't imported is kept as a plain
-	// module call (with a warning) rather than being dropped.
+func TestParse_LocalModuleCallWithoutFilesBecomesLocalModule(t *testing.T) {
+	// A local source whose child files weren't imported still becomes a (empty)
+	// local module carrying the inputs — NOT a remote module. This is what lets
+	// the user later populate it (or import files into it) without producing a
+	// duplicate `module` block.
 	root := `
 module "vpc" {
   source = "./modules/vpc"
@@ -219,14 +221,14 @@ module "vpc" {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Modules) != 1 || res.Modules[0].Name != "vpc" {
-		t.Fatalf("expected the call kept as a module: %+v", res.Modules)
+	if len(res.Modules) != 0 {
+		t.Fatalf("local call must not be a remote module: %+v", res.Modules)
 	}
-	if len(res.LocalModules) != 0 {
-		t.Fatalf("no local module should be created: %+v", res.LocalModules)
+	if len(res.LocalModules) != 1 || res.LocalModules[0].Name != "vpc" {
+		t.Fatalf("expected an empty local module 'vpc': %+v", res.LocalModules)
 	}
-	if len(res.Warnings) == 0 {
-		t.Error("expected a warning about missing local module files")
+	if got := res.LocalModules[0].Inputs["cidr"]; got.Mode != model.ModeLiteral || got.Literal.AsString() != "10.0.0.0/16" {
+		t.Errorf("inputs not captured: %+v", res.LocalModules[0].Inputs)
 	}
 }
 

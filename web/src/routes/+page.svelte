@@ -8,6 +8,7 @@
 	import SecretsModal from '$lib/components/SecretsModal.svelte';
 	import GitPanel from '$lib/components/GitPanel.svelte';
 	import UserMenu from '$lib/components/UserMenu.svelte';
+	import SettingsModal from '$lib/components/SettingsModal.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import EditorView from '$lib/editor/EditorView.svelte';
 	import HclView from '$lib/editor/HclView.svelte';
@@ -62,6 +63,7 @@
 	let showConfig = $state(false);
 	// Import dropdown in the top bar
 	let showImportMenu = $state(false);
+	let showSettings = $state(false);
 
 	// Git
 	let showGit = $state(false);
@@ -513,11 +515,18 @@
 			const files = { ...importHclFiles };
 			if (importHclText.trim()) files['pasted.tf'] = importHclText;
 			if (Object.keys(files).length === 0) throw new Error('provide .tf files or paste HCL');
-			const res = await api.importHCL(project.id, files);
+			const res = await api.importHCL(project.id, files, activeModule ?? undefined);
 			project = await api.getProject(project.id);
 			await refreshProjects();
 			await refreshHcl();
-			importMsg = `Imported ${res.addedResources} resources, ${res.addedProviders} providers${res.warnings?.length ? ` · ${res.warnings.length} warning(s)` : ''}`;
+			const where = activeModule ? `module "${activeModule}"` : 'root';
+			const parts = [
+				`${res.addedResources} resources`,
+				res.addedVariables ? `${res.addedVariables} variables` : '',
+				res.addedLocalModules ? `${res.addedLocalModules} modules` : '',
+				`${res.addedProviders} providers`
+			].filter(Boolean);
+			importMsg = `Imported into ${where}: ${parts.join(', ')}${res.warnings?.length ? ` · ${res.warnings.length} warning(s)` : ''}`;
 			showImportHcl = false;
 			importHclText = '';
 			importHclFiles = {};
@@ -675,9 +684,12 @@
 				<button class={hdrBtn} onclick={() => { loadSecrets(); showSecrets = true; }}>
 					<KeyRound size={14} /> Secrets{#if secretsList.length > 0}<span class="text-[10px] text-[var(--al-muted)]">{secretsList.length}</span>{/if}
 				</button>
-				<button class={hdrBtn} onclick={() => (showGit = true)}>
-					<GitBranch size={14} /> Git
-				</button>
+				{#if auth.can('git')}
+					<button class={hdrBtn} onclick={() => (showGit = true)}>
+						<GitBranch size={14} /> Git
+					</button>
+				{/if}
+				{#if auth.can('resources')}
 				<div class="relative">
 					<button class={hdrBtn} onclick={(e) => { e.stopPropagation(); importMsg = ''; showImportMenu = !showImportMenu; }}>
 						<FileDown size={14} /> Import <ChevronDown size={13} />
@@ -689,12 +701,16 @@
 						</div>
 					{/if}
 				</div>
+				{/if}
 			</div>
 		{/if}
 
 		<div class="ml-auto flex items-center gap-2 text-sm">
 			<span class="text-xs text-[var(--al-muted)]">engine</span>
 			<span class="mono rounded border border-[var(--al-border)] px-2 py-0.5 text-xs text-[var(--al-muted)]">{engine || defaultEngine}</span>
+			{#if auth.isAdmin}
+				<button class={iconBtn} title="Settings" aria-label="Settings" onclick={() => (showSettings = true)}><Settings size={16} /></button>
+			{/if}
 			{#if auth.authEnabled && auth.user}
 				<UserMenu />
 			{/if}
@@ -824,7 +840,7 @@
 			{:else if schema && formKind === 'provider'}
 				<div class="mb-4 flex items-end gap-3">
 					<div class="mono text-sm text-[var(--al-muted)]">provider "<span class="text-[var(--al-accent)]">{editingProviderKey}</span>"</div>
-					<button class={btnPrimary + ' ml-auto'} onclick={saveProviderConfig} disabled={busy === 'save'}><Save size={15} /> Save provider config</button>
+					{#if auth.can('resources')}<button class={btnPrimary + ' ml-auto'} onclick={saveProviderConfig} disabled={busy === 'save'}><Save size={15} /> Save provider config</button>{/if}
 				</div>
 				{#if (schema.fields?.length ?? 0) === 0}
 					<p class="text-sm text-[var(--al-muted)]">This provider has no configurable arguments.</p>
@@ -838,7 +854,7 @@
 						<input id="resource-name" class="mono rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={resourceName} />
 					</div>
 					<div class="mono text-sm text-[var(--al-muted)]">resource "<span class="text-[var(--al-accent)]">{selectedType}</span>" "{resourceName}"{#if editingId}<span class="ml-1 text-[10px] uppercase">editing</span>{/if}</div>
-					<button class={btnPrimary + ' ml-auto'} onclick={saveResource} disabled={busy === 'save'}><Save size={15} /> {editingId ? 'Update' : 'Save'} resource</button>
+					{#if auth.can('resources')}<button class={btnPrimary + ' ml-auto'} onclick={saveResource} disabled={busy === 'save'}><Save size={15} /> {editingId ? 'Update' : 'Save'} resource</button>{/if}
 				</div>
 				<SchemaForm {schema} bind:values {references} secrets={secretNames} />
 			{:else}
@@ -853,9 +869,11 @@
 			<div class="min-h-0 flex-[3]">
 				<HclView {hcl}>
 					{#snippet right()}
+						{#if auth.can('deploy')}
 						<button class={btnGhost} onclick={runPlan} disabled={!project || busy === 'plan'}>
 							{#if busy === 'plan'}<Loader2 size={14} class="animate-spin" />{:else}<Play size={14} />{/if} Plan
 						</button>
+						{/if}
 					{/snippet}
 				</HclView>
 			</div>
@@ -901,6 +919,10 @@
 		</button>
 	{/snippet}
 </Modal>
+
+{#if auth.isAdmin}
+	<SettingsModal bind:open={showSettings} />
+{/if}
 
 {#if project}
 	<ProjectConfig
@@ -961,7 +983,11 @@
 
 <!-- Import HCL modal -->
 <Modal title="Import existing HCL" bind:open={showImportHcl}>
-	<p class="mb-2 text-xs text-[var(--al-muted)]">Select one or more <span class="mono">.tf</span> files, or paste HCL below. Resources, providers and required_providers are reconstructed into the model.</p>
+	<div class="mb-2 flex items-center gap-1.5 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-xs">
+		<span class="text-[var(--al-muted)]">Importing into</span>
+		<span class="mono font-medium text-[var(--al-text)]">{activeModule ? `module "${activeModule}"` : 'root module'}</span>
+	</div>
+	<p class="mb-2 text-xs text-[var(--al-muted)]">Select one or more <span class="mono">.tf</span> files, or paste HCL below. Resources, variables, providers and required_providers are reconstructed into the model.</p>
 	<input type="file" multiple accept=".tf,.hcl" class="mb-2 text-xs" onchange={(e) => readFiles(e.currentTarget.files, 'hcl')} />
 	{#if Object.keys(importHclFiles).length > 0}
 		<p class="mb-2 text-xs text-[var(--al-muted)]">Files: {Object.keys(importHclFiles).join(', ')}</p>

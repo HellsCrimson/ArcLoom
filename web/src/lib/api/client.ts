@@ -156,11 +156,11 @@ export const api = {
 			return r.text();
 		}),
 
-	importHCL: (id: string, files: Record<string, string>) =>
+	importHCL: (id: string, files: Record<string, string>, module?: string) =>
 		fetch(`/api/projects/${id}/import/hcl`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ files })
+			body: JSON.stringify({ files, module: module ?? '' })
 		}).then((r) => json<ImportResult>(r)),
 
 	importState: (id: string, stateJSON: string) =>
@@ -171,6 +171,47 @@ export const api = {
 		}).then((r) => json<ImportResult>(r)),
 
 	graph: (id: string) => fetch(`/api/projects/${id}/graph`).then((r) => json<GraphData>(r)),
+
+	admin: {
+		listUsers: () => fetch('/api/admin/users', { credentials: 'same-origin' }).then((r) => json<AdminUser[]>(r)),
+		createUser: (body: {
+			username: string;
+			password: string;
+			email?: string;
+			admin?: boolean;
+			permissions?: string[];
+		}) =>
+			fetch('/api/admin/users', {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			}).then((r) => json<AdminUser>(r)),
+		updateUser: (
+			id: string,
+			body: { email?: string; admin?: boolean; permissions?: string[]; disabled?: boolean }
+		) =>
+			fetch(`/api/admin/users/${id}`, {
+				method: 'PUT',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			}).then((r) => json<AdminUser>(r)),
+		resetPassword: (id: string, newPassword: string) =>
+			gitAction(`/api/admin/users/${id}/password`, { newPassword }),
+		deleteUser: (id: string) =>
+			fetch(`/api/admin/users/${id}`, { method: 'DELETE', credentials: 'same-origin' }).then((r) => {
+				if (!r.ok && r.status !== 204) return r.json().then((b) => { throw new Error(b.error || 'failed'); });
+			}),
+		getSSO: () => fetch('/api/admin/settings/sso', { credentials: 'same-origin' }).then((r) => json<SSOSettings>(r)),
+		setSSO: (body: SSOUpdate) =>
+			fetch('/api/admin/settings/sso', {
+				method: 'PUT',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			}).then((r) => json<SSOSettings>(r))
+	},
 
 	git: {
 		status: (id: string) => fetch(`/api/projects/${id}/git/status`).then((r) => json<GitStatus>(r)),
@@ -219,9 +260,46 @@ async function gitAction(url: string, body: unknown): Promise<void> {
 	}
 }
 
+export interface AdminUser {
+	id: string;
+	username: string;
+	email?: string;
+	provider: string;
+	admin: boolean;
+	permissions: string[];
+	disabled: boolean;
+	createdAt: string;
+}
+
+export interface SSOSettings {
+	enabled: boolean;
+	issuer: string;
+	clientId: string;
+	redirectUrl: string;
+	scopes: string;
+	hasSecret: boolean;
+	secretStorable: boolean;
+	active: boolean;
+}
+
+export interface SSOUpdate {
+	enabled: boolean;
+	issuer: string;
+	clientId: string;
+	clientSecret?: string;
+	redirectUrl: string;
+	scopes: string;
+}
+
 export interface ImportResult {
 	addedResources: number;
 	addedProviders: number;
+	addedVariables?: number;
+	addedLocals?: number;
+	addedOutputs?: number;
+	addedDataSources?: number;
+	addedModules?: number;
+	addedLocalModules?: number;
 	warnings?: string[];
 }
 

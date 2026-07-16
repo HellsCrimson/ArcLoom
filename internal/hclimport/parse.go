@@ -76,7 +76,7 @@ func Parse(files map[string][]byte, newID idFunc) (*Result, error) {
 		parseRootBody(body, src, name, res, provIndex, newID)
 	}
 
-	linkLocalModules(res, locals)
+	linkLocalModules(res, locals, &localOrder)
 	for _, n := range localOrder {
 		res.LocalModules = append(res.LocalModules, *locals[n])
 	}
@@ -177,10 +177,13 @@ func parseModuleBody(body *hclsyntax.Body, src []byte, name string, lm *model.Lo
 }
 
 // linkLocalModules connects root `module` calls with a local ("./...") source to
-// their imported LocalModule, moving the call's arguments into the module's
-// Inputs and dropping it from the remote Modules list. Local calls whose child
-// files were not imported are kept as remote-style modules with a warning.
-func linkLocalModules(res *Result, locals map[string]*model.LocalModule) {
+// a LocalModule, moving the call's arguments into the module's Inputs and
+// dropping it from the remote Modules list. If the module's child files were not
+// imported, an empty LocalModule is created anyway (registered in order) so the
+// call is represented as a local module — this prevents a duplicate `module`
+// block when the user later fills the module in. Registry/remote modules are
+// left untouched.
+func linkLocalModules(res *Result, locals map[string]*model.LocalModule, order *[]string) {
 	kept := res.Modules[:0]
 	for _, m := range res.Modules {
 		if !isLocalSource(m.Source) {
@@ -190,9 +193,9 @@ func linkLocalModules(res *Result, locals map[string]*model.LocalModule) {
 		folder := localSourceFolder(m.Source)
 		lm, ok := locals[folder]
 		if !ok {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("module %q has local source %q but its files were not imported; kept as a plain module call", m.Name, m.Source))
-			kept = append(kept, m)
-			continue
+			lm = &model.LocalModule{Name: folder}
+			locals[folder] = lm
+			*order = append(*order, folder)
 		}
 		if lm.Inputs == nil && len(m.Config) > 0 {
 			lm.Inputs = m.Config

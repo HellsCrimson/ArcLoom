@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +21,7 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
 	"github.com/HellsCrimson/ArcLoom/internal/secrets"
 	"github.com/HellsCrimson/ArcLoom/internal/session"
+	"github.com/HellsCrimson/ArcLoom/internal/settings"
 	"github.com/HellsCrimson/ArcLoom/internal/store"
 	"github.com/HellsCrimson/ArcLoom/internal/user"
 	"github.com/HellsCrimson/ArcLoom/internal/webui"
@@ -107,6 +107,9 @@ func main() {
 		if err := bootstrapAdmin(users, cfg); err != nil {
 			log.Fatalf("auth bootstrap: %v", err)
 		}
+		if err := ensureAdmin(users, cfg); err != nil {
+			log.Fatalf("ensure admin: %v", err)
+		}
 		log.Printf("authentication enabled (users in %s)", cfg.UsersDir)
 		// Periodically purge expired sessions.
 		go func() {
@@ -119,24 +122,34 @@ func main() {
 	} else {
 		log.Printf("WARNING: authentication disabled (ARCLOOM_AUTH=false); the API is open")
 	}
-	providers := []auth.Provider{auth.NewLocalProvider(users)}
-	if cfg.OIDCEnabled() {
-		// Discovery contacts the IdP; give it a bounded timeout. If it fails we
-		// log and continue with local login only, so a transiently-unreachable
-		// IdP at boot doesn't take the whole app down.
-		dctx, dcancel := context.WithTimeout(context.Background(), 15*time.Second)
-		oidcp, err := auth.NewOIDCProvider(dctx, cfg.OIDCIssuer, cfg.OIDCClientID, cfg.OIDCClientSecret, cfg.OIDCRedirectURL, strings.Fields(cfg.OIDCScopes))
-		dcancel()
-		if err != nil {
-			log.Printf("WARNING: OIDC SSO disabled: %v", err)
+	// App-level settings (runtime-editable SSO). Seed from the ARCLOOM_OIDC_* env
+	// vars on first run so existing env-based deployments migrate automatically;
+	// after that the persisted settings are the source of truth.
+	set, err := settings.NewStore(cfg.SettingsFile, cfg.SecretKey)
+	if err != nil {
+		log.Fatalf("init settings: %v", err)
+	}
+	if cfg.OIDCEnabled() && !set.SSO().Enabled {
+		if err := set.SetSSO(settings.SSO{
+			Enabled: true, Issuer: cfg.OIDCIssuer, ClientID: cfg.OIDCClientID,
+			ClientSecret: cfg.OIDCClientSecret, RedirectURL: cfg.OIDCRedirectURL, Scopes: cfg.OIDCScopes,
+		}); err != nil {
+			log.Printf("WARNING: could not seed SSO settings from env: %v", err)
 		} else {
-			providers = append(providers, oidcp)
-			log.Printf("OIDC SSO enabled (issuer %s)", cfg.OIDCIssuer)
+			log.Printf("seeded SSO settings from ARCLOOM_OIDC_* env")
 		}
 	}
-	authn := auth.New(providers...)
 
-	srv := api.New(cfg, runners, st, sc, sec, webui.FS(), authn, sessions, users)
+	// Initial Authenticator is local-only; ReloadAuth then adds OIDC from the
+	// persisted settings (bounded discovery; failure is non-fatal).
+	srv := api.New(cfg, runners, st, sc, sec, webui.FS(), auth.New(auth.NewLocalProvider(users)), sessions, users, set)
+	rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := srv.ReloadAuth(rctx); err != nil {
+		log.Printf("WARNING: OIDC SSO disabled: %v", err)
+	} else if set.SSO().Enabled {
+		log.Printf("OIDC SSO enabled (issuer %s)", set.SSO().Issuer)
+	}
+	rcancel()
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
@@ -186,10 +199,47 @@ func bootstrapAdmin(users user.Store, cfg config.Config) error {
 		PasswordHash: hash,
 		Provider:     auth.ProviderLocal,
 		CreatedAt:    time.Now(),
+		Admin:        true,
 	}
 	if err := users.Create(u); err != nil {
 		return fmt.Errorf("create admin: %w", err)
 	}
 	log.Printf("seeded admin user %q", cfg.AdminUsername)
+	return nil
+}
+
+// ensureAdmin guarantees at least one admin exists (an upgrade path for stores
+// created before the admin flag): if none is marked admin, it promotes the user
+// named by ARCLOOM_ADMIN_USERNAME, or the sole user if there is exactly one.
+func ensureAdmin(users user.Store, cfg config.Config) error {
+	all, err := users.List()
+	if err != nil {
+		return err
+	}
+	if len(all) == 0 {
+		return nil
+	}
+	for _, u := range all {
+		if u.Admin {
+			return nil
+		}
+	}
+	var target string
+	for _, u := range all {
+		if u.Username == cfg.AdminUsername {
+			target = u.ID
+		}
+	}
+	if target == "" && len(all) == 1 {
+		target = all[0].ID
+	}
+	if target == "" {
+		log.Printf("WARNING: no admin user exists; set one via ARCLOOM_ADMIN_USERNAME")
+		return nil
+	}
+	if err := users.Update(target, func(u *user.User) error { u.Admin = true; return nil }); err != nil {
+		return err
+	}
+	log.Printf("promoted existing user to admin")
 	return nil
 }

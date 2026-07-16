@@ -7,7 +7,12 @@ export interface MeUser {
 	username: string;
 	email?: string;
 	provider?: string;
+	admin: boolean;
+	permissions: string[];
 }
+
+// Permission constants (mirror internal/user).
+export const PERMS = { resources: 'resources', deploy: 'deploy', git: 'git' } as const;
 
 interface MeResponse {
 	authEnabled: boolean;
@@ -26,6 +31,18 @@ class AuthStore {
 	// entirely, or a user is logged in.
 	get authenticated(): boolean {
 		return !this.authEnabled || this.user !== null;
+	}
+
+	get isAdmin(): boolean {
+		return this.user?.admin ?? false;
+	}
+
+	// can reports whether the current user holds a capability (admins hold all;
+	// when auth is disabled everything is allowed).
+	can(perm: string): boolean {
+		if (!this.authEnabled) return true;
+		if (!this.user) return false;
+		return this.user.admin || this.user.permissions.includes(perm);
 	}
 
 	private apply(d: MeResponse) {

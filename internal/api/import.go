@@ -15,9 +15,11 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/store"
 )
 
-// importHCLRequest carries one or more HCL files to import.
+// importHCLRequest carries one or more HCL files to import. Module targets a
+// local module scope ("" = root project).
 type importHCLRequest struct {
-	Files map[string]string `json:"files"` // filename -> contents
+	Files  map[string]string `json:"files"` // filename -> contents
+	Module string            `json:"module,omitempty"`
 }
 
 type importResponse struct {
@@ -58,16 +60,39 @@ func (s *Server) handleImportHCL(w http.ResponseWriter, r *http.Request) {
 
 	resp := importResponse{Warnings: parsed.Warnings}
 	err = s.store.Update(id, func(p *model.Project) error {
+		// Providers always live at the project root, even when importing into a
+		// module (a child module inherits the root's providers).
 		resp.AddedProviders = mergeProviders(p, parsed.Providers)
-		resp.AddedResources = mergeResources(p, parsed.Resources)
-		resp.AddedDataSources = mergeDataSources(p, parsed.DataSources)
-		resp.AddedVariables = mergeVariables(p, parsed.Variables)
-		resp.AddedLocals = mergeLocals(p, parsed.Locals)
-		resp.AddedOutputs = mergeOutputs(p, parsed.Outputs)
-		resp.AddedModules = mergeModules(p, parsed.Modules)
-		resp.AddedLocalModules = mergeLocalModules(p, parsed.LocalModules)
+
+		scope := &p.Resources
+		vars, locals, outputs, data := &p.Variables, &p.Locals, &p.Outputs, &p.DataSources
+		if req.Module != "" {
+			lm := findLocalModule(p, req.Module)
+			if lm == nil {
+				return errModuleNotFound
+			}
+			scope = &lm.Resources
+			vars, locals, outputs, data = &lm.Variables, &lm.Locals, &lm.Outputs, &lm.DataSources
+			// Module-scope import can't hold provider/terraform or nested modules.
+			if len(parsed.Modules) > 0 || len(parsed.LocalModules) > 0 {
+				resp.Warnings = append(resp.Warnings, "nested modules are not supported inside a module and were skipped")
+			}
+		} else {
+			resp.AddedModules = mergeModules(p, parsed.Modules)
+			resp.AddedLocalModules = mergeLocalModules(p, parsed.LocalModules)
+		}
+
+		resp.AddedResources = mergeResourcesInto(scope, parsed.Resources)
+		resp.AddedDataSources = mergeDataSourcesInto(data, parsed.DataSources)
+		resp.AddedVariables = mergeVariablesInto(vars, parsed.Variables)
+		resp.AddedLocals = mergeLocalsInto(locals, parsed.Locals)
+		resp.AddedOutputs = mergeOutputsInto(outputs, parsed.Outputs)
 		return nil
 	})
+	if errors.Is(err, errModuleNotFound) {
+		writeErr(w, http.StatusNotFound, "module not found")
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "project not found")
 		return
@@ -186,10 +211,27 @@ func mergeProviders(p *model.Project, incoming []model.ProviderInstance) int {
 	return added
 }
 
-// mergeDataSources appends imported data sources, renaming on (type,name) clash.
-func mergeDataSources(p *model.Project, incoming []model.Resource) int {
+// errModuleNotFound is returned when an import targets a missing module scope.
+var errModuleNotFound = errors.New("module not found")
+
+// findLocalModule returns the named local module, or nil.
+func findLocalModule(p *model.Project, name string) *model.LocalModule {
+	for i := range p.LocalModules {
+		if p.LocalModules[i].Name == name {
+			return &p.LocalModules[i]
+		}
+	}
+	return nil
+}
+
+// The merge helpers below operate on a scope's slice pointer so the same logic
+// serves both the project root and a local module. The project-level wrappers
+// preserve the existing call sites (state import, root HCL import).
+
+// mergeDataSourcesInto appends imported data sources, renaming on (type,name) clash.
+func mergeDataSourcesInto(dst *[]model.Resource, incoming []model.Resource) int {
 	taken := map[string]bool{}
-	for _, r := range p.DataSources {
+	for _, r := range *dst {
 		taken[r.Type+"."+r.Name] = true
 	}
 	added := 0
@@ -201,15 +243,15 @@ func mergeDataSources(p *model.Project, incoming []model.Resource) int {
 			r.Name = fmt.Sprintf("%s_%d", base, n)
 		}
 		taken[r.Type+"."+r.Name] = true
-		p.DataSources = append(p.DataSources, r)
+		*dst = append(*dst, r)
 		added++
 	}
 	return added
 }
 
-func mergeVariables(p *model.Project, incoming []model.Variable) int {
+func mergeVariablesInto(dst *[]model.Variable, incoming []model.Variable) int {
 	taken := map[string]bool{}
-	for _, v := range p.Variables {
+	for _, v := range *dst {
 		taken[v.Name] = true
 	}
 	added := 0
@@ -218,15 +260,15 @@ func mergeVariables(p *model.Project, incoming []model.Variable) int {
 			continue
 		}
 		taken[v.Name] = true
-		p.Variables = append(p.Variables, v)
+		*dst = append(*dst, v)
 		added++
 	}
 	return added
 }
 
-func mergeLocals(p *model.Project, incoming []model.Local) int {
+func mergeLocalsInto(dst *[]model.Local, incoming []model.Local) int {
 	taken := map[string]bool{}
-	for _, l := range p.Locals {
+	for _, l := range *dst {
 		taken[l.Name] = true
 	}
 	added := 0
@@ -235,15 +277,15 @@ func mergeLocals(p *model.Project, incoming []model.Local) int {
 			continue
 		}
 		taken[l.Name] = true
-		p.Locals = append(p.Locals, l)
+		*dst = append(*dst, l)
 		added++
 	}
 	return added
 }
 
-func mergeOutputs(p *model.Project, incoming []model.Output) int {
+func mergeOutputsInto(dst *[]model.Output, incoming []model.Output) int {
 	taken := map[string]bool{}
-	for _, o := range p.Outputs {
+	for _, o := range *dst {
 		taken[o.Name] = true
 	}
 	added := 0
@@ -252,7 +294,7 @@ func mergeOutputs(p *model.Project, incoming []model.Output) int {
 			continue
 		}
 		taken[o.Name] = true
-		p.Outputs = append(p.Outputs, o)
+		*dst = append(*dst, o)
 		added++
 	}
 	return added
@@ -296,8 +338,12 @@ func mergeLocalModules(p *model.Project, incoming []model.LocalModule) int {
 
 // mergeResources appends imported resources, renaming on (type,name) collision.
 func mergeResources(p *model.Project, incoming []model.Resource) int {
+	return mergeResourcesInto(&p.Resources, incoming)
+}
+
+func mergeResourcesInto(dst *[]model.Resource, incoming []model.Resource) int {
 	taken := map[string]bool{}
-	for _, r := range p.Resources {
+	for _, r := range *dst {
 		taken[r.Type+"."+r.Name] = true
 	}
 	added := 0
@@ -309,7 +355,7 @@ func mergeResources(p *model.Project, incoming []model.Resource) int {
 			r.Name = fmt.Sprintf("%s_%d", base, n)
 		}
 		taken[r.Type+"."+r.Name] = true
-		p.Resources = append(p.Resources, r)
+		*dst = append(*dst, r)
 		added++
 	}
 	return added

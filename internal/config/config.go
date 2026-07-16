@@ -41,6 +41,8 @@ type Config struct {
 	UsersDir string
 	// SessionsDir holds server-side login sessions (never in Git).
 	SessionsDir string
+	// SettingsFile is the app-level settings document (runtime SSO config).
+	SettingsFile string
 	// SessionTTL is how long a login session stays valid (ARCLOOM_SESSION_TTL).
 	SessionTTL time.Duration
 	// CookieName is the session cookie name (fixed).
@@ -93,6 +95,7 @@ func Load() Config {
 		AuthEnabled:   boolEnv("ARCLOOM_AUTH", true),
 		UsersDir:      env("ARCLOOM_USERS_DIR", filepath.Join(filepath.Dir(dataDir), "users")),
 		SessionsDir:   env("ARCLOOM_SESSIONS_DIR", filepath.Join(filepath.Dir(dataDir), "sessions")),
+		SettingsFile:  env("ARCLOOM_SETTINGS_FILE", filepath.Join(filepath.Dir(dataDir), "settings.yaml")),
 		SessionTTL:    durEnv("ARCLOOM_SESSION_TTL", 7*24*time.Hour),
 		CookieName:    "arcloom_session",
 		CookieSecure:  boolEnv("ARCLOOM_COOKIE_SECURE", true),

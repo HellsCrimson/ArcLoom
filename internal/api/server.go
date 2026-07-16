@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -17,6 +18,7 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
 	"github.com/HellsCrimson/ArcLoom/internal/secrets"
 	"github.com/HellsCrimson/ArcLoom/internal/session"
+	"github.com/HellsCrimson/ArcLoom/internal/settings"
 	"github.com/HellsCrimson/ArcLoom/internal/store"
 	"github.com/HellsCrimson/ArcLoom/internal/user"
 )
@@ -29,15 +31,25 @@ type Server struct {
 	cache    *cache.SchemaCache
 	secrets  *secrets.Store
 	static   fs.FS // embedded SPA build (may be nil in dev)
-	auth     *auth.Authenticator
+	auth     atomic.Pointer[auth.Authenticator]
 	sessions session.Store
 	users    user.Store
+	settings *settings.Store
 }
 
 // New builds a Server. runners maps each available engine to its runner.
-func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store) *Server {
-	return &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, auth: authn, sessions: sessions, users: users}
+func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store) *Server {
+	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set}
+	s.auth.Store(authn)
+	return s
 }
+
+// authn returns the current Authenticator (swapped atomically when SSO settings
+// change at runtime).
+func (s *Server) authn() *auth.Authenticator { return s.auth.Load() }
+
+// setAuth atomically replaces the Authenticator (used after SSO settings change).
+func (s *Server) setAuth(a *auth.Authenticator) { s.auth.Store(a) }
 
 // runnerFor returns the runner for an engine name, falling back to the
 // configured default engine when name is empty.
@@ -70,43 +82,71 @@ func (s *Server) Handler() http.Handler {
 		// Protected: everything else requires a valid session. requireAuth runs
 		// before every handler body, so the SSE plan route is gated before it
 		// starts streaming (a 401 can't be sent once WriteHeader(200) fires).
+		// Within it, mutating/operational routes are further gated by capability
+		// (resources / deploy / git / admin); reads need only a session.
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
 
+			// Read-only / self-service (any authenticated user).
 			r.Post("/auth/password", s.handlePasswordChange)
-
 			r.Get("/engines", s.handleEngines)
-			r.Post("/providers", s.handleAddProvider)
 			r.Get("/providers/{source}/schema", s.handleProviderSchema)
 			r.Get("/providers/{source}/resources/{type}/schema", s.handleResourceSchema)
-
 			r.Get("/projects", s.handleListProjects)
-			r.Post("/projects", s.handleCreateProject)
 			r.Get("/projects/{id}", s.handleGetProject)
-			r.Delete("/projects/{id}", s.handleDeleteProject)
-			r.Put("/projects/{id}/providers/{key}", s.handleSetProviderConfig)
-			r.Put("/projects/{id}/config", s.handleSetConfig)
-			r.Post("/projects/{id}/modules/local", s.handleCreateLocalModule)
-			r.Delete("/projects/{id}/modules/local/{name}", s.handleDeleteLocalModule)
-			r.Put("/projects/{id}/modules/local/{name}/inputs", s.handleSetModuleInputs)
 			r.Get("/projects/{id}/secrets", s.handleListSecrets)
-			r.Put("/projects/{id}/secrets/{name}", s.handleSetSecret)
-			r.Delete("/projects/{id}/secrets/{name}", s.handleDeleteSecret)
-			r.Post("/projects/{id}/resources", s.handleUpsertResource)
-			r.Delete("/projects/{id}/resources/{rid}", s.handleDeleteResource)
 			r.Get("/projects/{id}/hcl", s.handleProjectHCL)
+			r.Get("/projects/{id}/graph", s.handleGraph)
 			r.Get("/projects/{id}/git/status", s.handleGitStatus)
-			r.Post("/projects/{id}/git/commit", s.handleGitCommit)
 			r.Get("/projects/{id}/git/log", s.handleGitLog)
 			r.Get("/projects/{id}/git/diff", s.handleGitDiff)
-			r.Post("/projects/{id}/git/restore", s.handleGitRestore)
-			r.Post("/projects/{id}/git/remote", s.handleGitRemote)
-			r.Post("/projects/{id}/git/push", s.handleGitPush)
-			r.Post("/projects/{id}/git/pull", s.handleGitPull)
-			r.Post("/projects/{id}/import/hcl", s.handleImportHCL)
-			r.Post("/projects/{id}/import/state", s.handleImportState)
-			r.Get("/projects/{id}/graph", s.handleGraph)
-			r.Get("/projects/{id}/plan", s.handlePlan)
+
+			// Resource editing (PermResources).
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePerm(user.PermResources))
+				r.Post("/providers", s.handleAddProvider)
+				r.Post("/projects", s.handleCreateProject)
+				r.Delete("/projects/{id}", s.handleDeleteProject)
+				r.Put("/projects/{id}/providers/{key}", s.handleSetProviderConfig)
+				r.Put("/projects/{id}/config", s.handleSetConfig)
+				r.Post("/projects/{id}/modules/local", s.handleCreateLocalModule)
+				r.Delete("/projects/{id}/modules/local/{name}", s.handleDeleteLocalModule)
+				r.Put("/projects/{id}/modules/local/{name}/inputs", s.handleSetModuleInputs)
+				r.Put("/projects/{id}/secrets/{name}", s.handleSetSecret)
+				r.Delete("/projects/{id}/secrets/{name}", s.handleDeleteSecret)
+				r.Post("/projects/{id}/resources", s.handleUpsertResource)
+				r.Delete("/projects/{id}/resources/{rid}", s.handleDeleteResource)
+				r.Post("/projects/{id}/import/hcl", s.handleImportHCL)
+				r.Post("/projects/{id}/import/state", s.handleImportState)
+			})
+
+			// Deploy / plan (PermDeploy).
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePerm(user.PermDeploy))
+				r.Get("/projects/{id}/plan", s.handlePlan)
+			})
+
+			// Git operations (PermGit).
+			r.Group(func(r chi.Router) {
+				r.Use(s.requirePerm(user.PermGit))
+				r.Post("/projects/{id}/git/commit", s.handleGitCommit)
+				r.Post("/projects/{id}/git/restore", s.handleGitRestore)
+				r.Post("/projects/{id}/git/remote", s.handleGitRemote)
+				r.Post("/projects/{id}/git/push", s.handleGitPush)
+				r.Post("/projects/{id}/git/pull", s.handleGitPull)
+			})
+
+			// Administration: user management + settings (admin only).
+			r.Group(func(r chi.Router) {
+				r.Use(s.requireAdmin)
+				r.Get("/admin/users", s.handleListUsers)
+				r.Post("/admin/users", s.handleCreateUser)
+				r.Put("/admin/users/{uid}", s.handleUpdateUser)
+				r.Post("/admin/users/{uid}/password", s.handleResetUserPassword)
+				r.Delete("/admin/users/{uid}", s.handleDeleteUser)
+				r.Get("/admin/settings/sso", s.handleGetSSO)
+				r.Put("/admin/settings/sso", s.handleSetSSO)
+			})
 		})
 	})
 
