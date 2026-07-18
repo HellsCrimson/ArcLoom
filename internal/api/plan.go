@@ -4,13 +4,20 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
+	"github.com/HellsCrimson/ArcLoom/internal/runner"
+	"github.com/HellsCrimson/ArcLoom/internal/runs"
 )
 
 // runDir is the persistent CLI workspace for a project. It lives inside the
@@ -76,31 +83,121 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		tfVars[model.SecretVarName(ref)] = val
 	}
 
-	// Stream CLI output line-by-line as "log" events. The child process is
-	// killed via r.Context() cancellation when the client disconnects.
-	logW := &lineWriter{emit: func(line string) { sse.event("log", map[string]string{"line": line}) }}
+	// Stream CLI output line-by-line as "log" events, and mirror it into a
+	// buffer for the run record. The child process is killed via r.Context()
+	// cancellation when the client disconnects.
+	var logBuf strings.Builder
+	logW := &lineWriter{emit: func(line string) {
+		logBuf.WriteString(line)
+		logBuf.WriteByte('\n')
+		sse.event("log", map[string]string{"line": line})
+	}}
+
+	rec := &runs.Run{ID: uuid.NewString(), ProjectID: p.ID, Op: op, StartedAt: time.Now()}
+	if u, ok := userFromContext(r); ok {
+		rec.User = u.Username
+	}
 
 	dir := s.runDir(p.ID)
 	switch op {
 	case "plan":
-		var res any
+		var res runner.PlanResult
 		res, err = run.Plan(r.Context(), dir, files, tfVars, logW)
 		logW.flush()
 		if err == nil {
+			rec.Plan = &res
 			sse.event("result", res)
 		}
 	case "apply":
 		err = run.Apply(r.Context(), dir, files, tfVars, logW)
 		logW.flush()
+		if err == nil {
+			rec.Outputs = s.readOutputs(r, run, dir)
+			sse.event("result", map[string]any{"outputs": rec.Outputs})
+		}
 	case "destroy":
 		err = run.Destroy(r.Context(), dir, files, tfVars, logW)
 		logW.flush()
 	}
+
+	rec.FinishedAt = time.Now()
+	rec.Log = logBuf.String()
+	if err != nil {
+		rec.Status = "error"
+		rec.Error = err.Error()
+	} else {
+		rec.Status = "success"
+	}
+	s.recordRun(rec)
+
 	if err != nil {
 		sse.event("error", map[string]string{"error": err.Error()})
 		return
 	}
 	sse.event("done", map[string]bool{"ok": true})
+}
+
+// readOutputs captures root outputs after a successful apply. Sensitive values
+// are replaced before anything is stored or sent. Failure is non-fatal: the
+// apply already succeeded.
+func (s *Server) readOutputs(r *http.Request, run runner.Runner, dir string) []runs.Output {
+	metas, err := run.Outputs(r.Context(), dir)
+	if err != nil {
+		log.Printf("read outputs after apply: %v", err)
+		return nil
+	}
+	out := make([]runs.Output, 0, len(metas))
+	for name, m := range metas {
+		val := string(m.Value)
+		if m.Sensitive {
+			val = `"(sensitive)"`
+		}
+		out = append(out, runs.Output{Name: name, Value: val, Sensitive: m.Sensitive})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// recordRun appends to the run history; history is best-effort and never fails
+// the operation.
+func (s *Server) recordRun(rec *runs.Run) {
+	if s.runs == nil {
+		return
+	}
+	if err := s.runs.Append(rec); err != nil {
+		log.Printf("record run %s/%s: %v", rec.ProjectID, rec.ID, err)
+	}
+}
+
+// handleListRuns returns a project's run history, newest first, without logs.
+func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	if s.runs == nil {
+		writeJSON(w, http.StatusOK, []*runs.Run{})
+		return
+	}
+	list, err := s.runs.List(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if list == nil {
+		list = []*runs.Run{}
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// handleGetRun returns one full run record including its log.
+func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	if s.runs == nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+	rec, err := s.runs.Get(chi.URLParam(r, "id"), chi.URLParam(r, "rid"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "run not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
 }
 
 // sseWriter emits Server-Sent Events with immediate flushing.

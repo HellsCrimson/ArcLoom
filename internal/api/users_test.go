@@ -32,7 +32,7 @@ func newRBACServer(t *testing.T) (http.Handler, user.Store, session.Store) {
 	cfg := config.Config{AuthEnabled: true, CookieName: "arcloom_session", SessionTTL: time.Hour, DefaultEngine: "tofu"}
 	sessions := session.NewMemory()
 	authn := auth.New(auth.NewLocalProvider(users))
-	h := New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, sessions, users, testSettings(t)).Handler()
+	h := New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, sessions, users, testSettings(t), nil).Handler()
 	return h, users, sessions
 }
 

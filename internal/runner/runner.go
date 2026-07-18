@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/hashicorp/terraform-exec/tfexec"
 	tfjson "github.com/hashicorp/terraform-json"
 
 	"github.com/HellsCrimson/ArcLoom/internal/model"
@@ -62,6 +63,9 @@ type Runner interface {
 	// Destroy syncs the generated files into the persistent workspace at dir,
 	// initializes it, and destroys all managed resources recorded in state.
 	Destroy(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error
+	// Outputs reads the root output values from the state persisted in dir
+	// (as left by the last apply).
+	Outputs(ctx context.Context, dir string) (map[string]tfexec.OutputMeta, error)
 	// Graph writes the generated files into a fresh workspace, initializes it,
 	// and returns the dependency graph in Graphviz DOT format.
 	Graph(ctx context.Context, files map[string][]byte) (string, error)

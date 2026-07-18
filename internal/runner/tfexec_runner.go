@@ -232,6 +232,22 @@ func (t *TfExec) Apply(ctx context.Context, dir string, files map[string][]byte,
 	return nil
 }
 
+// Outputs reads root output values from the state persisted in dir. It does
+// not sync files or init: the workspace is whatever the last operation left.
+func (t *TfExec) Outputs(ctx context.Context, dir string) (map[string]tfexec.OutputMeta, error) {
+	unlock := lockDir(dir)
+	defer unlock()
+	tf, err := tfexec.NewTerraform(dir, t.execPath)
+	if err != nil {
+		return nil, fmt.Errorf("init tfexec: %w", err)
+	}
+	out, err := tf.Output(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("output: %w", err)
+	}
+	return out, nil
+}
+
 // Destroy destroys everything recorded in the persisted state.
 func (t *TfExec) Destroy(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error {
 	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)

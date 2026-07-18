@@ -27,6 +27,9 @@ type Config struct {
 	DataDir string
 	// SecretsDir holds the encrypted per-project secret stores (never in Git).
 	SecretsDir string
+	// RunsDir holds recorded run history (plan/apply/destroy), one folder per
+	// project (never in Git).
+	RunsDir string
 	// SecretKey is the master passphrase for the local encrypted secrets
 	// backend (from ARCLOOM_SECRET_KEY); empty disables local storage.
 	SecretKey string
@@ -90,6 +93,7 @@ func Load() Config {
 		PluginCacheDir: env("TF_PLUGIN_CACHE_DIR", filepath.Join(cacheDir, "plugins")),
 		DataDir:        dataDir,
 		SecretsDir:     env("ARCLOOM_SECRETS_DIR", filepath.Join(filepath.Dir(dataDir), "secrets")),
+		RunsDir:        env("ARCLOOM_RUNS_DIR", filepath.Join(filepath.Dir(dataDir), "runs")),
 		SecretKey:      os.Getenv("ARCLOOM_SECRET_KEY"),
 
 		AuthEnabled:   boolEnv("ARCLOOM_AUTH", true),

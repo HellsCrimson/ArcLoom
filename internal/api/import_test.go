@@ -25,7 +25,7 @@ func newImportTestServer(t *testing.T, p *model.Project) (http.Handler, store.St
 	}
 	cfg := config.Config{AuthEnabled: false, CookieName: "arcloom_session"}
 	authn := auth.New(auth.NewLocalProvider(user.NewMemory()))
-	srv := New(cfg, nil, st, nil, nil, nil, authn, session.NewMemory(), user.NewMemory(), testSettings(t))
+	srv := New(cfg, nil, st, nil, nil, nil, authn, session.NewMemory(), user.NewMemory(), testSettings(t), nil)
 	return srv.Handler(), st
 }
 

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp, type PlanChange } from '$lib/api/client';
+	import { api, streamPlan, streamOp, type PlanChange, type RunOutput } from '$lib/api/client';
+	import RunsPanel from '$lib/components/RunsPanel.svelte';
 	import type { AttrValue, Engine, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -15,7 +16,7 @@
 	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -44,9 +45,11 @@
 	let planResult = $state<string>('');
 	let planChanges = $state<PlanChange[]>([]);
 	let planCounts = $state<{ add: number; change: number; destroy: number; replace: number } | null>(null);
+	let applyOutputs = $state<RunOutput[]>([]);
 	let showApplyConfirm = $state(false);
 	let showDestroyConfirm = $state(false);
 	let destroyName = $state('');
+	let showRuns = $state(false);
 
 	let busy = $state<string>('');
 	let error = $state('');
@@ -241,6 +244,7 @@
 		planResult = '';
 		planChanges = [];
 		planCounts = null;
+		applyOutputs = [];
 		resourceTypes = [];
 		activeModule = null;
 	}
@@ -648,6 +652,7 @@
 		planResult = '';
 		planChanges = [];
 		planCounts = null;
+		applyOutputs = [];
 		busy = 'plan';
 		streamPlan(project.id, (ev) => {
 			if (ev.kind === 'log') planLog = [...planLog, ev.line];
@@ -655,7 +660,7 @@
 				planResult = ev.hasChanges ? 'Changes pending' : 'No changes';
 				planChanges = ev.changes ?? [];
 				planCounts = ev.hasChanges
-					? { add: ev.add, change: ev.change, destroy: ev.destroy, replace: ev.replace }
+					? { add: ev.add ?? 0, change: ev.change ?? 0, destroy: ev.destroy ?? 0, replace: ev.replace ?? 0 }
 					: null;
 			} else if (ev.kind === 'error') {
 				error = ev.error;
@@ -673,9 +678,11 @@
 		planResult = '';
 		planChanges = [];
 		planCounts = null;
+		applyOutputs = [];
 		busy = op;
 		streamOp(project.id, op, (ev) => {
 			if (ev.kind === 'log') planLog = [...planLog, ev.line];
+			else if (ev.kind === 'result') applyOutputs = ev.outputs ?? [];
 			else if (ev.kind === 'error') {
 				error = ev.error;
 				busy = '';
@@ -739,6 +746,9 @@
 						<GitBranch size={14} /> Git
 					</button>
 				{/if}
+				<button class={hdrBtn} onclick={() => (showRuns = true)}>
+					<History size={14} /> Runs
+				</button>
 				{#if auth.can('resources')}
 				<div class="relative">
 					<button class={hdrBtn} onclick={(e) => { e.stopPropagation(); importMsg = ''; showImportMenu = !showImportMenu; }}>
@@ -967,6 +977,17 @@
 						{/each}
 					</div>
 				{/if}
+				{#if applyOutputs.length > 0}
+					<div class="max-h-[40%] flex-none overflow-auto border-b py-1" style="border-color:rgba(255,255,255,0.07);">
+						<div class="px-[18px] py-0.5 text-[10px] font-semibold uppercase tracking-wide" style="color:#6b7480;">outputs</div>
+						{#each applyOutputs as o (o.name)}
+							<div class="flex items-center gap-3 px-[18px] py-0.5 font-mono" style="font-size:11.5px;line-height:1.6;">
+								<span class="flex-none" style="color:#c9d3dc;">{o.name}</span>
+								<span class="ml-auto truncate" style="color:#8b95a5;" title={o.sensitive ? '' : o.value}>{o.sensitive ? '(sensitive)' : o.value}</span>
+							</div>
+						{/each}
+					</div>
+				{/if}
 				<pre class="flex-1 overflow-auto whitespace-pre-wrap px-[18px] py-3 font-mono" style="font-size:11.5px;line-height:1.6;color:#8b95a5;">{planLog.join('\n') || '// run plan or apply to see output'}</pre>
 			</div>
 		</aside>
@@ -1029,6 +1050,8 @@
 		projectId={project.id}
 		onRestored={async (p) => { project = p; await refreshProjects(); await refreshHcl(); }}
 	/>
+
+	<RunsPanel bind:open={showRuns} projectId={project.id} />
 
 	<!-- Apply confirmation -->
 	<Modal title="Apply changes" bind:open={showApplyConfirm}>

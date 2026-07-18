@@ -16,6 +16,7 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/config"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
+	"github.com/HellsCrimson/ArcLoom/internal/runs"
 	"github.com/HellsCrimson/ArcLoom/internal/secrets"
 	"github.com/HellsCrimson/ArcLoom/internal/session"
 	"github.com/HellsCrimson/ArcLoom/internal/settings"
@@ -35,11 +36,12 @@ type Server struct {
 	sessions session.Store
 	users    user.Store
 	settings *settings.Store
+	runs     runs.Store // may be nil (history disabled, e.g. in tests)
 }
 
 // New builds a Server. runners maps each available engine to its runner.
-func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store) *Server {
-	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set}
+func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store) *Server {
+	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist}
 	s.auth.Store(authn)
 	return s
 }
@@ -100,6 +102,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/projects/{id}/git/status", s.handleGitStatus)
 			r.Get("/projects/{id}/git/log", s.handleGitLog)
 			r.Get("/projects/{id}/git/diff", s.handleGitDiff)
+			r.Get("/projects/{id}/runs", s.handleListRuns)
+			r.Get("/projects/{id}/runs/{rid}", s.handleGetRun)
 
 			// Resource editing (PermResources).
 			r.Group(func(r chi.Router) {

@@ -162,13 +162,17 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.Delete(chi.URLParam(r, "id")); err != nil {
+	id := chi.URLParam(r, "id")
+	if err := s.store.Delete(id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "project not found")
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if s.runs != nil {
+		_ = s.runs.DeleteProject(id) // best-effort; the project itself is gone
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

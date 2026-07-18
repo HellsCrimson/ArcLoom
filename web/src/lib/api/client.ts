@@ -77,6 +77,11 @@ export const api = {
 
 	getProject: (id: string) => fetch(`/api/projects/${id}`).then((r) => json<Project>(r)),
 
+	listRuns: (id: string) => fetch(`/api/projects/${id}/runs`).then((r) => json<RunRecord[]>(r)),
+
+	getRun: (id: string, rid: string) =>
+		fetch(`/api/projects/${id}/runs/${rid}`).then((r) => json<RunRecord>(r)),
+
 	deleteProject: (id: string) =>
 		fetch(`/api/projects/${id}`, { method: 'DELETE' }).then((r) => {
 			if (!r.ok && r.status !== 204) throw new Error('failed to delete project');
@@ -328,10 +333,33 @@ export interface PlanSummary {
 	replace: number;
 }
 
-// PlanEvent types streamed over SSE.
+// RunOutput is one root output value captured after an apply.
+export interface RunOutput {
+	name: string;
+	value: string; // raw JSON encoding
+	sensitive: boolean;
+}
+
+// RunRecord is one recorded plan/apply/destroy operation.
+export interface RunRecord {
+	id: string;
+	projectId: string;
+	op: 'plan' | 'apply' | 'destroy';
+	user: string;
+	startedAt: string;
+	finishedAt: string;
+	status: 'success' | 'error';
+	error?: string;
+	plan?: PlanSummary;
+	outputs?: RunOutput[];
+	log?: string;
+}
+
+// PlanEvent types streamed over SSE. A plan's result carries the structured
+// diff; an apply's result carries the captured outputs.
 export type PlanEvent =
 	| { kind: 'log'; line: string }
-	| ({ kind: 'result' } & PlanSummary)
+	| ({ kind: 'result'; outputs?: RunOutput[] } & Partial<PlanSummary>)
 	| { kind: 'error'; error: string }
 	| { kind: 'done' };
 
@@ -426,6 +454,7 @@ export function streamOp(
 				try {
 					const d = data ? JSON.parse(data) : {};
 					if (name === 'log') onEvent({ kind: 'log', line: d.line });
+					else if (name === 'result') onEvent({ kind: 'result', outputs: d.outputs ?? [] });
 					else if (name === 'error') onEvent({ kind: 'error', error: d.error ?? `${op} failed` });
 					else if (name === 'done') onEvent({ kind: 'done' });
 				} catch {
