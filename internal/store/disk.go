@@ -21,8 +21,8 @@ type Generator func(*model.Project) (map[string][]byte, error)
 //
 //	<root>/<id>/arcloom.yaml     (the model)
 //	<root>/<id>/generated/main.tf (regenerated on every save)
-//
-// State files are never written here; they stay in the CLI workspaces.
+//	<root>/<id>/run/             (persistent CLI workspace: state, .terraform;
+//	                              owned by internal/runner, excluded from Git)
 type Disk struct {
 	root string
 	gen  Generator

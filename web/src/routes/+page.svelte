@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan } from '$lib/api/client';
+	import { api, streamPlan, streamOp } from '$lib/api/client';
 	import type { AttrValue, Engine, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -14,7 +14,7 @@
 	import HclView from '$lib/editor/HclView.svelte';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -41,6 +41,9 @@
 	let hcl = $state('');
 	let planLog = $state<string[]>([]);
 	let planResult = $state<string>('');
+	let showApplyConfirm = $state(false);
+	let showDestroyConfirm = $state(false);
+	let destroyName = $state('');
 
 	let busy = $state<string>('');
 	let error = $state('');
@@ -649,6 +652,26 @@
 		});
 	}
 
+	// Apply/destroy run against the project's persisted state, so a later plan
+	// reflects what is really deployed.
+	function runOp(op: 'apply' | 'destroy') {
+		if (!project) return;
+		error = '';
+		planLog = [];
+		planResult = '';
+		busy = op;
+		streamOp(project.id, op, (ev) => {
+			if (ev.kind === 'log') planLog = [...planLog, ev.line];
+			else if (ev.kind === 'error') {
+				error = ev.error;
+				busy = '';
+			} else if (ev.kind === 'done') {
+				planResult = op === 'apply' ? 'Applied' : 'Destroyed';
+				busy = '';
+			}
+		});
+	}
+
 	const btn = 'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-40';
 	const btnPrimary = `${btn} bg-[var(--al-accent)] text-white hover:brightness-110`;
 	const btnGhost = `${btn} border border-[var(--al-border)] text-[var(--al-text)] hover:bg-[var(--al-panel-2)]`;
@@ -882,8 +905,20 @@
 				<HclView {hcl}>
 					{#snippet right()}
 						{#if auth.can('deploy')}
-						<button class={btnGhost} onclick={runPlan} disabled={!project || busy === 'plan'}>
+						{@const running = busy === 'plan' || busy === 'apply' || busy === 'destroy'}
+						<button class={btnGhost} onclick={runPlan} disabled={!project || running}>
 							{#if busy === 'plan'}<Loader2 size={14} class="animate-spin" />{:else}<Play size={14} />{/if} Plan
+						</button>
+						<button class={btnPrimary} onclick={() => (showApplyConfirm = true)} disabled={!project || running}>
+							{#if busy === 'apply'}<Loader2 size={14} class="animate-spin" />{:else}<Rocket size={14} />{/if} Apply
+						</button>
+						<button
+							class="{btn} border border-[var(--al-border)] text-[var(--al-danger)] hover:bg-[var(--al-danger)]/10"
+							title="Destroy all deployed resources"
+							onclick={() => { destroyName = ''; showDestroyConfirm = true; }}
+							disabled={!project || running}
+						>
+							{#if busy === 'destroy'}<Loader2 size={14} class="animate-spin" />{:else}<Flame size={14} />{/if}
 						</button>
 						{/if}
 					{/snippet}
@@ -892,10 +927,10 @@
 			<!-- Plan output -->
 			<div class="flex min-h-0 flex-[2] flex-col border-t" style="border-color:rgba(255,255,255,0.07);background:#0b0f18;">
 				<div class="flex h-11 flex-none items-center border-b px-4" style="border-color:rgba(255,255,255,0.07);">
-					<div class="font-mono" style="font-size:12.5px;font-weight:600;color:#c9d3dc;">plan output</div>
+					<div class="font-mono" style="font-size:12.5px;font-weight:600;color:#c9d3dc;">run output</div>
 					{#if planResult}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:{accentWeak};color:{accentHex};">{planResult}</span>{/if}
 				</div>
-				<pre class="flex-1 overflow-auto whitespace-pre-wrap px-[18px] py-3 font-mono" style="font-size:11.5px;line-height:1.6;color:#8b95a5;">{planLog.join('\n') || '// run plan to see output'}</pre>
+				<pre class="flex-1 overflow-auto whitespace-pre-wrap px-[18px] py-3 font-mono" style="font-size:11.5px;line-height:1.6;color:#8b95a5;">{planLog.join('\n') || '// run plan or apply to see output'}</pre>
 			</div>
 		</aside>
 		{/if}
@@ -957,6 +992,57 @@
 		projectId={project.id}
 		onRestored={async (p) => { project = p; await refreshProjects(); await refreshHcl(); }}
 	/>
+
+	<!-- Apply confirmation -->
+	<Modal title="Apply changes" bind:open={showApplyConfirm}>
+		<p class="text-sm text-[var(--al-text)]">
+			This runs <span class="mono">{engine || defaultEngine} apply</span> on
+			<span class="font-semibold">{project.name}</span> and makes real changes to your infrastructure.
+		</p>
+		<p class="mt-2 text-xs text-[var(--al-muted)]">
+			{#if planResult === 'No changes'}
+				The last plan reported no changes.
+			{:else if planResult === 'Changes pending'}
+				The last plan reported pending changes — review the run output before applying.
+			{:else}
+				Tip: run a plan first to review exactly what will change.
+			{/if}
+		</p>
+		{#snippet footer()}
+			<button class={btnGhost} onclick={() => (showApplyConfirm = false)}>Cancel</button>
+			<button class={btnPrimary} onclick={() => { showApplyConfirm = false; runOp('apply'); }}>
+				<Rocket size={14} /> Apply
+			</button>
+		{/snippet}
+	</Modal>
+
+	<!-- Destroy confirmation -->
+	<Modal title="Destroy infrastructure" bind:open={showDestroyConfirm}>
+		<p class="text-sm text-[var(--al-text)]">
+			This runs <span class="mono">{engine || defaultEngine} destroy</span> and
+			<span class="font-semibold text-[var(--al-danger)]">deletes every resource this project has deployed</span>.
+			It cannot be undone.
+		</p>
+		<label for="destroy-name" class="mb-1 mt-3 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">
+			Type the project name ({project.name}) to confirm
+		</label>
+		<input
+			id="destroy-name"
+			class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-danger)]"
+			bind:value={destroyName}
+			placeholder={project.name}
+		/>
+		{#snippet footer()}
+			<button class={btnGhost} onclick={() => (showDestroyConfirm = false)}>Cancel</button>
+			<button
+				class="{btn} bg-[var(--al-danger)] text-white hover:brightness-110"
+				disabled={destroyName !== project?.name}
+				onclick={() => { showDestroyConfirm = false; runOp('destroy'); }}
+			>
+				<Flame size={14} /> Destroy
+			</button>
+		{/snippet}
+	</Modal>
 
 	<!-- New module modal -->
 	<Modal title="New module" bind:open={showNewModule}>

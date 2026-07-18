@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -29,6 +30,7 @@ const gitignore = `# ArcLoom — never commit state or secrets
 .terraform.lock.hcl
 secrets.enc
 .env
+run/
 `
 
 // FileStatus is a changed file in the working tree.
@@ -59,9 +61,11 @@ type Commit struct {
 }
 
 // EnsureInit initializes the repo (with a .gitignore) if it does not exist.
+// For repos created by earlier ArcLoom versions it upgrades the .gitignore so
+// the persistent run/ workspace (state, provider install) stays untracked.
 func EnsureInit(dir string) error {
 	if _, err := gogit.PlainOpen(dir); err == nil {
-		return nil
+		return ensureRunIgnored(dir)
 	} else if !errors.Is(err, gogit.ErrRepositoryNotExists) {
 		return err
 	}
@@ -69,6 +73,25 @@ func EnsureInit(dir string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(gitignore), 0o644)
+}
+
+func ensureRunIgnored(dir string) error {
+	path := filepath.Join(dir, ".gitignore")
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return os.WriteFile(path, []byte(gitignore), 0o644)
+	} else if err != nil {
+		return err
+	}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if strings.TrimSpace(line) == "run/" {
+			return nil
+		}
+	}
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		data = append(data, '\n')
+	}
+	return os.WriteFile(path, append(data, "run/\n"...), 0o644)
 }
 
 // GetStatus reports the working-tree status.

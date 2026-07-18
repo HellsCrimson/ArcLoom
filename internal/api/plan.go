@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 
 	"github.com/go-chi/chi/v5"
 
@@ -12,10 +13,23 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 )
 
-// handlePlan generates HCL for a project and streams init + plan output over
-// Server-Sent Events. Events: "log" (each output line), "result" (final
-// PlanResult), "error" (failure), "done" (stream end).
-func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
+// runDir is the persistent CLI workspace for a project. It lives inside the
+// project folder (so a project backup includes its state) and is excluded from
+// Git via the generated .gitignore.
+func (s *Server) runDir(id string) string {
+	return filepath.Join(s.projectDir(id), "run")
+}
+
+// handlePlan, handleApply and handleDestroy generate HCL for a project and
+// stream init + CLI output over Server-Sent Events. Events: "log" (each output
+// line), "result" (final result, plan only), "error" (failure), "done"
+// (stream end). Plan is a GET (consumed via EventSource); apply and destroy
+// mutate real infrastructure and are POSTs (consumed via fetch streaming).
+func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request)    { s.streamOp(w, r, "plan") }
+func (s *Server) handleApply(w http.ResponseWriter, r *http.Request)  { s.streamOp(w, r, "apply") }
+func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) { s.streamOp(w, r, "destroy") }
+
+func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 	p, err := s.store.Get(chi.URLParam(r, "id"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "project not found")
@@ -56,7 +70,7 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !found {
-			sse.event("log", map[string]string{"line": "warning: secret " + ref + " is not set (plan may prompt or fail)"})
+			sse.event("log", map[string]string{"line": "warning: secret " + ref + " is not set (" + op + " may prompt or fail)"})
 			continue
 		}
 		tfVars[model.SecretVarName(ref)] = val
@@ -66,13 +80,26 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	// killed via r.Context() cancellation when the client disconnects.
 	logW := &lineWriter{emit: func(line string) { sse.event("log", map[string]string{"line": line}) }}
 
-	res, err := run.Plan(r.Context(), files, p.Providers, tfVars, logW)
-	logW.flush()
+	dir := s.runDir(p.ID)
+	switch op {
+	case "plan":
+		var res any
+		res, err = run.Plan(r.Context(), dir, files, tfVars, logW)
+		logW.flush()
+		if err == nil {
+			sse.event("result", res)
+		}
+	case "apply":
+		err = run.Apply(r.Context(), dir, files, tfVars, logW)
+		logW.flush()
+	case "destroy":
+		err = run.Destroy(r.Context(), dir, files, tfVars, logW)
+		logW.flush()
+	}
 	if err != nil {
 		sse.event("error", map[string]string{"error": err.Error()})
 		return
 	}
-	sse.event("result", res)
 	sse.event("done", map[string]bool{"ok": true})
 }
 

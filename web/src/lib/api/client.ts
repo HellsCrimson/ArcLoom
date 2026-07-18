@@ -349,3 +349,65 @@ export function streamPlan(projectId: string, onEvent: (e: PlanEvent) => void): 
 
 	return () => es.close();
 }
+
+// streamOp runs apply or destroy and streams its SSE response. These mutate
+// real infrastructure, so they are POSTs consumed via fetch streaming —
+// EventSource can only GET, and a state-changing GET could be triggered by a
+// bare link. Returns a function that aborts the operation.
+export function streamOp(
+	projectId: string,
+	op: 'apply' | 'destroy',
+	onEvent: (e: PlanEvent) => void
+): () => void {
+	const ctrl = new AbortController();
+	(async () => {
+		const res = await fetch(`/api/projects/${projectId}/${op}`, {
+			method: 'POST',
+			signal: ctrl.signal
+		});
+		if (!res.ok || !res.body) {
+			on401(res.status);
+			let msg = `${op} failed (${res.status})`;
+			try {
+				const body = await res.json();
+				if (body?.error) msg = body.error;
+			} catch {
+				/* ignore */
+			}
+			onEvent({ kind: 'error', error: msg });
+			return;
+		}
+		// Minimal SSE parse: events are "event: <name>\ndata: <json>\n\n" blocks.
+		const reader = res.body.getReader();
+		const dec = new TextDecoder();
+		let buf = '';
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buf += dec.decode(value, { stream: true });
+			let sep;
+			while ((sep = buf.indexOf('\n\n')) >= 0) {
+				const block = buf.slice(0, sep);
+				buf = buf.slice(sep + 2);
+				let name = '';
+				let data = '';
+				for (const line of block.split('\n')) {
+					if (line.startsWith('event: ')) name = line.slice(7);
+					else if (line.startsWith('data: ')) data = line.slice(6);
+				}
+				if (!name) continue;
+				try {
+					const d = data ? JSON.parse(data) : {};
+					if (name === 'log') onEvent({ kind: 'log', line: d.line });
+					else if (name === 'error') onEvent({ kind: 'error', error: d.error ?? `${op} failed` });
+					else if (name === 'done') onEvent({ kind: 'done' });
+				} catch {
+					/* skip malformed event */
+				}
+			}
+		}
+	})().catch((err) => {
+		if (!ctrl.signal.aborted) onEvent({ kind: 'error', error: (err as Error).message });
+	});
+	return () => ctrl.abort();
+}

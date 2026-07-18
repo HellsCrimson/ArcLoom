@@ -120,10 +120,15 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/projects/{id}/import/state", s.handleImportState)
 			})
 
-			// Deploy / plan (PermDeploy).
+			// Deploy: plan / apply / destroy (PermDeploy). Plan is a GET so the
+			// SPA can use EventSource; apply and destroy mutate infrastructure
+			// and are POSTs (fetch-streamed) so a bare link can never trigger
+			// them.
 			r.Group(func(r chi.Router) {
 				r.Use(s.requirePerm(user.PermDeploy))
 				r.Get("/projects/{id}/plan", s.handlePlan)
+				r.Post("/projects/{id}/apply", s.handleApply)
+				r.Post("/projects/{id}/destroy", s.handleDestroy)
 			})
 
 			// Git operations (PermGit).
