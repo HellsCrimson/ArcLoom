@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp, type PlanChange, type RunOutput } from '$lib/api/client';
+	import { api, streamPlan, streamOp, DeleteBlockedError, type PlanChange, type RunOutput } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
 	import type { AttrValue, Engine, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
@@ -50,6 +50,9 @@
 	let showDestroyConfirm = $state(false);
 	let destroyName = $state('');
 	let showRuns = $state(false);
+	let showDeleteBlocked = $state(false);
+	let deleteBlockedCount = $state(0);
+	let deleteBlockedName = $state('');
 
 	let busy = $state<string>('');
 	let error = $state('');
@@ -215,17 +218,39 @@
 		}
 	}
 
+	async function afterProjectDeleted(id: string) {
+		if (localStorage.getItem(LAST_PROJECT_KEY) === id) localStorage.removeItem(LAST_PROJECT_KEY);
+		project = null;
+		resetEditor();
+		await refreshProjects();
+		if (projects[0]) await selectProject(projects[0].id);
+	}
+
 	async function removeProject() {
 		if (!project) return;
 		if (!confirm(`Delete project "${project.name}"? This removes its folder on disk.`)) return;
 		const id = project.id;
 		try {
 			await api.deleteProject(id);
-			if (localStorage.getItem(LAST_PROJECT_KEY) === id) localStorage.removeItem(LAST_PROJECT_KEY);
-			project = null;
-			resetEditor();
-			await refreshProjects();
-			if (projects[0]) await selectProject(projects[0].id);
+			await afterProjectDeleted(id);
+		} catch (err) {
+			if (err instanceof DeleteBlockedError) {
+				deleteBlockedCount = err.deployed;
+				deleteBlockedName = '';
+				showDeleteBlocked = true;
+				return;
+			}
+			error = (err as Error).message;
+		}
+	}
+
+	async function forceRemoveProject() {
+		if (!project) return;
+		const id = project.id;
+		showDeleteBlocked = false;
+		try {
+			await api.deleteProject(id, true);
+			await afterProjectDeleted(id);
 		} catch (err) {
 			error = (err as Error).message;
 		}
@@ -1072,6 +1097,38 @@
 			<button class={btnGhost} onclick={() => (showApplyConfirm = false)}>Cancel</button>
 			<button class={btnPrimary} onclick={() => { showApplyConfirm = false; runOp('apply'); }}>
 				<Rocket size={14} /> Apply
+			</button>
+		{/snippet}
+	</Modal>
+
+	<!-- Delete blocked: project still has deployed resources -->
+	<Modal title="Project has deployed resources" bind:open={showDeleteBlocked}>
+		<p class="text-sm text-[var(--al-text)]">
+			<span class="font-semibold">{project.name}</span> still tracks
+			<span class="font-semibold text-[var(--al-danger)]">{deleteBlockedCount} deployed resource{deleteBlockedCount === 1 ? '' : 's'}</span>
+			in its state. Deleting the project also deletes that state, and the resources would keep
+			running with nothing left to manage or destroy them.
+		</p>
+		<p class="mt-2 text-xs text-[var(--al-muted)]">
+			Recommended: cancel and run <span class="font-semibold">Destroy</span> first, then delete the project.
+		</p>
+		<label for="delblock-name" class="mb-1 mt-3 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">
+			Type the project name ({project.name}) to delete anyway
+		</label>
+		<input
+			id="delblock-name"
+			class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-danger)]"
+			bind:value={deleteBlockedName}
+			placeholder={project.name}
+		/>
+		{#snippet footer()}
+			<button class={btnGhost} onclick={() => (showDeleteBlocked = false)}>Cancel</button>
+			<button
+				class="{btn} bg-[var(--al-danger)] text-white hover:brightness-110"
+				disabled={deleteBlockedName !== project?.name}
+				onclick={forceRemoveProject}
+			>
+				<Trash2 size={14} /> Delete anyway
 			</button>
 		{/snippet}
 	</Modal>

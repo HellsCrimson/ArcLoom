@@ -19,6 +19,16 @@ function on401(status: number) {
 	if (status === 401) auth.clear();
 }
 
+// DeleteBlockedError signals that a project delete was refused because its
+// persisted state still tracks deployed resources.
+export class DeleteBlockedError extends Error {
+	deployed: number;
+	constructor(message: string, deployed: number) {
+		super(message);
+		this.deployed = deployed;
+	}
+}
+
 async function json<T>(res: Response): Promise<T> {
 	if (!res.ok) {
 		on401(res.status);
@@ -82,10 +92,19 @@ export const api = {
 	getRun: (id: string, rid: string) =>
 		fetch(`/api/projects/${id}/runs/${rid}`).then((r) => json<RunRecord>(r)),
 
-	deleteProject: (id: string) =>
-		fetch(`/api/projects/${id}`, { method: 'DELETE' }).then((r) => {
-			if (!r.ok && r.status !== 204) throw new Error('failed to delete project');
-		}),
+	deleteProject: async (id: string, force = false) => {
+		const res = await fetch(`/api/projects/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' });
+		if (res.status === 409) {
+			// The project still has deployed resources; the caller decides
+			// whether to destroy first or force the delete.
+			const body = await res.json().catch(() => ({}) as { error?: string; deployed?: number });
+			throw new DeleteBlockedError(body.error ?? 'project has deployed resources', body.deployed ?? 0);
+		}
+		if (!res.ok && res.status !== 204) {
+			on401(res.status);
+			throw new Error('failed to delete project');
+		}
+	},
 
 	setConfig: (id: string, config: ProjectConfig, module?: string) =>
 		fetch(`/api/projects/${id}/config`, {

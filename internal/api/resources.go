@@ -3,7 +3,10 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -161,8 +164,46 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
+// deployedResourceCount reports how many managed resources the project's
+// persisted state still tracks. Missing or unreadable state counts as zero, so
+// projects that were never applied delete without friction.
+func (s *Server) deployedResourceCount(id string) int {
+	data, err := os.ReadFile(filepath.Join(s.runDir(id), "terraform.tfstate"))
+	if err != nil {
+		return 0
+	}
+	var st struct {
+		Resources []struct {
+			Mode string `json:"mode"`
+		} `json:"resources"`
+	}
+	if json.Unmarshal(data, &st) != nil {
+		return 0
+	}
+	n := 0
+	for _, res := range st.Resources {
+		if res.Mode == "managed" {
+			n++
+		}
+	}
+	return n
+}
+
+// handleDeleteProject deletes a project and its folder. Deleting also deletes
+// the persisted state, which would silently orphan anything still deployed —
+// so if the state tracks managed resources the delete is refused with 409
+// unless ?force=true is passed.
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if r.URL.Query().Get("force") != "true" {
+		if n := s.deployedResourceCount(id); n > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":    fmt.Sprintf("%d deployed resource(s) are still tracked in this project's state — destroy them first, or delete anyway to orphan them", n),
+				"deployed": n,
+			})
+			return
+		}
+	}
 	if err := s.store.Delete(id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "project not found")
