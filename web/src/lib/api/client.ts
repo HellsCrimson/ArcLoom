@@ -309,10 +309,29 @@ export interface GraphData {
 	dot: string;
 }
 
+// PlanChange is one resource's pending action from the structured plan.
+export interface PlanChange {
+	address: string;
+	moduleAddress?: string;
+	mode: 'managed' | 'data';
+	type: string;
+	name: string;
+	action: 'create' | 'update' | 'replace' | 'delete' | 'read';
+}
+
+export interface PlanSummary {
+	hasChanges: boolean;
+	changes: PlanChange[] | null;
+	add: number;
+	change: number;
+	destroy: number;
+	replace: number;
+}
+
 // PlanEvent types streamed over SSE.
 export type PlanEvent =
 	| { kind: 'log'; line: string }
-	| { kind: 'result'; hasChanges: boolean }
+	| ({ kind: 'result' } & PlanSummary)
 	| { kind: 'error'; error: string }
 	| { kind: 'done' };
 
@@ -327,7 +346,15 @@ export function streamPlan(projectId: string, onEvent: (e: PlanEvent) => void): 
 	});
 	es.addEventListener('result', (ev) => {
 		const d = JSON.parse((ev as MessageEvent).data);
-		onEvent({ kind: 'result', hasChanges: d.hasChanges });
+		onEvent({
+			kind: 'result',
+			hasChanges: d.hasChanges,
+			changes: d.changes ?? null,
+			add: d.add ?? 0,
+			change: d.change ?? 0,
+			destroy: d.destroy ?? 0,
+			replace: d.replace ?? 0
+		});
 	});
 	es.addEventListener('error', (ev) => {
 		// Distinguish a server "error" event (has data) from a transport error.

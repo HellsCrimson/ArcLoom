@@ -147,19 +147,75 @@ func (t *TfExec) prepare(ctx context.Context, dir string, files map[string][]byt
 	return tf, cleanup, nil
 }
 
+// planFileName is the saved plan inside the persistent workspace. It is not in
+// persistKeep, so the next workspace sync removes it.
+const planFileName = "tfplan"
+
 // Plan runs plan in the project's persistent workspace, so the diff is against
-// the state left by the last apply (empty state on a fresh project).
+// the state left by the last apply (empty state on a fresh project). The plan
+// is saved to a file and re-read as JSON to extract per-resource changes.
 func (t *TfExec) Plan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error) {
 	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
 	defer cleanup()
 	if err != nil {
 		return PlanResult{}, err
 	}
-	hasChanges, err := tf.Plan(ctx)
+	hasChanges, err := tf.Plan(ctx, tfexec.Out(planFileName))
 	if err != nil {
 		return PlanResult{}, fmt.Errorf("plan: %w", err)
 	}
-	return PlanResult{HasChanges: hasChanges}, nil
+	res := PlanResult{HasChanges: hasChanges}
+
+	// Read the structured plan. Detach the streaming writers first: tfexec
+	// merges its JSON capture buffer with the configured stdout, which would
+	// dump the whole plan JSON into the streamed log. Failure here degrades to
+	// a log-only plan rather than failing the operation.
+	tf.SetStdout(io.Discard)
+	tf.SetStderr(io.Discard)
+	plan, err := tf.ShowPlanFile(ctx, planFileName)
+	if err != nil || plan == nil {
+		return res, nil
+	}
+	for _, rc := range plan.ResourceChanges {
+		if rc.Change == nil {
+			continue
+		}
+		a := rc.Change.Actions
+		var action string
+		switch {
+		case a.Replace():
+			action = "replace"
+		case a.Create():
+			action = "create"
+		case a.Update():
+			action = "update"
+		case a.Delete():
+			action = "delete"
+		case a.Read():
+			action = "read"
+		default:
+			continue // no-op
+		}
+		res.Changes = append(res.Changes, PlanChange{
+			Address:       rc.Address,
+			ModuleAddress: rc.ModuleAddress,
+			Mode:          string(rc.Mode),
+			Type:          rc.Type,
+			Name:          rc.Name,
+			Action:        action,
+		})
+		switch action {
+		case "create":
+			res.Add++
+		case "update":
+			res.Change++
+		case "delete":
+			res.Destroy++
+		case "replace":
+			res.Replace++
+		}
+	}
+	return res, nil
 }
 
 // Apply applies the configuration; state is persisted in dir for later plans,

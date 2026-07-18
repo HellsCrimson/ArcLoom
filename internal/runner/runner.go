@@ -11,9 +11,31 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 )
 
+// PlanChange is one resource's pending action in a plan, extracted from the
+// engine's structured plan JSON.
+type PlanChange struct {
+	// Address is the full resource address, e.g. "module.vpc.aws_subnet.a".
+	Address string `json:"address"`
+	// ModuleAddress is the enclosing module ("module.vpc"), empty at root.
+	ModuleAddress string `json:"moduleAddress,omitempty"`
+	Mode          string `json:"mode"` // "managed" | "data"
+	Type          string `json:"type"`
+	Name          string `json:"name"`
+	// Action is the normalized action: create | update | replace | delete | read.
+	Action string `json:"action"`
+}
+
 // PlanResult summarizes a completed plan.
 type PlanResult struct {
 	HasChanges bool `json:"hasChanges"`
+	// Changes lists every resource with a pending action (no-ops excluded).
+	// Nil when the structured plan could not be read (the raw log still
+	// streamed, so the plan itself is not lost).
+	Changes []PlanChange `json:"changes"`
+	Add     int          `json:"add"`
+	Change  int          `json:"change"`
+	Destroy int          `json:"destroy"`
+	Replace int          `json:"replace"`
 }
 
 // Runner executes engine operations for a project. Implementations must be safe

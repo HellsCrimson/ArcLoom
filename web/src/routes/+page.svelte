@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp } from '$lib/api/client';
+	import { api, streamPlan, streamOp, type PlanChange } from '$lib/api/client';
 	import type { AttrValue, Engine, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -41,6 +41,8 @@
 	let hcl = $state('');
 	let planLog = $state<string[]>([]);
 	let planResult = $state<string>('');
+	let planChanges = $state<PlanChange[]>([]);
+	let planCounts = $state<{ add: number; change: number; destroy: number; replace: number } | null>(null);
 	let showApplyConfirm = $state(false);
 	let showDestroyConfirm = $state(false);
 	let destroyName = $state('');
@@ -236,6 +238,8 @@
 		hcl = '';
 		planLog = [];
 		planResult = '';
+		planChanges = [];
+		planCounts = null;
 		resourceTypes = [];
 		activeModule = null;
 	}
@@ -641,11 +645,18 @@
 		error = '';
 		planLog = [];
 		planResult = '';
+		planChanges = [];
+		planCounts = null;
 		busy = 'plan';
 		streamPlan(project.id, (ev) => {
 			if (ev.kind === 'log') planLog = [...planLog, ev.line];
-			else if (ev.kind === 'result') planResult = ev.hasChanges ? 'Changes pending' : 'No changes';
-			else if (ev.kind === 'error') {
+			else if (ev.kind === 'result') {
+				planResult = ev.hasChanges ? 'Changes pending' : 'No changes';
+				planChanges = ev.changes ?? [];
+				planCounts = ev.hasChanges
+					? { add: ev.add, change: ev.change, destroy: ev.destroy, replace: ev.replace }
+					: null;
+			} else if (ev.kind === 'error') {
 				error = ev.error;
 				busy = '';
 			} else if (ev.kind === 'done') busy = '';
@@ -659,6 +670,8 @@
 		error = '';
 		planLog = [];
 		planResult = '';
+		planChanges = [];
+		planCounts = null;
 		busy = op;
 		streamOp(project.id, op, (ev) => {
 			if (ev.kind === 'log') planLog = [...planLog, ev.line];
@@ -682,6 +695,14 @@
 	// Accent as literal hex (for inline styles that concatenate/tint).
 	const accentHex = '#4c8dff';
 	const accentWeak = '#1f3a5f';
+
+	// Plan action styling, matching terraform's own symbols.
+	const ACTION_COLOR: Record<string, string> = {
+		create: '#3fb950', update: '#d29922', replace: '#f0883e', delete: '#f85149', read: '#8b95a5'
+	};
+	const ACTION_SYMBOL: Record<string, string> = {
+		create: '+', update: '~', replace: '±', delete: '−', read: '→'
+	};
 </script>
 
 <svelte:window onclick={() => (showImportMenu = false)} />
@@ -929,7 +950,26 @@
 				<div class="flex h-11 flex-none items-center border-b px-4" style="border-color:rgba(255,255,255,0.07);">
 					<div class="font-mono" style="font-size:12.5px;font-weight:600;color:#c9d3dc;">run output</div>
 					{#if planResult}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:{accentWeak};color:{accentHex};">{planResult}</span>{/if}
+					{#if planCounts}
+						<span class="ml-auto flex items-center gap-2 font-mono text-[11px] font-semibold">
+							<span style="color:{ACTION_COLOR.create}">+{planCounts.add}</span>
+							<span style="color:{ACTION_COLOR.update}">~{planCounts.change}</span>
+							<span style="color:{ACTION_COLOR.replace}">±{planCounts.replace}</span>
+							<span style="color:{ACTION_COLOR.delete}">−{planCounts.destroy}</span>
+						</span>
+					{/if}
 				</div>
+				{#if planChanges.length > 0}
+					<div class="max-h-[45%] flex-none overflow-auto border-b py-1" style="border-color:rgba(255,255,255,0.07);">
+						{#each planChanges as c (c.address)}
+							<div class="flex items-center gap-2 px-[18px] py-0.5 font-mono" style="font-size:11.5px;line-height:1.6;">
+								<span class="w-3 flex-none text-center font-bold" style="color:{ACTION_COLOR[c.action]}">{ACTION_SYMBOL[c.action]}</span>
+								<span class="truncate" style="color:#c9d3dc;" title={c.address}>{c.address}</span>
+								<span class="ml-auto flex-none text-[10px]" style="color:{ACTION_COLOR[c.action]}">{c.action}</span>
+							</div>
+						{/each}
+					</div>
+				{/if}
 				<pre class="flex-1 overflow-auto whitespace-pre-wrap px-[18px] py-3 font-mono" style="font-size:11.5px;line-height:1.6;color:#8b95a5;">{planLog.join('\n') || '// run plan or apply to see output'}</pre>
 			</div>
 		</aside>
