@@ -1,13 +1,14 @@
 <script lang="ts">
 	import type { Project, Resource } from '$lib/types';
+	import type { PlanChange } from '$lib/api/client';
 	import {
 		deriveEdges, crossScopeEdges, interiorLayout, modId, typeColor, typeLetter,
 		layoutPositions, layoutMissing, LAYOUTS,
-		NODE_W, NODE_H, DOT_Y, MOD_HEADER_H,
+		NODE_W, NODE_H, DOT_Y, MOD_HEADER_H, ACTION_COLOR, ACTION_SYMBOL,
 		type Edge, type LayoutMode
 	} from './graph';
 	import HclView from './HclView.svelte';
-	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group, Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-svelte';
+	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group, Folder, FolderOpen, ChevronRight, ChevronDown, Play } from 'lucide-svelte';
 
 	const LAYOUT_ICONS: Record<LayoutMode, typeof Network> = {
 		'layered-h': Network,
@@ -21,6 +22,9 @@
 		project,
 		hcl,
 		accent = '#7aa2f7',
+		planChanges = [],
+		planning = false,
+		onPlan,
 		loadTypes,
 		onAddType,
 		onEditResource,
@@ -32,6 +36,9 @@
 		project: Project;
 		hcl: string;
 		accent?: string;
+		planChanges?: PlanChange[];
+		planning?: boolean;
+		onPlan?: () => void;
 		loadTypes: (source: string) => Promise<string[]>;
 		onAddType: (type: string, providerSource: string) => void;
 		onEditResource: (r: Resource, module?: string) => void;
@@ -75,6 +82,47 @@
 
 	const localModules = $derived(project.localModules ?? []);
 
+	// --- Plan overlay: map last plan's changes onto canvas nodes by address. ---
+	const changeByAddr = $derived.by(() => {
+		const m = new Map<string, string>();
+		for (const c of planChanges) if (c.mode === 'managed') m.set(c.address, c.action);
+		return m;
+	});
+	// Planned deletes at root scope have no model node left to color; render
+	// them as non-interactive ghost cards so the disappearance is visible.
+	const ghosts = $derived(
+		planChanges.filter(
+			(c) =>
+				c.action === 'delete' && c.mode === 'managed' && !c.moduleAddress &&
+				!project.resources.some((r) => `${r.type}.${r.name}` === c.address)
+		)
+	);
+	// Aggregate pending actions per local module (covers nested addresses too).
+	function moduleChangeCounts(name: string) {
+		const pref = `module.${name}`;
+		const agg = { create: 0, update: 0, replace: 0, delete: 0, total: 0 };
+		for (const c of planChanges) {
+			if (c.mode !== 'managed') continue;
+			if (c.moduleAddress !== pref && !c.moduleAddress?.startsWith(pref + '.')) continue;
+			if (c.action in agg) {
+				agg[c.action as keyof typeof agg]++;
+				agg.total++;
+			}
+		}
+		return agg;
+	}
+	const planCounts = $derived.by(() => {
+		const agg = { create: 0, update: 0, replace: 0, delete: 0, total: 0 };
+		for (const c of planChanges) {
+			if (c.mode !== 'managed') continue;
+			if (c.action in agg) {
+				agg[c.action as keyof typeof agg]++;
+				agg.total++;
+			}
+		}
+		return agg;
+	});
+
 	// Persist / restore positions + expand state per project.
 	$effect(() => {
 		posKey; // track
@@ -101,10 +149,12 @@
 	}
 
 	// Macro nodes are the things laid out at the top level: every root resource
-	// plus one pseudo-node per local module. Layout helpers only read id/type.
+	// plus one pseudo-node per local module, plus a ghost per planned root
+	// delete (so it gets an auto position). Layout helpers only read id/type.
 	const macroNodes = $derived<Resource[]>([
 		...project.resources,
-		...localModules.map((lm) => ({ id: modId(lm.name), type: 'module', name: lm.name, attrs: {} }))
+		...localModules.map((lm) => ({ id: modId(lm.name), type: 'module', name: lm.name, attrs: {} })),
+		...ghosts.map((g) => ({ id: `ghost:${g.address}`, type: g.type, name: g.name, attrs: {} }))
 	]);
 	const macroEdges = $derived<Edge[]>([...deriveEdges(project.resources), ...crossScopeEdges(project)]);
 
@@ -376,13 +426,24 @@
 	const gridBg = 'radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px)';
 </script>
 
-{#snippet card(id: string, x: number, y: number, name: string, type: string, color: string, letter: string, selected: boolean, connectable: boolean, scope: string | undefined)}
+{#snippet modBadge(counts: { create: number; update: number; replace: number; delete: number; total: number })}
+	{#if counts.total > 0}
+		<div class="font-mono" style="position:absolute;left:-7px;top:-9px;display:flex;gap:4px;padding:2px 6px;border-radius:8px;background:#0d1117;border:1px solid rgba(255,255,255,0.15);font-size:10px;font-weight:800;z-index:4;pointer-events:none;">
+			{#if counts.create}<span style="color:{ACTION_COLOR.create}">+{counts.create}</span>{/if}
+			{#if counts.update}<span style="color:{ACTION_COLOR.update}">~{counts.update}</span>{/if}
+			{#if counts.replace}<span style="color:{ACTION_COLOR.replace}">±{counts.replace}</span>{/if}
+			{#if counts.delete}<span style="color:{ACTION_COLOR.delete}">−{counts.delete}</span>{/if}
+		</div>
+	{/if}
+{/snippet}
+
+{#snippet card(id: string, x: number, y: number, name: string, type: string, color: string, letter: string, selected: boolean, connectable: boolean, scope: string | undefined, change: string | undefined)}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 	<div
 		role="button"
 		tabindex="-1"
-		style="position:absolute;left:{x}px;top:{y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:#10151f;border:1px solid {selected ? accent : 'rgba(255,255,255,0.10)'};box-shadow:{selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:{connectable ? 'grab' : 'pointer'};z-index:2;"
+		style="position:absolute;left:{x}px;top:{y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:#10151f;border:1px solid {selected ? accent : change ? ACTION_COLOR[change] : 'rgba(255,255,255,0.10)'};box-shadow:{selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : change ? '0 0 0 1.5px ' + ACTION_COLOR[change] + '55, 0 6px 16px rgba(0,0,0,0.35)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:{connectable ? 'grab' : 'pointer'};z-index:2;"
 		onmousedown={(e) => { if (connectable) { onBoxDown(e, id); } else { e.stopPropagation(); } }}
 		onclick={() => { if (dragMoved) { dragMoved = false; return; } onEditResource({ id, type, name, attrs: {} } as Resource, scope); }}
 		ondblclick={(e) => { e.stopPropagation(); rename(id, name, scope); }}
@@ -402,6 +463,12 @@
 			onmousedown={(e) => e.stopPropagation()}
 			onclick={(e) => { e.stopPropagation(); onDeleteResource(id, scope); }}
 		>✕</button>
+		{#if change}
+			<div
+				title="planned: {change}"
+				style="position:absolute;left:-7px;top:-7px;width:16px;height:16px;border-radius:50%;background:{ACTION_COLOR[change]};color:#0a0e15;font-size:11px;font-weight:800;line-height:1;display:flex;align-items:center;justify-content:center;z-index:4;"
+			>{ACTION_SYMBOL[change]}</div>
+		{/if}
 		{#if connectable}
 			<div title="Drag to connect (depends_on)" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'out')} onmouseup={(e) => onDotUp(e, id, 'out')}></div>
 			<div title="Drop a connection here" role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'in')} onmouseup={(e) => onDotUp(e, id, 'in')}></div>
@@ -549,6 +616,7 @@
 						{#if mb.count === 0}
 							<div class="pointer-events-none absolute inset-x-0 flex justify-center text-[11px] text-white/25" style="top:{MOD_HEADER_H + 12}px;">empty module</div>
 						{/if}
+						{@render modBadge(moduleChangeCounts(mb.name))}
 					</div>
 				{:else}
 					<!-- collapsed module node -->
@@ -571,13 +639,14 @@
 						</div>
 						<div title="Drag to connect (depends_on)" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{accent};border:2px solid #0a0e15;z-index:3;"></div>
 						<div role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{accent};border:2px solid #0a0e15;z-index:3;"></div>
+						{@render modBadge(moduleChangeCounts(mb.name))}
 					</div>
 				{/if}
 			{/each}
 
 			<!-- root resource nodes -->
 			{#each rootNodes as node (node.id)}
-				{@render card(node.id, node.x, node.y, node.name, node.type, node.color, node.letter, node.selected, true, undefined)}
+				{@render card(node.id, node.x, node.y, node.name, node.type, node.color, node.letter, node.selected, true, undefined, changeByAddr.get(`${node.type}.${node.name}`))}
 			{/each}
 
 			<!-- expanded modules' interior resource nodes -->
@@ -585,11 +654,40 @@
 				{#if mb.open}
 					{#each mb.lm.resources as r (r.id)}
 						{@const c = childAbs(mb, r.id)}
-						{@render card(r.id, c.x, c.y, r.name, r.type, typeColor(r.type), typeLetter(r.type), r.id === selectedId, false, mb.name)}
+						{@render card(r.id, c.x, c.y, r.name, r.type, typeColor(r.type), typeLetter(r.type), r.id === selectedId, false, mb.name, changeByAddr.get(`module.${mb.name}.${r.type}.${r.name}`))}
 					{/each}
 				{/if}
 			{/each}
+
+			<!-- ghost cards for planned root deletes (resource already gone from the model) -->
+			{#each ghosts as g (g.address)}
+				{@const pos = positions[`ghost:${g.address}`] ?? { x: 40, y: 40 }}
+				<div
+					title="planned: delete {g.address}"
+					style="position:absolute;left:{pos.x}px;top:{pos.y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:rgba(248,81,73,0.06);border:1.5px dashed {ACTION_COLOR.delete};opacity:0.9;z-index:2;pointer-events:none;"
+				>
+					<div class="flex items-center gap-2">
+						<div style="width:22px;height:22px;border-radius:6px;background:{ACTION_COLOR.delete}22;color:{ACTION_COLOR.delete};font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center;flex:none;">−</div>
+						<div style="min-width:0;">
+							<div style="font-size:13px;font-weight:600;color:#e6e9ef;text-decoration:line-through;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{g.name}</div>
+							<div class="font-mono" style="font-size:10px;color:#6b7480;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{g.type}</div>
+						</div>
+					</div>
+					<div style="position:absolute;left:-7px;top:-7px;width:16px;height:16px;border-radius:50%;background:{ACTION_COLOR.delete};color:#0a0e15;font-size:11px;font-weight:800;line-height:1;display:flex;align-items:center;justify-content:center;">−</div>
+				</div>
+			{/each}
 		</div>
+
+		<!-- plan legend -->
+		{#if planCounts.total > 0}
+			<div class="absolute bottom-12 left-1/2 z-[5] flex -translate-x-1/2 items-center gap-2.5" style="background:rgba(13,17,23,0.85);backdrop-filter:blur(8px);padding:5px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);box-shadow:0 8px 24px rgba(0,0,0,0.4);">
+				<span class="text-[10px] font-semibold uppercase tracking-wide text-white/25">last plan</span>
+				<span class="font-mono text-[11px] font-bold" style="color:{ACTION_COLOR.create}">+{planCounts.create} create</span>
+				<span class="font-mono text-[11px] font-bold" style="color:{ACTION_COLOR.update}">~{planCounts.update} update</span>
+				<span class="font-mono text-[11px] font-bold" style="color:{ACTION_COLOR.replace}">±{planCounts.replace} replace</span>
+				<span class="font-mono text-[11px] font-bold" style="color:{ACTION_COLOR.delete}">−{planCounts.delete} delete</span>
+			</div>
+		{/if}
 
 		<!-- zoom controls -->
 		<div class="absolute bottom-3.5 right-4 z-[5] flex items-center gap-1" style="background:rgba(13,17,23,0.85);backdrop-filter:blur(8px);padding:4px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);">
@@ -609,6 +707,17 @@
 	<div class="w-[440px] flex-none" style="border-left:1px solid rgba(255,255,255,0.08);min-height:0;">
 		<HclView {hcl}>
 			{#snippet right()}
+				{#if onPlan}
+					<button
+						class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40"
+						style="background:{accent}22;border:1px solid {accent}55;color:{accent};"
+						onclick={onPlan}
+						disabled={planning}
+						title="Plan and color nodes by pending change"
+					>
+						{#if planning}<Loader2 size={12} class="animate-spin" />{:else}<Play size={12} />{/if} Plan
+					</button>
+				{/if}
 				<div class="font-mono" style="font-size:11px;color:#5b6472;">{providerFooter}</div>
 			{/snippet}
 		</HclView>

@@ -12,6 +12,7 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import EditorView from '$lib/editor/EditorView.svelte';
 	import HclView from '$lib/editor/HclView.svelte';
+	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
 		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame
@@ -696,13 +697,6 @@
 	const accentHex = '#4c8dff';
 	const accentWeak = '#1f3a5f';
 
-	// Plan action styling, matching terraform's own symbols.
-	const ACTION_COLOR: Record<string, string> = {
-		create: '#3fb950', update: '#d29922', replace: '#f0883e', delete: '#f85149', read: '#8b95a5'
-	};
-	const ACTION_SYMBOL: Record<string, string> = {
-		create: '+', update: '~', replace: '±', delete: '−', read: '→'
-	};
 </script>
 
 <svelte:window onclick={() => (showImportMenu = false)} />
@@ -786,6 +780,9 @@
 				{project}
 				{hcl}
 				accent="#4c8dff"
+				{planChanges}
+				planning={busy === 'plan'}
+				onPlan={auth.can('deploy') ? runPlan : undefined}
 				loadTypes={editorLoadTypes}
 				onAddType={editorAddType}
 				onEditResource={editorEditResource}

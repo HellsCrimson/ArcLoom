@@ -11,6 +11,15 @@ export const MOD_GAP_Y = 28;
 
 const PALETTE = ['#7aa2f7', '#c297ff', '#7ee787', '#ffb86b', '#79c0ff', '#ff9492', '#f8c555', '#56d4bc'];
 
+// Plan action styling (shared by the run-output diff list and the canvas),
+// matching terraform's own symbols.
+export const ACTION_COLOR: Record<string, string> = {
+	create: '#3fb950', update: '#d29922', replace: '#f0883e', delete: '#f85149', read: '#8b95a5'
+};
+export const ACTION_SYMBOL: Record<string, string> = {
+	create: '+', update: '~', replace: '±', delete: '−', read: '→'
+};
+
 // typeColor returns a stable color per resource type so like resources match.
 export function typeColor(type: string): string {
 	let h = 0;
