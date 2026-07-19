@@ -122,22 +122,41 @@ func writeTerraformBlock(body *hclwrite.Body, providers []model.ProviderInstance
 	}
 	rp := tfBlock.Body().AppendNewBlock("required_providers", nil)
 
-	// Sort by key for deterministic output.
+	// Sort by key for deterministic output. Aliased instances share their key's
+	// required_providers entry — emit one per key, preferring an instance that
+	// pins a version.
 	sorted := append([]model.ProviderInstance(nil), providers...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Key < sorted[j].Key })
 
+	written := map[string]bool{}
 	for _, prov := range sorted {
+		if written[prov.Key] {
+			continue
+		}
 		obj := map[string]cty.Value{"source": cty.StringVal(prov.Source)}
-		if prov.Version != "" {
-			obj["version"] = cty.StringVal(prov.Version)
+		version := prov.Version
+		if version == "" {
+			for _, other := range sorted {
+				if other.Key == prov.Key && other.Version != "" {
+					version = other.Version
+					break
+				}
+			}
+		}
+		if version != "" {
+			obj["version"] = cty.StringVal(version)
 		}
 		rp.Body().SetAttributeValue(prov.Key, cty.ObjectVal(obj))
+		written[prov.Key] = true
 	}
 	return nil
 }
 
 func writeProviderBlock(body *hclwrite.Body, prov model.ProviderInstance) error {
 	blk := body.AppendNewBlock("provider", []string{prov.Key})
+	if prov.Alias != "" {
+		blk.Body().SetAttributeValue("alias", cty.StringVal(prov.Alias))
+	}
 	return writeAttrs(blk.Body(), prov.Config)
 }
 
@@ -162,6 +181,14 @@ func writeBlockWithKeyword(body *hclwrite.Body, keyword string, r model.Resource
 			return fmt.Errorf("%s.%s for_each: %w", r.Type, r.Name, err)
 		}
 		blk.Body().SetAttributeRaw("for_each", toks)
+	}
+	// provider meta-arg selects a non-default (aliased) provider instance.
+	if r.Provider != "" {
+		trav, err := parseTraversal(r.Provider)
+		if err != nil {
+			return fmt.Errorf("%s.%s provider: %w", r.Type, r.Name, err)
+		}
+		blk.Body().SetAttributeTraversal("provider", trav)
 	}
 	if err := writeAttrs(blk.Body(), r.Attrs); err != nil {
 		return err

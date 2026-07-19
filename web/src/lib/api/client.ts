@@ -62,13 +62,19 @@ export const api = {
 	setProviderConfig: (
 		projectId: string,
 		key: string,
-		body: { source?: string; version?: string; config: Record<string, AttrValue> }
+		body: { alias?: string; source?: string; version?: string; config: Record<string, AttrValue> }
 	) =>
 		fetch(`/api/projects/${projectId}/providers/${encodeURIComponent(key)}`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(body)
 		}).then((r) => json<Project>(r)),
+
+	deleteProviderInstance: (projectId: string, key: string, alias?: string) =>
+		fetch(
+			`/api/projects/${projectId}/providers/${encodeURIComponent(key)}${alias ? `?alias=${encodeURIComponent(alias)}` : ''}`,
+			{ method: 'DELETE' }
+		).then((r) => json<Project>(r)),
 
 	resourceSchema: (source: string, type: string, engine: string) =>
 		fetch(
@@ -203,6 +209,7 @@ export const api = {
 			dependsOn?: string[];
 			count?: string;
 			forEach?: string;
+			provider?: string;
 		}
 	) =>
 		fetch(`/api/projects/${projectId}/resources`, {

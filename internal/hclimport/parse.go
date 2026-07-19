@@ -94,8 +94,10 @@ func parseRootBody(body *hclsyntax.Body, src []byte, name string, res *Result, p
 				res.Warnings = append(res.Warnings, fmt.Sprintf("%s: resource block missing labels", name))
 				continue
 			}
-			res.Resources = append(res.Resources, importResource(blk, src, newID()))
+			r := importResource(blk, src, newID())
+			res.Resources = append(res.Resources, r)
 			ensureProviderKey(res, provIndex, model.ProviderLocalName(blk.Labels[0]))
+			registerAliasRef(res, provIndex, r.Provider)
 
 		case "provider":
 			if len(blk.Labels) != 1 {
@@ -103,7 +105,20 @@ func parseRootBody(body *hclsyntax.Body, src []byte, name string, res *Result, p
 			}
 			key := blk.Labels[0]
 			cfg := importAttrs(blk.Body, src)
+			// alias is a meta-argument, not provider config: it makes this block a
+			// separate instance of the provider (indexed as "key.alias").
+			alias := ""
+			if av, ok := cfg["alias"]; ok && av.Mode == model.ModeLiteral && av.Literal.Type() == cty.String {
+				alias = av.Literal.AsString()
+				delete(cfg, "alias")
+			}
+			if len(cfg) == 0 {
+				cfg = nil
+			}
 			i := ensureProviderKey(res, provIndex, key)
+			if alias != "" {
+				i = ensureProviderInstance(res, provIndex, key, alias)
+			}
 			if len(cfg) > 0 {
 				res.Providers[i].Config = cfg
 			}
@@ -113,8 +128,10 @@ func parseRootBody(body *hclsyntax.Body, src []byte, name string, res *Result, p
 
 		case "data":
 			if len(blk.Labels) == 2 {
-				res.DataSources = append(res.DataSources, importResource(blk, src, newID()))
+				d := importResource(blk, src, newID())
+				res.DataSources = append(res.DataSources, d)
 				ensureProviderKey(res, provIndex, model.ProviderLocalName(blk.Labels[0]))
+				registerAliasRef(res, provIndex, d.Provider)
 			}
 
 		case "variable":
@@ -150,13 +167,17 @@ func parseModuleBody(body *hclsyntax.Body, src []byte, name string, lm *model.Lo
 				res.Warnings = append(res.Warnings, fmt.Sprintf("%s: resource block missing labels", name))
 				continue
 			}
-			lm.Resources = append(lm.Resources, importResource(blk, src, newID()))
+			r := importResource(blk, src, newID())
+			lm.Resources = append(lm.Resources, r)
 			ensureProviderKey(res, provIndex, model.ProviderLocalName(blk.Labels[0]))
+			registerAliasRef(res, provIndex, r.Provider)
 
 		case "data":
 			if len(blk.Labels) == 2 {
-				lm.DataSources = append(lm.DataSources, importResource(blk, src, newID()))
+				d := importResource(blk, src, newID())
+				lm.DataSources = append(lm.DataSources, d)
 				ensureProviderKey(res, provIndex, model.ProviderLocalName(blk.Labels[0]))
+				registerAliasRef(res, provIndex, d.Provider)
 			}
 
 		case "variable":
@@ -242,18 +263,46 @@ func localSourceFolder(source string) string {
 	return parts[len(parts)-1]
 }
 
-// ensureProviderKey returns the index of the provider with the given local name,
-// creating it (with a placeholder source) if absent.
+// registerAliasRef ensures the aliased provider instance a resource's provider
+// meta-arg ("aws.euwest") points at exists, so generation emits a matching
+// provider block even when the source HCL declared none.
+func registerAliasRef(res *Result, index map[string]int, ref string) {
+	parts := strings.Split(strings.TrimSpace(ref), ".")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return
+	}
+	ensureProviderInstance(res, index, parts[0], parts[1])
+}
+
+// ensureProviderKey returns the index of the default (unaliased) provider with
+// the given local name, creating it (with a placeholder source) if absent.
 func ensureProviderKey(res *Result, index map[string]int, key string) int {
-	if i, ok := index[key]; ok {
+	return ensureProviderInstance(res, index, key, "")
+}
+
+// ensureProviderInstance returns the index of the provider instance with the
+// given local name and alias, creating it if absent. An aliased instance
+// inherits source/version from the key's default instance when that is known.
+func ensureProviderInstance(res *Result, index map[string]int, key, alias string) int {
+	ik := key
+	if alias != "" {
+		ik = key + "." + alias
+	}
+	if i, ok := index[ik]; ok {
 		return i
 	}
-	res.Providers = append(res.Providers, model.ProviderInstance{
+	pi := model.ProviderInstance{
 		Key:    key,
+		Alias:  alias,
 		Source: "hashicorp/" + key, // refined if terraform{} declares a real source
-	})
+	}
+	if di, ok := index[key]; ok && alias != "" {
+		pi.Source = res.Providers[di].Source
+		pi.Version = res.Providers[di].Version
+	}
+	res.Providers = append(res.Providers, pi)
 	i := len(res.Providers) - 1
-	index[key] = i
+	index[ik] = i
 	return i
 }
 
@@ -273,12 +322,19 @@ func importRequiredProviders(tfBlock *hclsyntax.Block, src []byte, res *Result, 
 			if diags.HasErrors() || !val.Type().IsObjectType() {
 				continue
 			}
-			i := ensureProviderKey(res, index, key)
-			if val.Type().HasAttribute("source") {
-				res.Providers[i].Source = val.GetAttr("source").AsString()
-			}
-			if val.Type().HasAttribute("version") {
-				res.Providers[i].Version = val.GetAttr("version").AsString()
+			ensureProviderKey(res, index, key)
+			// Apply to every instance of the key: aliased instances share the
+			// required_providers entry.
+			for i := range res.Providers {
+				if res.Providers[i].Key != key {
+					continue
+				}
+				if val.Type().HasAttribute("source") {
+					res.Providers[i].Source = val.GetAttr("source").AsString()
+				}
+				if val.Type().HasAttribute("version") {
+					res.Providers[i].Version = val.GetAttr("version").AsString()
+				}
 			}
 		}
 	}
@@ -301,6 +357,12 @@ func importResource(blk *hclsyntax.Block, src []byte, id string) model.Resource 
 	if a, ok := blk.Body.Attributes["for_each"]; ok {
 		r.ForEach = rawSource(a.Expr, src)
 		delete(r.Attrs, "for_each")
+	}
+	// provider selects an aliased provider instance ("aws.euwest") — also a
+	// meta-argument.
+	if a, ok := blk.Body.Attributes["provider"]; ok {
+		r.Provider = rawSource(a.Expr, src)
+		delete(r.Attrs, "provider")
 	}
 	if len(r.Attrs) == 0 {
 		r.Attrs = nil

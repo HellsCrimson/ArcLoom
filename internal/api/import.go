@@ -187,14 +187,14 @@ func (s *Server) handleImportState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// mergeProviders adds providers not already present (by key). Real sources
-// override placeholder "hashicorp/<key>" sources.
+// mergeProviders adds provider instances not already present (by key + alias).
+// Real sources override placeholder "hashicorp/<key>" sources.
 func mergeProviders(p *model.Project, incoming []model.ProviderInstance) int {
 	added := 0
 	for _, pi := range incoming {
 		found := false
 		for i := range p.Providers {
-			if p.Providers[i].Key == pi.Key {
+			if p.Providers[i].Key == pi.Key && p.Providers[i].Alias == pi.Alias {
 				found = true
 				if p.Providers[i].Source == "hashicorp/"+pi.Key && pi.Source != "" {
 					p.Providers[i].Source = pi.Source

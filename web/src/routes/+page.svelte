@@ -42,12 +42,18 @@
 	let resourceName = $state('example');
 	let editingId = $state<string | null>(null);
 	let editingProviderKey = $state('');
+	// Alias of the provider instance being edited; editable only while creating
+	// a new aliased instance (providerAliasNew).
+	let editingProviderAlias = $state('');
+	let providerAliasNew = $state(false);
 	let values = $state<Record<string, AttrValue>>({});
 	// count / for_each meta-args (raw HCL expressions, mutually exclusive), and
 	// the edited resource's depends_on (managed on the canvas, preserved here).
 	let resourceCount = $state('');
 	let resourceForEach = $state('');
 	let resourceDependsOn = $state<string[] | undefined>(undefined);
+	// provider meta-arg ("aws.euwest"); '' = the type's default provider.
+	let resourceProvider = $state('');
 
 	let hcl = $state('');
 	let planLog = $state<string[]>([]);
@@ -164,6 +170,11 @@
 	const savedResources = $derived(activeMod ? (activeMod.resources ?? []) : (project?.resources ?? []));
 	const savedDataSources = $derived(activeMod ? (activeMod.dataSources ?? []) : (project?.dataSources ?? []));
 	const providers = $derived(project?.providers ?? []);
+	// Instances of the provider the form's resource type belongs to; a provider
+	// picker is shown when the source has more than one instance (aliases).
+	const formProviderInstances = $derived(
+		providers.filter((p) => p.key === selectedType.split('_')[0])
+	);
 	const references = $derived.by(() => {
 		const refs: string[] = [];
 		for (const r of savedResources) refs.push(`${r.type}.${r.name}.id`, `${r.type}.${r.name}.result`);
@@ -284,6 +295,8 @@
 		selectedType = '';
 		editingId = null;
 		editingProviderKey = '';
+		editingProviderAlias = '';
+		providerAliasNew = false;
 		formKind = 'resource';
 		values = {};
 		resourceName = 'example';
@@ -370,6 +383,10 @@
 		schema = null;
 		selectedType = '';
 		editingId = null;
+		editingProviderKey = '';
+		editingProviderAlias = '';
+		providerAliasNew = false;
+		formKind = 'resource';
 		values = {};
 	}
 
@@ -504,6 +521,7 @@
 		resourceCount = '';
 		resourceForEach = '';
 		resourceDependsOn = undefined;
+		resourceProvider = '';
 		resourceName = suggestName(t, kind);
 		try {
 			schema = kind === 'data'
@@ -528,6 +546,7 @@
 		resourceCount = r.count ?? '';
 		resourceForEach = r.forEach ?? '';
 		resourceDependsOn = r.dependsOn;
+		resourceProvider = r.provider ?? '';
 		const src = providerForType(r.type);
 		try {
 			schema = kind === 'data'
@@ -540,12 +559,14 @@
 		}
 	}
 
-	// Edit a provider's configuration block (host, api_key, ...).
+	// Edit a provider instance's configuration block (host, api_key, ...).
 	async function configureProvider(prov: ProviderInstance) {
 		error = '';
 		busy = 'schema';
 		formKind = 'provider';
 		editingProviderKey = prov.key;
+		editingProviderAlias = prov.alias ?? '';
+		providerAliasNew = false;
 		providerSource = prov.source;
 		editingId = null;
 		selectedType = '';
@@ -556,6 +577,29 @@
 			error = (err as Error).message;
 		} finally {
 			busy = '';
+		}
+	}
+
+	// Start a new aliased instance of an existing provider (multi-region etc.):
+	// same schema form, empty config, editable alias.
+	async function addProviderAlias(prov: ProviderInstance) {
+		await configureProvider(prov);
+		editingProviderAlias = '';
+		providerAliasNew = true;
+		values = {};
+	}
+
+	async function deleteProviderInstance(prov: ProviderInstance) {
+		if (!project) return;
+		const addr = prov.alias ? `${prov.key}.${prov.alias}` : prov.key;
+		if (!confirm(`Remove provider instance "${addr}" from the project?`)) return;
+		error = '';
+		try {
+			project = await api.deleteProviderInstance(project.id, prov.key, prov.alias);
+			await refreshHcl();
+			if (formKind === 'provider' && editingProviderKey === prov.key && editingProviderAlias === (prov.alias ?? '')) resetFormOnly();
+		} catch (err) {
+			error = (err as Error).message;
 		}
 	}
 
@@ -609,7 +653,8 @@
 				attrs: buildAttrs(),
 				dependsOn: resourceDependsOn,
 				count: resourceCount.trim() || undefined,
-				forEach: resourceForEach.trim() || undefined
+				forEach: resourceForEach.trim() || undefined,
+				provider: resourceProvider || undefined
 			});
 			project = await api.getProject(project.id);
 			await refreshProjects();
@@ -626,13 +671,20 @@
 
 	async function saveProviderConfig() {
 		if (!project) return;
+		if (providerAliasNew && !editingProviderAlias.trim()) {
+			error = 'alias is required for an additional provider instance';
+			return;
+		}
 		error = '';
 		busy = 'save';
 		try {
 			project = await api.setProviderConfig(project.id, editingProviderKey, {
+				alias: editingProviderAlias.trim() || undefined,
 				source: providerSource,
 				config: buildAttrs()
 			});
+			editingProviderAlias = editingProviderAlias.trim();
+			providerAliasNew = false;
 			await refreshProjects();
 			await refreshHcl();
 		} catch (err) {
@@ -791,7 +843,8 @@
 				attrs: r.attrs,
 				dependsOn: patch.dependsOn ?? r.dependsOn,
 				count: r.count,
-				forEach: r.forEach
+				forEach: r.forEach,
+				provider: r.provider
 			});
 			await refreshProject();
 		} catch (err) {
@@ -1066,10 +1119,20 @@
 					<div>
 						<div class="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Configured providers</div>
 						<ul class="space-y-0.5">
-							{#each providers as prov (prov.key)}
-								<li class="flex items-center gap-1">
-									<span class="mono flex-1 truncate text-[11px] text-[var(--al-muted)]" title={prov.source}>{prov.key}</span>
-									<button class={iconBtn} title="Configure {prov.key}" aria-label="Configure provider" onclick={() => configureProvider(prov)}><Settings size={14} /></button>
+							{#each providers as prov (prov.key + '.' + (prov.alias ?? ''))}
+								{@const addr = prov.alias ? `${prov.key}.${prov.alias}` : prov.key}
+								<li class="group flex items-center gap-1">
+									<span class="mono flex-1 truncate text-[11px] text-[var(--al-muted)]" title={prov.source}>
+										{prov.key}{#if prov.alias}<span class="text-[var(--al-accent)]">.{prov.alias}</span>{/if}
+									</span>
+									{#if auth.can('resources')}
+										{#if !prov.alias}
+											<button class="{iconBtn} opacity-0 group-hover:opacity-100" title="Add aliased instance of {prov.key}" aria-label="Add provider alias" onclick={() => addProviderAlias(prov)}><Plus size={13} /></button>
+										{:else}
+											<button class="{iconBtn} opacity-0 group-hover:opacity-100 hover:text-[var(--al-danger)]" title="Remove {addr}" aria-label="Remove provider instance" onclick={() => deleteProviderInstance(prov)}><Trash2 size={13} /></button>
+										{/if}
+									{/if}
+									<button class={iconBtn} title="Configure {addr}" aria-label="Configure provider" onclick={() => configureProvider(prov)}><Settings size={14} /></button>
 								</li>
 							{/each}
 						</ul>
@@ -1188,8 +1251,15 @@
 				<div class="flex items-center gap-2 text-sm text-[var(--al-muted)]"><Loader2 size={16} class="animate-spin" /> Loading schema…</div>
 			{:else if schema && formKind === 'provider'}
 				<div class="mb-4 flex items-end gap-3">
-					<div class="mono text-sm text-[var(--al-muted)]">provider "<span class="text-[var(--al-accent)]">{editingProviderKey}</span>"</div>
-					{#if auth.can('resources')}<button class={btnPrimary + ' ml-auto'} onclick={saveProviderConfig} disabled={busy === 'save'}><Save size={15} /> Save provider config</button>{/if}
+					<div class="mono text-sm text-[var(--al-muted)]">provider "<span class="text-[var(--al-accent)]">{editingProviderKey}</span>"{#if editingProviderAlias && !providerAliasNew}<span> alias "<span class="text-[var(--al-accent)]">{editingProviderAlias}</span>"</span>{/if}</div>
+					{#if providerAliasNew}
+						<div>
+							<label for="provider-alias" class="mb-1 block text-xs text-[var(--al-muted)]" title="alias meta-argument — resources select this instance via provider = {editingProviderKey}.<alias>">alias</label>
+							<input id="provider-alias" class="mono w-36 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={editingProviderAlias} placeholder="euwest" />
+						</div>
+						<span class="pb-1.5 text-[10px] uppercase text-[var(--al-muted)]">new instance</span>
+					{/if}
+					{#if auth.can('resources')}<button class={btnPrimary + ' ml-auto'} onclick={saveProviderConfig} disabled={busy === 'save' || (providerAliasNew && !editingProviderAlias.trim())}><Save size={15} /> Save provider config</button>{/if}
 				</div>
 				{#if (schema.fields?.length ?? 0) === 0}
 					<p class="text-sm text-[var(--al-muted)]">This provider has no configurable arguments.</p>
@@ -1210,6 +1280,16 @@
 						<label for="resource-foreach" class="mb-1 block text-xs text-[var(--al-muted)]" title="for_each meta-argument — a set or map expression, e.g. toset([&quot;a&quot;, &quot;b&quot;])">for_each</label>
 						<input id="resource-foreach" class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" bind:value={resourceForEach} placeholder="toset([…]) · var.map" disabled={resourceCount.trim() !== ''} />
 					</div>
+					{#if formProviderInstances.length > 1}
+						<div>
+							<label for="resource-provider" class="mb-1 block text-xs text-[var(--al-muted)]" title="provider meta-argument — which instance of the provider manages this {resourceKind === 'data' ? 'data source' : 'resource'}">provider</label>
+							<select id="resource-provider" class="mono rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={resourceProvider}>
+								{#each formProviderInstances as pi (pi.alias ?? '')}
+									<option value={pi.alias ? `${pi.key}.${pi.alias}` : ''}>{pi.alias ? `${pi.key}.${pi.alias}` : `${pi.key} (default)`}</option>
+								{/each}
+							</select>
+						</div>
+					{/if}
 					<div class="mono text-sm text-[var(--al-muted)]">{resourceKind === 'data' ? 'data' : 'resource'} "<span class="text-[var(--al-accent)]">{selectedType}</span>" "{resourceName}"{#if editingId}<span class="ml-1 text-[10px] uppercase">editing</span>{/if}</div>
 					{#if auth.can('resources')}<button class={btnPrimary + ' ml-auto'} onclick={saveResource} disabled={busy === 'save'}><Save size={15} /> {editingId ? 'Update' : 'Save'} {resourceKind === 'data' ? 'data source' : 'resource'}</button>{/if}
 					{#if editingId && resourceKind === 'resource' && auth.can('deploy')}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -73,15 +74,25 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleDeleteProject removes a project and its folder.
-// handleSetProviderConfig sets (and persists) a provider block's configuration.
-// The provider is created on the project if it does not yet exist.
+// identRe matches an HCL identifier, as valid for a provider alias.
+var identRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
+
+// providerRefRe matches a provider meta-arg reference: "aws" or "aws.euwest".
+var providerRefRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z_][A-Za-z0-9_-]*)?$`)
+
+// handleSetProviderConfig sets (and persists) a provider instance's
+// configuration. Instances are identified by (key, alias); an unknown pair is
+// created on the project, which is also how aliased instances are added.
 func (s *Server) handleSetProviderConfig(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	key := chi.URLParam(r, "key")
 	var req providerConfigRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	if req.Alias != "" && !identRe.MatchString(req.Alias) {
+		writeErr(w, http.StatusBadRequest, "invalid alias (must be an identifier)")
 		return
 	}
 	config, err := attrsToModel(req.Config)
@@ -92,7 +103,7 @@ func (s *Server) handleSetProviderConfig(w http.ResponseWriter, r *http.Request)
 
 	err = s.store.Update(id, func(p *model.Project) error {
 		for i := range p.Providers {
-			if p.Providers[i].Key == key {
+			if p.Providers[i].Key == key && p.Providers[i].Alias == req.Alias {
 				p.Providers[i].Config = config
 				if req.Source != "" {
 					p.Providers[i].Source = req.Source
@@ -103,13 +114,25 @@ func (s *Server) handleSetProviderConfig(w http.ResponseWriter, r *http.Request)
 				return nil
 			}
 		}
-		// Provider not yet on the project: add it.
-		source := req.Source
+		// Instance not yet on the project: add it. An aliased instance inherits
+		// source/version from the key's default instance unless overridden.
+		source, version := req.Source, req.Version
+		for _, prov := range p.Providers {
+			if prov.Key == key && prov.Alias == "" {
+				if source == "" {
+					source = prov.Source
+				}
+				if version == "" {
+					version = prov.Version
+				}
+				break
+			}
+		}
 		if source == "" {
 			source = "hashicorp/" + key
 		}
 		p.Providers = append(p.Providers, model.ProviderInstance{
-			Key: key, Source: source, Version: req.Version, Config: config,
+			Key: key, Alias: req.Alias, Source: source, Version: version, Config: config,
 		})
 		return nil
 	})
@@ -123,6 +146,75 @@ func (s *Server) handleSetProviderConfig(w http.ResponseWriter, r *http.Request)
 	}
 	p, _ := s.store.Get(id)
 	writeJSON(w, http.StatusOK, p)
+}
+
+// handleDeleteProviderInstance removes one provider instance (key + optional
+// ?alias=). Deleting is refused while a resource or data source still selects
+// the instance via its provider meta-arg (the default instance is always
+// implicitly selectable, so only its explicit references are checked).
+func (s *Server) handleDeleteProviderInstance(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	key := chi.URLParam(r, "key")
+	alias := r.URL.Query().Get("alias")
+	addr := key
+	if alias != "" {
+		addr = key + "." + alias
+	}
+	err := s.store.Update(id, func(p *model.Project) error {
+		if n := countProviderRefs(p, addr); n > 0 {
+			return fmt.Errorf("%w: %d resource(s) still use provider %s", errProviderInUse, n, addr)
+		}
+		out := p.Providers[:0]
+		found := false
+		for _, prov := range p.Providers {
+			if prov.Key == key && prov.Alias == alias {
+				found = true
+				continue
+			}
+			out = append(out, prov)
+		}
+		if !found {
+			return store.ErrNotFound
+		}
+		p.Providers = out
+		return nil
+	})
+	if errors.Is(err, errProviderInUse) {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "project or provider not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	p, _ := s.store.Get(id)
+	writeJSON(w, http.StatusOK, p)
+}
+
+var errProviderInUse = errors.New("provider in use")
+
+// countProviderRefs counts resources and data sources (root and local modules)
+// whose provider meta-arg selects the given instance address.
+func countProviderRefs(p *model.Project, addr string) int {
+	n := 0
+	count := func(rs []model.Resource) {
+		for _, r := range rs {
+			if r.Provider == addr {
+				n++
+			}
+		}
+	}
+	count(p.Resources)
+	count(p.DataSources)
+	for _, lm := range p.LocalModules {
+		count(lm.Resources)
+		count(lm.DataSources)
+	}
+	return n
 }
 
 // handleSetConfig replaces a project's variables, locals, and outputs.
@@ -280,6 +372,11 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	providerRef := strings.TrimSpace(req.Provider)
+	if providerRef != "" && !providerRefRe.MatchString(providerRef) {
+		writeErr(w, http.StatusBadRequest, "provider must be \"<key>\" or \"<key>.<alias>\"")
+		return
+	}
 
 	var saved model.Resource
 	err = s.store.Update(id, func(p *model.Project) error {
@@ -293,6 +390,7 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 		res := model.Resource{
 			ID: req.ID, Type: req.Type, Name: req.Name, Attrs: attrs, DependsOn: req.DependsOn,
 			Count: strings.TrimSpace(req.Count), ForEach: strings.TrimSpace(req.ForEach),
+			Provider: providerRef,
 		}
 		if res.ID == "" {
 			res.ID = uuid.NewString()

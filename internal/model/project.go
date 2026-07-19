@@ -85,12 +85,25 @@ type Module struct {
 type ProviderInstance struct {
 	// Key is the local provider name used in HCL, e.g. "random".
 	Key string `json:"key" yaml:"key"`
+	// Alias distinguishes additional instances of the same provider (multi-region
+	// AWS etc.); empty for the default instance. Resources select an aliased
+	// instance via their Provider field ("aws.euwest").
+	Alias string `json:"alias,omitempty" yaml:"alias,omitempty"`
 	// Source is the registry address, e.g. "hashicorp/random".
 	Source string `json:"source" yaml:"source"`
 	// Version is an optional version constraint; empty means latest.
 	Version string `json:"version,omitempty" yaml:"version,omitempty"`
 	// Config is the provider block body (empty for the random provider).
 	Config map[string]AttrValue `json:"config,omitempty" yaml:"config,omitempty"`
+}
+
+// Address is the reference resources use to select this instance:
+// "aws" for the default, "aws.euwest" for an alias.
+func (pi ProviderInstance) Address() string {
+	if pi.Alias == "" {
+		return pi.Key
+	}
+	return pi.Key + "." + pi.Alias
 }
 
 // Resource is a single managed resource in the model. It doubles as a generic
@@ -110,6 +123,9 @@ type Resource struct {
 	// may be set.
 	Count   string `json:"count,omitempty" yaml:"count,omitempty"`
 	ForEach string `json:"forEach,omitempty" yaml:"forEach,omitempty"`
+	// Provider is the provider meta-argument selecting a non-default provider
+	// instance, e.g. "aws.euwest". Empty uses the type's default provider.
+	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`
 }
 
 // LocalName returns the provider local name inferred from a resource type,

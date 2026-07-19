@@ -69,6 +69,8 @@ type resourceRequest struct {
 	// Count / ForEach are raw HCL expressions (mutually exclusive).
 	Count   string `json:"count,omitempty"`
 	ForEach string `json:"forEach,omitempty"`
+	// Provider is the provider meta-arg ("aws.euwest"); empty = default instance.
+	Provider string `json:"provider,omitempty"`
 }
 
 // engineDTO describes an available CLI engine.
@@ -86,7 +88,10 @@ type providerRequest struct {
 }
 
 // providerConfigRequest sets a provider block's configuration on a project.
+// Alias selects (or creates) an aliased instance of the provider; empty targets
+// the default instance.
 type providerConfigRequest struct {
+	Alias   string                  `json:"alias,omitempty"`
 	Source  string                  `json:"source,omitempty"`
 	Version string                  `json:"version,omitempty"`
 	Config  map[string]attrValueDTO `json:"config"`

@@ -75,10 +75,16 @@ export interface Resource {
 	// count / for_each meta-arguments as raw HCL expressions (mutually exclusive).
 	count?: string;
 	forEach?: string;
+	// provider meta-argument selecting an aliased instance ("aws.euwest");
+	// empty/absent = the type's default provider.
+	provider?: string;
 }
 
 export interface ProviderInstance {
 	key: string;
+	// Alias distinguishes extra instances of the same provider (multi-region);
+	// empty for the default instance.
+	alias?: string;
 	source: string;
 	version?: string;
 	config?: Record<string, AttrValue>;
