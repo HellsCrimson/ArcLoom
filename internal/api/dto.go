@@ -56,9 +56,10 @@ func attrsToModel(in map[string]attrValueDTO) (map[string]model.AttrValue, error
 	return out, nil
 }
 
-// resourceRequest is the body for creating/updating a resource.
+// resourceRequest is the body for creating/updating a resource or data source.
 type resourceRequest struct {
 	ID             string                  `json:"id,omitempty"`
+	Kind           string                  `json:"kind,omitempty"` // "" | "resource" | "data"
 	Type           string                  `json:"type"`
 	Name           string                  `json:"name"`
 	ProviderSource string                  `json:"providerSource,omitempty"`
@@ -91,10 +92,12 @@ type providerConfigRequest struct {
 	Config  map[string]attrValueDTO `json:"config"`
 }
 
-// providerResponse lists a provider's resource types after schema fetch.
+// providerResponse lists a provider's resource and data source types after
+// schema fetch.
 type providerResponse struct {
-	Provider      string   `json:"provider"`
-	ResourceTypes []string `json:"resourceTypes"`
+	Provider        string   `json:"provider"`
+	ResourceTypes   []string `json:"resourceTypes"`
+	DataSourceTypes []string `json:"dataSourceTypes,omitempty"`
 }
 
 // projectRequest creates a project.

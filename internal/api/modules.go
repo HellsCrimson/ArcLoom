@@ -28,6 +28,20 @@ func resourceSlice(p *model.Project, moduleName string) (*[]model.Resource, bool
 	return nil, false
 }
 
+// dataSourceSlice is resourceSlice's counterpart for the data-source list of a
+// scope ("" = root project, else a local module).
+func dataSourceSlice(p *model.Project, moduleName string) (*[]model.Resource, bool) {
+	if moduleName == "" {
+		return &p.DataSources, true
+	}
+	for i := range p.LocalModules {
+		if p.LocalModules[i].Name == moduleName {
+			return &p.LocalModules[i].DataSources, true
+		}
+	}
+	return nil, false
+}
+
 // handleCreateLocalModule adds an empty local module to the project.
 func (s *Server) handleCreateLocalModule(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")

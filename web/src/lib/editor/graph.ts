@@ -41,6 +41,18 @@ export interface Edge {
 
 const ADDR_RE = /([a-z][a-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_-]*)/g;
 const MODULE_RE = /module\.([A-Za-z_][A-Za-z0-9_-]*)/g;
+const DATA_RE = /\bdata\.([a-z][a-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_-]*)/g;
+
+// DATA_COLOR is the fixed accent for data-source nodes (distinct from the
+// per-type resource palette).
+export const DATA_COLOR = '#56d4bc';
+
+// baseAddr reduces a reference to its resource address: "a.b.attr" -> "a.b",
+// "data.a.b.attr" -> "data.a.b".
+export function baseAddr(ref: string): string {
+	const parts = ref.split('.');
+	return parts.slice(0, parts[0] === 'data' ? 3 : 2).join('.');
+}
 
 // modId is the canvas node id for a local module group.
 export function modId(name: string): string {
@@ -71,11 +83,12 @@ export function crossScopeEdges(project: Project): Edge[] {
 	};
 
 	const localNames = new Set((project.localModules ?? []).map((m) => m.name));
-	const rootAddr = new Map<string, string>(); // "type.name" -> resource id
+	const rootAddr = new Map<string, string>(); // "type.name" / "data.type.name" -> node id
 	for (const r of project.resources) rootAddr.set(`${r.type}.${r.name}`, r.id);
+	for (const d of project.dataSources ?? []) rootAddr.set(`data.${d.type}.${d.name}`, d.id);
 
-	// Root resource -> module output reference: module is the dependency.
-	for (const r of project.resources) {
+	// Root resource / data source -> module output reference: module is the dependency.
+	for (const r of [...project.resources, ...(project.dataSources ?? [])]) {
 		for (const v of Object.values(r.attrs ?? {})) {
 			const text = attrText(v);
 			if (!text) continue;
@@ -87,11 +100,17 @@ export function crossScopeEdges(project: Project): Edge[] {
 		}
 	}
 
-	// Module inputs -> references to root resources / other modules.
+	// Module inputs -> references to root resources / data sources / other modules.
 	for (const lm of project.localModules ?? []) {
 		for (const v of Object.values(lm.inputs ?? {})) {
 			const text = attrText(v);
 			if (!text) continue;
+			let d: RegExpExecArray | null;
+			DATA_RE.lastIndex = 0;
+			while ((d = DATA_RE.exec(text))) {
+				const id = rootAddr.get(`data.${d[1]}.${d[2]}`);
+				if (id) add(id, modId(lm.name));
+			}
 			let a: RegExpExecArray | null;
 			ADDR_RE.lastIndex = 0;
 			while ((a = ADDR_RE.exec(text))) {
@@ -134,10 +153,12 @@ export function interiorLayout(resources: Resource[]): {
 }
 
 // deriveEdges builds dependency edges from the model: explicit depends_on and
-// any attribute reference/expression that mentions another resource's address.
-export function deriveEdges(resources: Resource[]): Edge[] {
+// any attribute reference/expression that mentions another resource's or data
+// source's address. Data sources participate as both producers and consumers.
+export function deriveEdges(resources: Resource[], dataSources: Resource[] = []): Edge[] {
 	const addr = new Map<string, string>();
 	for (const r of resources) addr.set(`${r.type}.${r.name}`, r.id);
+	for (const d of dataSources) addr.set(`data.${d.type}.${d.name}`, d.id);
 
 	const edges: Edge[] = [];
 	const seen = new Set<string>();
@@ -149,10 +170,9 @@ export function deriveEdges(resources: Resource[]): Edge[] {
 		edges.push({ id: k, from: fromId, to: toId, kind });
 	};
 
-	for (const r of resources) {
+	for (const r of [...resources, ...dataSources]) {
 		for (const dep of r.dependsOn ?? []) {
-			const a = dep.split('.').slice(0, 2).join('.');
-			add(addr.get(a), r.id, 'depends');
+			add(addr.get(baseAddr(dep)), r.id, 'depends');
 		}
 		const texts = Object.values(r.attrs ?? {}).map((v) =>
 			v.mode === 'reference' ? (v.ref ?? '') : v.mode === 'expression' ? (v.expr ?? '') : ''
@@ -162,7 +182,11 @@ export function deriveEdges(resources: Resource[]): Edge[] {
 		for (const text of texts) {
 			if (!text) continue;
 			let m: RegExpExecArray | null;
+			DATA_RE.lastIndex = 0;
+			while ((m = DATA_RE.exec(text))) add(addr.get(`data.${m[1]}.${m[2]}`), r.id, 'ref');
 			ADDR_RE.lastIndex = 0;
+			// "data.x" itself matches ADDR_RE but never resolves in addr (resource
+			// keys have no "data." prefix), so data refs don't double-count.
 			while ((m = ADDR_RE.exec(text))) add(addr.get(`${m[1]}.${m[2]}`), r.id, 'ref');
 		}
 	}

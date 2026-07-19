@@ -94,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/engines", s.handleEngines)
 			r.Get("/providers/{source}/schema", s.handleProviderSchema)
 			r.Get("/providers/{source}/resources/{type}/schema", s.handleResourceSchema)
+			r.Get("/providers/{source}/datasources/{type}/schema", s.handleDataSourceSchema)
 			r.Get("/projects", s.handleListProjects)
 			r.Get("/projects/{id}", s.handleGetProject)
 			r.Get("/projects/{id}/secrets", s.handleListSecrets)

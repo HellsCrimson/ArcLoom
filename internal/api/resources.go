@@ -227,8 +227,9 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
-// handleUpsertResource adds a new resource or updates an existing one (by id).
-// It also ensures the resource's provider is registered on the project.
+// handleUpsertResource adds a new resource or data source (kind = "data") or
+// updates an existing one (by id). It also ensures the type's provider is
+// registered on the project.
 func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var req resourceRequest
@@ -238,6 +239,10 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Type == "" || req.Name == "" {
 		writeErr(w, http.StatusBadRequest, "type and name are required")
+		return
+	}
+	if req.Kind != "" && req.Kind != "resource" && req.Kind != "data" {
+		writeErr(w, http.StatusBadRequest, "kind must be \"resource\" or \"data\"")
 		return
 	}
 	attrs, err := attrsToModel(req.Attrs)
@@ -262,6 +267,9 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 	var saved model.Resource
 	err = s.store.Update(id, func(p *model.Project) error {
 		slice, ok := resourceSlice(p, req.Module)
+		if req.Kind == "data" {
+			slice, ok = dataSourceSlice(p, req.Module)
+		}
 		if !ok {
 			return store.ErrNotFound
 		}
@@ -305,8 +313,12 @@ func (s *Server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	rid := chi.URLParam(r, "rid")
 	module := r.URL.Query().Get("module")
+	kind := r.URL.Query().Get("kind")
 	err := s.store.Update(id, func(p *model.Project) error {
 		slice, ok := resourceSlice(p, module)
+		if kind == "data" {
+			slice, ok = dataSourceSlice(p, module)
+		}
 		if !ok {
 			return store.ErrNotFound
 		}

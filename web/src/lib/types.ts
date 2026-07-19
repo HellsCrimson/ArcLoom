@@ -59,7 +59,12 @@ export interface EnginesResponse {
 export interface ProviderResponse {
 	provider: string;
 	resourceTypes: string[];
+	dataSourceTypes?: string[];
 }
+
+// ResourceKind distinguishes managed resources from data sources; both share
+// the Resource shape.
+export type ResourceKind = 'resource' | 'data';
 
 export interface Resource {
 	id: string;

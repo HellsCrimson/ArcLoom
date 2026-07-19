@@ -1,10 +1,10 @@
 <script lang="ts">
-	import type { Project, Resource } from '$lib/types';
+	import type { Project, Resource, ResourceKind } from '$lib/types';
 	import type { PlanChange } from '$lib/api/client';
 	import {
-		deriveEdges, crossScopeEdges, interiorLayout, modId, typeColor, typeLetter,
+		deriveEdges, crossScopeEdges, interiorLayout, modId, typeColor, typeLetter, baseAddr,
 		layoutPositions, layoutMissing, LAYOUTS,
-		NODE_W, NODE_H, DOT_Y, MOD_HEADER_H, ACTION_COLOR, ACTION_SYMBOL,
+		NODE_W, NODE_H, DOT_Y, MOD_HEADER_H, ACTION_COLOR, ACTION_SYMBOL, DATA_COLOR,
 		type Edge, type LayoutMode
 	} from './graph';
 	import HclView from './HclView.svelte';
@@ -39,8 +39,8 @@
 		planChanges?: PlanChange[];
 		planning?: boolean;
 		onPlan?: () => void;
-		loadTypes: (source: string) => Promise<string[]>;
-		onAddType: (type: string, providerSource: string) => void;
+		loadTypes: (source: string) => Promise<{ resourceTypes: string[]; dataSourceTypes: string[] }>;
+		onAddType: (type: string, providerSource: string, kind?: ResourceKind) => void;
 		onEditResource: (r: Resource, module?: string) => void;
 		onDeleteResource: (id: string, module?: string) => void;
 		onRenameResource: (id: string, name: string, module?: string) => void;
@@ -71,6 +71,8 @@
 		if (!activeProvider && project.providers[0]) activeProvider = project.providers[0].key;
 	});
 	let paletteTypes = $state<string[]>([]);
+	let paletteDataTypes = $state<string[]>([]);
+	let paletteKind = $state<ResourceKind>('resource');
 	let typeFilter = $state('');
 	let loadingTypes = $state(false);
 	let showPalette = $state(false);
@@ -81,6 +83,17 @@
 	const providerFooter = $derived((activeProvider || 'no') + ' provider');
 
 	const localModules = $derived(project.localModules ?? []);
+	const rootDataSources = $derived(project.dataSources ?? []);
+
+	// lookupNode resolves a node id across root resources and data sources,
+	// returning the address form used in references / depends_on.
+	function lookupNode(id: string): { r: Resource; addr: string } | null {
+		const r = project.resources.find((x) => x.id === id);
+		if (r) return { r, addr: `${r.type}.${r.name}` };
+		const d = rootDataSources.find((x) => x.id === id);
+		if (d) return { r: d, addr: `data.${d.type}.${d.name}` };
+		return null;
+	}
 
 	// --- Plan overlay: map last plan's changes onto canvas nodes by address. ---
 	// Counted / for_each resources plan as per-instance addresses ("x.y[0]",
@@ -91,7 +104,8 @@
 	const changeByAddr = $derived.by(() => {
 		const m = new Map<string, string>();
 		for (const c of planChanges) {
-			if (c.mode !== 'managed') continue;
+			// Data-source reads are included too: their addresses already carry
+			// the "data." prefix, so they can't collide with managed resources.
 			const key = stripIndex(c.address);
 			const prev = m.get(key);
 			if (!prev || (SEVERITY[c.action] ?? 0) > (SEVERITY[prev] ?? 0)) m.set(key, c.action);
@@ -159,14 +173,16 @@
 	}
 
 	// Macro nodes are the things laid out at the top level: every root resource
-	// plus one pseudo-node per local module, plus a ghost per planned root
-	// delete (so it gets an auto position). Layout helpers only read id/type.
+	// and data source, plus one pseudo-node per local module, plus a ghost per
+	// planned root delete (so it gets an auto position). Layout helpers only
+	// read id/type.
 	const macroNodes = $derived<Resource[]>([
 		...project.resources,
+		...rootDataSources,
 		...localModules.map((lm) => ({ id: modId(lm.name), type: 'module', name: lm.name, attrs: {} })),
 		...ghosts.map((g) => ({ id: `ghost:${g.address}`, type: g.type, name: g.name, attrs: {} }))
 	]);
-	const macroEdges = $derived<Edge[]>([...deriveEdges(project.resources), ...crossScopeEdges(project)]);
+	const macroEdges = $derived<Edge[]>([...deriveEdges(project.resources, rootDataSources), ...crossScopeEdges(project)]);
 
 	// Auto-place any macro node without a stored position, preserving dragged ones.
 	$effect(() => {
@@ -181,17 +197,19 @@
 		resetView();
 	}
 
-	// Module boxes: geometry + expand state + interior child layout.
+	// Module boxes: geometry + expand state + interior child layout (resources
+	// and data sources share the interior grid).
 	const moduleBoxes = $derived(
 		localModules.map((lm) => {
-			const interior = interiorLayout(lm.resources);
+			const children = [...lm.resources, ...(lm.dataSources ?? [])];
+			const interior = interiorLayout(children);
 			const open = !!expanded[lm.name];
 			const pos = positions[modId(lm.name)] ?? { x: 40, y: 40 };
 			return {
 				lm,
 				name: lm.name,
 				id: modId(lm.name),
-				count: lm.resources.length,
+				count: children.length,
 				open,
 				interior,
 				pos,
@@ -217,6 +235,21 @@
 		})
 	);
 
+	// Root data-source cards (distinct color; rendered with kind "data").
+	const rootDataNodes = $derived(
+		rootDataSources.map((d) => {
+			const pos = positions[d.id] ?? { x: 40, y: 40 };
+			return {
+				...d,
+				x: pos.x,
+				y: pos.y,
+				color: DATA_COLOR,
+				letter: typeLetter(d.type),
+				selected: d.id === selectedId
+			};
+		})
+	);
+
 	// Absolute position of a module's interior child card.
 	function childAbs(mb: (typeof moduleBoxes)[number], id: string) {
 		const rel = mb.interior.pos[id] ?? { x: 0, y: 0 };
@@ -228,6 +261,7 @@
 	const boxes = $derived.by(() => {
 		const m = new Map<string, { x: number; y: number; w: number; h: number; color: string }>();
 		for (const n of rootNodes) m.set(n.id, { x: n.x, y: n.y, w: NODE_W, h: NODE_H, color: n.color });
+		for (const n of rootDataNodes) m.set(n.id, { x: n.x, y: n.y, w: NODE_W, h: NODE_H, color: n.color });
 		for (const mb of moduleBoxes) m.set(mb.id, { x: mb.pos.x, y: mb.pos.y, w: mb.w, h: mb.h, color: accent });
 		return m;
 	});
@@ -251,13 +285,13 @@
 			out.push({ ...e, color, d: edgePath(f, t) });
 		};
 		// Root ↔ root.
-		for (const e of deriveEdges(project.resources)) push(e, b.get(e.from)?.color ?? accent);
+		for (const e of deriveEdges(project.resources, rootDataSources)) push(e, b.get(e.from)?.color ?? accent);
 		// Cross-scope (root ↔ module, module ↔ module).
 		for (const e of crossScopeEdges(project)) push(e, accent);
 		// Interior edges for expanded modules.
 		for (const mb of moduleBoxes) {
 			if (!mb.open) continue;
-			for (const e of deriveEdges(mb.lm.resources)) {
+			for (const e of deriveEdges(mb.lm.resources, mb.lm.dataSources ?? [])) {
 				const fa = childAbs(mb, e.from);
 				const ta = childAbs(mb, e.to);
 				push(e, mb.selected ? accent : '#5b6472', { ...fa, w: NODE_W, h: NODE_H }, { ...ta, w: NODE_W, h: NODE_H });
@@ -377,12 +411,11 @@
 	function onDotUp(e: MouseEvent, id: string, role: string) {
 		e.stopPropagation();
 		if (role === 'in' && connecting && connecting.fromId !== id) {
-			const from = project.resources.find((r) => r.id === connecting!.fromId);
-			const to = project.resources.find((r) => r.id === id);
+			const from = lookupNode(connecting.fromId);
+			const to = lookupNode(id);
 			if (from && to) {
-				const addr = `${from.type}.${from.name}`;
-				const deps = to.dependsOn ?? [];
-				if (!deps.includes(addr)) onSetDependsOn(to.id, [...deps, addr]);
+				const deps = to.r.dependsOn ?? [];
+				if (!deps.includes(from.addr)) onSetDependsOn(to.r.id, [...deps, from.addr]);
 			}
 		}
 		connecting = null;
@@ -390,11 +423,10 @@
 
 	function onEdgeClick(e: Edge) {
 		if (e.kind !== 'depends') return; // only root depends_on edges are editable
-		const to = project.resources.find((r) => r.id === e.to);
-		const from = project.resources.find((r) => r.id === e.from);
+		const to = lookupNode(e.to);
+		const from = lookupNode(e.from);
 		if (!to || !from) return;
-		const addr = `${from.type}.${from.name}`;
-		onSetDependsOn(to.id, (to.dependsOn ?? []).filter((d) => d.split('.').slice(0, 2).join('.') !== addr));
+		onSetDependsOn(to.r.id, (to.r.dependsOn ?? []).filter((d) => baseAddr(d) !== from.addr));
 	}
 
 	function rename(id: string, name: string, scope?: string) {
@@ -405,6 +437,7 @@
 	function switchProvider(key: string) {
 		activeProvider = key;
 		paletteTypes = [];
+		paletteDataTypes = [];
 		showPalette = true;
 	}
 
@@ -412,7 +445,9 @@
 		if (!activeSource) return;
 		loadingTypes = true;
 		try {
-			paletteTypes = await loadTypes(activeSource);
+			const res = await loadTypes(activeSource);
+			paletteTypes = res.resourceTypes;
+			paletteDataTypes = res.dataSourceTypes;
 		} finally {
 			loadingTypes = false;
 		}
@@ -426,12 +461,14 @@
 	$effect(() => {
 		activeProvider; // track
 		paletteTypes = [];
+		paletteDataTypes = [];
 		if (showPalette) loadPaletteTypes();
 	});
 
-	const filteredTypes = $derived(
-		typeFilter ? paletteTypes.filter((t) => t.includes(typeFilter)) : paletteTypes
-	);
+	const filteredTypes = $derived.by(() => {
+		const pool = paletteKind === 'data' ? paletteDataTypes : paletteTypes;
+		return typeFilter ? pool.filter((t) => t.includes(typeFilter)) : pool;
+	});
 
 	// multiBadge summarizes a resource's count / for_each for its canvas card:
 	// a literal count shows "×3", anything else "×N" / "∀" with the expression
@@ -459,22 +496,23 @@
 	{/if}
 {/snippet}
 
-{#snippet card(id: string, x: number, y: number, name: string, type: string, color: string, letter: string, selected: boolean, connectable: boolean, scope: string | undefined, change: string | undefined, multi: { label: string; title: string } | undefined)}
+{#snippet card(id: string, x: number, y: number, name: string, type: string, color: string, letter: string, selected: boolean, connectable: boolean, scope: string | undefined, change: string | undefined, multi: { label: string; title: string } | undefined, kind: ResourceKind = 'resource')}
+	{@const isData = kind === 'data'}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 	<div
 		role="button"
 		tabindex="-1"
-		style="position:absolute;left:{x}px;top:{y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:#10151f;border:1px solid {selected ? accent : change ? ACTION_COLOR[change] : 'rgba(255,255,255,0.10)'};box-shadow:{selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : change ? '0 0 0 1.5px ' + ACTION_COLOR[change] + '55, 0 6px 16px rgba(0,0,0,0.35)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:{connectable ? 'grab' : 'pointer'};z-index:2;"
+		style="position:absolute;left:{x}px;top:{y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:{isData ? '18px' : '12px'};padding:10px 12px;background:{isData ? '#0e1917' : '#10151f'};border:{selected ? '1px solid ' + accent : change ? '1px solid ' + ACTION_COLOR[change] : isData ? '1.5px dashed rgba(86,212,188,0.45)' : '1px solid rgba(255,255,255,0.10)'};box-shadow:{selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : change ? '0 0 0 1.5px ' + ACTION_COLOR[change] + '55, 0 6px 16px rgba(0,0,0,0.35)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:{connectable ? 'grab' : 'pointer'};z-index:2;"
 		onmousedown={(e) => { if (connectable) { onBoxDown(e, id); } else { e.stopPropagation(); } }}
 		onclick={() => { if (dragMoved) { dragMoved = false; return; } onEditResource({ id, type, name, attrs: {} } as Resource, scope); }}
 		ondblclick={(e) => { e.stopPropagation(); rename(id, name, scope); }}
 	>
 		<div class="flex items-center gap-2">
-			<div style="width:22px;height:22px;border-radius:6px;background:{color};color:#0a0e15;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;">{letter}</div>
+			<div style="width:22px;height:22px;border-radius:{isData ? '50%' : '6px'};background:{color};color:#0a0e15;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;">{letter}</div>
 			<div style="min-width:0;">
 				<div style="font-size:13px;font-weight:600;color:#e6e9ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{name}</div>
-				<div class="font-mono" style="font-size:10px;color:#6b7480;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{type}</div>
+				<div class="font-mono" style="font-size:10px;color:{isData ? 'rgba(86,212,188,0.75)' : '#6b7480'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{isData ? `data.${type}` : type}</div>
 			</div>
 		</div>
 		<button
@@ -555,6 +593,18 @@
 			</div>
 			{#if showPalette}
 				<div class="border-t border-white/10 p-2" style="width:220px;">
+					<div class="mb-1.5 flex gap-1">
+						<button
+							class="flex-1 rounded-md px-2 py-1 text-[11px] font-semibold"
+							style="background:{paletteKind === 'resource' ? accent + '22' : 'transparent'};color:{paletteKind === 'resource' ? accent : '#8b95a5'};border:1px solid {paletteKind === 'resource' ? accent + '55' : 'transparent'};"
+							onclick={() => (paletteKind = 'resource')}
+						>resources</button>
+						<button
+							class="flex-1 rounded-md px-2 py-1 text-[11px] font-semibold"
+							style="background:{paletteKind === 'data' ? DATA_COLOR + '22' : 'transparent'};color:{paletteKind === 'data' ? DATA_COLOR : '#8b95a5'};border:1px solid {paletteKind === 'data' ? DATA_COLOR + '55' : 'transparent'};"
+							onclick={() => (paletteKind = 'data')}
+						>data</button>
+					</div>
 					<div class="mb-1.5 flex items-center gap-1.5 rounded-md bg-black/30 px-2 py-1">
 						<Search size={12} class="text-white/40" />
 						<input class="w-full bg-transparent text-[11px] text-white/80 outline-none" placeholder="filter types…" bind:value={typeFilter} />
@@ -566,8 +616,8 @@
 							{#each filteredTypes as t (t)}
 								<button
 									class="block w-full truncate rounded px-2 py-1 text-left font-mono text-[11px] text-white/70 hover:bg-white/10"
-									onclick={() => onAddType(t, activeSource)}
-									title="Add {t}"
+									onclick={() => onAddType(t, activeSource, paletteKind)}
+									title="Add {paletteKind === 'data' ? 'data source' : ''} {t}"
 								>{t}</button>
 							{/each}
 							{#if filteredTypes.length === 0}
@@ -639,7 +689,7 @@
 						>
 							<FolderOpen size={14} style="color:{accent};flex:none;" />
 							<span style="font-size:12px;font-weight:700;color:#e6e9ef;">module.{mb.name}</span>
-							<span style="font-size:10px;color:#6b7480;">{mb.count} resource{mb.count === 1 ? '' : 's'}</span>
+							<span style="font-size:10px;color:#6b7480;">{mb.count} block{mb.count === 1 ? '' : 's'}</span>
 							<ChevronDown size={13} style="color:#6b7480;margin-left:auto;" />
 						</div>
 						{#if mb.count === 0}
@@ -662,7 +712,7 @@
 							<div style="width:22px;height:22px;border-radius:6px;background:{accent}22;color:{accent};display:flex;align-items:center;justify-content:center;flex:none;"><Folder size={13} /></div>
 							<div style="min-width:0;">
 								<div style="font-size:13px;font-weight:700;color:#e6e9ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{mb.name}</div>
-								<div class="font-mono" style="font-size:10px;color:#6b7480;">module · {mb.count} resource{mb.count === 1 ? '' : 's'}</div>
+								<div class="font-mono" style="font-size:10px;color:#6b7480;">module · {mb.count} block{mb.count === 1 ? '' : 's'}</div>
 							</div>
 							<ChevronRight size={14} style="color:#6b7480;margin-left:auto;flex:none;" />
 						</div>
@@ -678,12 +728,21 @@
 				{@render card(node.id, node.x, node.y, node.name, node.type, node.color, node.letter, node.selected, true, undefined, changeByAddr.get(`${node.type}.${node.name}`), multiBadge(node))}
 			{/each}
 
-			<!-- expanded modules' interior resource nodes -->
+			<!-- root data-source nodes -->
+			{#each rootDataNodes as node (node.id)}
+				{@render card(node.id, node.x, node.y, node.name, node.type, node.color, node.letter, node.selected, true, undefined, changeByAddr.get(`data.${node.type}.${node.name}`), multiBadge(node), 'data')}
+			{/each}
+
+			<!-- expanded modules' interior resource + data-source nodes -->
 			{#each moduleBoxes as mb (mb.id)}
 				{#if mb.open}
 					{#each mb.lm.resources as r (r.id)}
 						{@const c = childAbs(mb, r.id)}
 						{@render card(r.id, c.x, c.y, r.name, r.type, typeColor(r.type), typeLetter(r.type), r.id === selectedId, false, mb.name, changeByAddr.get(`module.${mb.name}.${r.type}.${r.name}`), multiBadge(r))}
+					{/each}
+					{#each mb.lm.dataSources ?? [] as d (d.id)}
+						{@const c = childAbs(mb, d.id)}
+						{@render card(d.id, c.x, c.y, d.name, d.type, DATA_COLOR, typeLetter(d.type), d.id === selectedId, false, mb.name, changeByAddr.get(`module.${mb.name}.data.${d.type}.${d.name}`), multiBadge(d), 'data')}
 					{/each}
 				{/if}
 			{/each}

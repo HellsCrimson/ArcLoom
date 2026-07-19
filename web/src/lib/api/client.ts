@@ -75,6 +75,11 @@ export const api = {
 			`/api/providers/${encodeURIComponent(source)}/resources/${encodeURIComponent(type)}/schema?engine=${encodeURIComponent(engine)}`
 		).then((r) => json<NormalizedSchema>(r)),
 
+	dataSourceSchema: (source: string, type: string, engine: string) =>
+		fetch(
+			`/api/providers/${encodeURIComponent(source)}/datasources/${encodeURIComponent(type)}/schema?engine=${encodeURIComponent(engine)}`
+		).then((r) => json<NormalizedSchema>(r)),
+
 	listProjects: () =>
 		fetch('/api/projects').then((r) => json<ProjectSummary[]>(r)),
 
@@ -130,12 +135,17 @@ export const api = {
 			if (!r.ok && r.status !== 204) throw new Error('failed to delete secret');
 		}),
 
-	deleteResource: (projectId: string, rid: string, module?: string) =>
-		fetch(`/api/projects/${projectId}/resources/${rid}${module ? `?module=${encodeURIComponent(module)}` : ''}`, {
+	deleteResource: (projectId: string, rid: string, module?: string, kind?: 'resource' | 'data') => {
+		const q = new URLSearchParams();
+		if (module) q.set('module', module);
+		if (kind === 'data') q.set('kind', 'data');
+		const qs = q.toString();
+		return fetch(`/api/projects/${projectId}/resources/${rid}${qs ? `?${qs}` : ''}`, {
 			method: 'DELETE'
 		}).then((r) => {
 			if (!r.ok && r.status !== 204) throw new Error('failed to delete resource');
-		}),
+		});
+	},
 
 	createLocalModule: (projectId: string, name: string) =>
 		fetch(`/api/projects/${projectId}/modules/local`, {
@@ -160,6 +170,7 @@ export const api = {
 		projectId: string,
 		body: {
 			id?: string;
+			kind?: 'resource' | 'data';
 			type: string;
 			name: string;
 			providerSource?: string;

@@ -91,7 +91,65 @@ func (s *Server) handleAddProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(types)
 
-	writeJSON(w, http.StatusOK, providerResponse{Provider: fq, ResourceTypes: types})
+	// Same for data sources. A type name can exist as both a resource and a
+	// data source (e.g. aws_instance), so data schemas get their own key prefix.
+	dataTypes := make([]string, 0, len(ps.DataSourceSchemas))
+	for dt, ds := range ps.DataSourceSchemas {
+		dataTypes = append(dataTypes, dt)
+		ns := schema.Normalize(fq, dt, ds)
+		key := cache.Key(string(run.Engine()), req.Source, "", dataSchemaPrefix+dt)
+		s.cache.Put(key, ns)
+	}
+	sort.Strings(dataTypes)
+
+	writeJSON(w, http.StatusOK, providerResponse{Provider: fq, ResourceTypes: types, DataSourceTypes: dataTypes})
+}
+
+// dataSchemaPrefix namespaces data-source entries in the schema cache so they
+// cannot collide with a same-named resource type.
+const dataSchemaPrefix = "data:"
+
+// handleDataSourceSchema returns the normalized schema for one data source
+// type, mirroring handleResourceSchema.
+func (s *Server) handleDataSourceSchema(w http.ResponseWriter, r *http.Request) {
+	source, err := url.PathUnescape(chi.URLParam(r, "source"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid source")
+		return
+	}
+	dataType := chi.URLParam(r, "type")
+	engine := r.URL.Query().Get("engine")
+
+	run, ok := s.runnerFor(engine)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "unknown engine")
+		return
+	}
+
+	if ns, ok := s.lookupCached(string(run.Engine()), source, dataSchemaPrefix+dataType); ok {
+		writeJSON(w, http.StatusOK, ns)
+		return
+	}
+
+	prov := model.ProviderInstance{Key: providerKeyFromSource(source), Source: source}
+	schemas, err := run.ProvidersSchema(r.Context(), []model.ProviderInstance{prov})
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "schema fetch failed: "+err.Error())
+		return
+	}
+	fq, ps := findProviderSchema(schemas, source)
+	if ps == nil {
+		writeErr(w, http.StatusBadGateway, "provider schema not found")
+		return
+	}
+	ds, ok := ps.DataSourceSchemas[dataType]
+	if !ok {
+		writeErr(w, http.StatusNotFound, "data source type not found")
+		return
+	}
+	ns := schema.Normalize(fq, dataType, ds)
+	s.cache.Put(cache.Key(string(run.Engine()), source, "", dataSchemaPrefix+dataType), ns)
+	writeJSON(w, http.StatusOK, ns)
 }
 
 // handleResourceSchema returns the normalized schema for one resource type.

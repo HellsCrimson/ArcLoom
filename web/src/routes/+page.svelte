@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api, streamPlan, streamOp, DeleteBlockedError, type PlanChange, type RunOutput } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
-	import type { AttrValue, Engine, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource } from '$lib/types';
+	import type { AttrValue, Engine, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource, ResourceKind } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import ProjectConfig from '$lib/components/ProjectConfig.svelte';
@@ -30,8 +30,11 @@
 
 	let providerSource = $state('');
 	let resourceTypes = $state<string[]>([]);
+	let dataSourceTypes = $state<string[]>([]);
 	let selectedType = $state('');
 	let schema = $state<NormalizedSchema | null>(null);
+	// Whether the schema form edits a managed resource or a data source.
+	let resourceKind = $state<ResourceKind>('resource');
 
 	// Center form can edit either a resource or a provider config block.
 	let formKind = $state<'resource' | 'provider'>('resource');
@@ -146,10 +149,12 @@
 	const localModules = $derived(project?.localModules ?? []);
 	const activeMod = $derived(activeModule ? (localModules.find((m) => m.name === activeModule) ?? null) : null);
 	const savedResources = $derived(activeMod ? (activeMod.resources ?? []) : (project?.resources ?? []));
+	const savedDataSources = $derived(activeMod ? (activeMod.dataSources ?? []) : (project?.dataSources ?? []));
 	const providers = $derived(project?.providers ?? []);
 	const references = $derived.by(() => {
 		const refs: string[] = [];
 		for (const r of savedResources) refs.push(`${r.type}.${r.name}.id`, `${r.type}.${r.name}.result`);
+		for (const d of savedDataSources) refs.push(`data.${d.type}.${d.name}.id`);
 		if (!activeMod) {
 			// From the root you can reference each module's outputs.
 			for (const m of localModules) for (const o of m.outputs ?? []) refs.push(`module.${m.name}.${o.name}`);
@@ -276,6 +281,8 @@
 		planCounts = null;
 		applyOutputs = [];
 		resourceTypes = [];
+		dataSourceTypes = [];
+		resourceKind = 'resource';
 		activeModule = null;
 	}
 
@@ -333,10 +340,10 @@
 		}
 	}
 
-	async function deleteScopedResource(rid: string) {
+	async function deleteScopedResource(rid: string, kind: ResourceKind = 'resource') {
 		if (!project) return;
 		try {
-			await api.deleteResource(project.id, rid, activeModule ?? undefined);
+			await api.deleteResource(project.id, rid, activeModule ?? undefined, kind);
 			project = await api.getProject(project.id);
 			await refreshProjects();
 			await refreshHcl();
@@ -400,6 +407,7 @@
 		try {
 			const res = await api.addProvider(providerSource, engine);
 			resourceTypes = res.resourceTypes;
+			dataSourceTypes = res.dataSourceTypes ?? [];
 		} catch (err) {
 			error = (err as Error).message;
 		} finally {
@@ -407,19 +415,22 @@
 		}
 	}
 
-	async function pickType(t: string) {
+	async function pickType(t: string, kind: ResourceKind = 'resource') {
 		error = '';
 		busy = 'schema';
 		formKind = 'resource';
+		resourceKind = kind;
 		selectedType = t;
 		editingId = null;
 		values = {};
 		resourceCount = '';
 		resourceForEach = '';
 		resourceDependsOn = undefined;
-		resourceName = suggestName(t);
+		resourceName = suggestName(t, kind);
 		try {
-			schema = await api.resourceSchema(providerSource, t, engine);
+			schema = kind === 'data'
+				? await api.dataSourceSchema(providerSource, t, engine)
+				: await api.resourceSchema(providerSource, t, engine);
 		} catch (err) {
 			error = (err as Error).message;
 		} finally {
@@ -427,10 +438,11 @@
 		}
 	}
 
-	async function editResource(r: Resource) {
+	async function editResource(r: Resource, kind: ResourceKind = 'resource') {
 		error = '';
 		busy = 'schema';
 		formKind = 'resource';
+		resourceKind = kind;
 		selectedType = r.type;
 		editingId = r.id;
 		resourceName = r.name;
@@ -440,7 +452,9 @@
 		resourceDependsOn = r.dependsOn;
 		const src = providerForType(r.type);
 		try {
-			schema = await api.resourceSchema(src, r.type, engine);
+			schema = kind === 'data'
+				? await api.dataSourceSchema(src, r.type, engine)
+				: await api.resourceSchema(src, r.type, engine);
 		} catch (err) {
 			error = (err as Error).message;
 		} finally {
@@ -472,11 +486,12 @@
 		return project?.providers?.find((p) => p.key === key)?.source ?? providerSource;
 	}
 
-	function suggestName(type: string): string {
+	function suggestName(type: string, kind: ResourceKind = 'resource'): string {
 		const base = type.replace(/^[a-z0-9]+_/, '') || type;
 		let n = base;
 		let i = 1;
-		const taken = new Set(savedResources.filter((r) => r.type === type).map((r) => r.name));
+		const pool = kind === 'data' ? savedDataSources : savedResources;
+		const taken = new Set(pool.filter((r) => r.type === type).map((r) => r.name));
 		while (taken.has(n)) n = `${base}_${++i}`;
 		return n;
 	}
@@ -508,6 +523,7 @@
 		try {
 			await api.upsertResource(project.id, {
 				id: editingId ?? undefined,
+				kind: resourceKind,
 				type: selectedType,
 				name: resourceName,
 				providerSource,
@@ -520,9 +536,8 @@
 			project = await api.getProject(project.id);
 			await refreshProjects();
 			await refreshHcl();
-			const scopeRes = activeModule
-				? (project.localModules?.find((m) => m.name === activeModule)?.resources ?? [])
-				: project.resources;
+			const scope = activeModule ? project.localModules?.find((m) => m.name === activeModule) : project;
+			const scopeRes = (resourceKind === 'data' ? scope?.dataSources : scope?.resources) ?? [];
 			editingId = editingId ?? scopeRes.find((r) => r.name === resourceName && r.type === selectedType)?.id ?? null;
 		} catch (err) {
 			error = (err as Error).message;
@@ -622,17 +637,18 @@
 		await refreshHcl();
 	}
 
-	// Returns a provider's resource types for the editor palette.
-	async function editorLoadTypes(source: string): Promise<string[]> {
+	// Returns a provider's resource and data source types for the editor palette.
+	async function editorLoadTypes(source: string): Promise<{ resourceTypes: string[]; dataSourceTypes: string[] }> {
 		const res = await api.addProvider(source, engine);
-		return res.resourceTypes;
+		return { resourceTypes: res.resourceTypes, dataSourceTypes: res.dataSourceTypes ?? [] };
 	}
 
-	// Palette "add": leave the editor and open the schema form for a new resource.
-	async function editorAddType(type: string, source: string) {
+	// Palette "add": leave the editor and open the schema form for a new
+	// resource or data source.
+	async function editorAddType(type: string, source: string, kind: ResourceKind = 'resource') {
 		showEditor = false;
 		providerSource = source;
-		await pickType(type);
+		await pickType(type, kind);
 	}
 
 	// scopeResources returns the resource list for a scope (module name or root).
@@ -643,34 +659,53 @@
 			: project.resources;
 	}
 
+	function scopeDataSources(moduleName?: string): Resource[] {
+		if (!project) return [];
+		return moduleName
+			? (project.localModules?.find((m) => m.name === moduleName)?.dataSources ?? [])
+			: (project.dataSources ?? []);
+	}
+
+	// findInScope resolves a node id to the full resource and whether it is a
+	// managed resource or a data source (canvas callbacks only carry the id).
+	function findInScope(id: string, moduleName?: string): { r: Resource; kind: ResourceKind } | null {
+		const r = scopeResources(moduleName).find((x) => x.id === id);
+		if (r) return { r, kind: 'resource' };
+		const d = scopeDataSources(moduleName).find((x) => x.id === id);
+		if (d) return { r: d, kind: 'data' };
+		return null;
+	}
+
 	// Clicking a node opens it in the schema form (in the node's own scope). The
 	// canvas passes a shallow node, so we resolve the full resource (with attrs).
 	function editorEditResource(r: Resource, moduleName?: string) {
-		const real = scopeResources(moduleName).find((x) => x.id === r.id) ?? r;
+		const found = findInScope(r.id, moduleName);
 		activeModule = moduleName ?? null;
 		showEditor = false;
-		editResource(real);
+		editResource(found?.r ?? r, found?.kind ?? 'resource');
 	}
 
 	async function editorDeleteResource(id: string, moduleName?: string) {
 		if (!project) return;
 		try {
-			await api.deleteResource(project.id, id, moduleName);
+			await api.deleteResource(project.id, id, moduleName, findInScope(id, moduleName)?.kind);
 			await refreshProject();
 		} catch (err) {
 			error = (err as Error).message;
 		}
 	}
 
-	// Re-save an existing resource with a changed field (name or depends_on),
-	// preserving its type/attrs, within its scope.
+	// Re-save an existing resource or data source with a changed field (name or
+	// depends_on), preserving its type/attrs, within its scope.
 	async function resaveResource(id: string, patch: { name?: string; dependsOn?: string[] }, moduleName?: string) {
 		if (!project) return;
-		const r = scopeResources(moduleName).find((x) => x.id === id);
-		if (!r) return;
+		const found = findInScope(id, moduleName);
+		if (!found) return;
+		const r = found.r;
 		try {
 			await api.upsertResource(project.id, {
 				id: r.id,
+				kind: found.kind,
 				type: r.type,
 				name: patch.name ?? r.name,
 				providerSource: project.providers.find((p) => p.key === r.type.split('_')[0])?.source,
@@ -875,7 +910,20 @@
 						<ul class="space-y-0.5">
 							{#each resourceTypes as t (t)}
 								<li>
-									<button class="mono w-full rounded px-2 py-1 text-left text-xs {selectedType === t && formKind === 'resource' && !editingId ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => pickType(t)}>{t}</button>
+									<button class="mono w-full rounded px-2 py-1 text-left text-xs {selectedType === t && formKind === 'resource' && resourceKind === 'resource' && !editingId ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => pickType(t)}>{t}</button>
+								</li>
+							{/each}
+						</ul>
+					</div>
+				{/if}
+
+				{#if dataSourceTypes.length > 0}
+					<div>
+						<div class="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Data sources</div>
+						<ul class="space-y-0.5">
+							{#each dataSourceTypes as t (t)}
+								<li>
+									<button class="mono w-full rounded px-2 py-1 text-left text-xs {selectedType === t && formKind === 'resource' && resourceKind === 'data' && !editingId ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => pickType(t, 'data')} title="Add data source {t}">{t}</button>
 								</li>
 							{/each}
 						</ul>
@@ -902,6 +950,12 @@
 									<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteScopedResource(r.id)} aria-label="Delete"><Trash2 size={11} /></button>
 								</li>
 							{/each}
+							{#each project.dataSources ?? [] as d (d.id)}
+								<li class="group flex items-center">
+									<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px]" style="color:{editingId === d.id ? 'var(--al-accent)' : '#56d4bc'};opacity:{editingId === d.id ? 1 : 0.85};" onclick={() => editResource(d, 'data')} title="Edit data.{d.type}.{d.name}">data.{d.type}.{d.name}</button>
+									<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteScopedResource(d.id, 'data')} aria-label="Delete"><Trash2 size={11} /></button>
+								</li>
+							{/each}
 						</ul>
 					{/if}
 
@@ -920,6 +974,12 @@
 									<li class="group flex items-center">
 										<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px] {editingId === r.id ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}" onclick={() => editResource(r)} title="Edit {r.type}.{r.name}">{r.type}.{r.name}</button>
 										<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteScopedResource(r.id)} aria-label="Delete"><Trash2 size={11} /></button>
+									</li>
+								{/each}
+								{#each m.dataSources ?? [] as d (d.id)}
+									<li class="group flex items-center">
+										<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px]" style="color:{editingId === d.id ? 'var(--al-accent)' : '#56d4bc'};opacity:{editingId === d.id ? 1 : 0.85};" onclick={() => editResource(d, 'data')} title="Edit data.{d.type}.{d.name}">data.{d.type}.{d.name}</button>
+										<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteScopedResource(d.id, 'data')} aria-label="Delete"><Trash2 size={11} /></button>
 									</li>
 								{/each}
 								<li>
@@ -965,8 +1025,8 @@
 						<label for="resource-foreach" class="mb-1 block text-xs text-[var(--al-muted)]" title="for_each meta-argument — a set or map expression, e.g. toset([&quot;a&quot;, &quot;b&quot;])">for_each</label>
 						<input id="resource-foreach" class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" bind:value={resourceForEach} placeholder="toset([…]) · var.map" disabled={resourceCount.trim() !== ''} />
 					</div>
-					<div class="mono text-sm text-[var(--al-muted)]">resource "<span class="text-[var(--al-accent)]">{selectedType}</span>" "{resourceName}"{#if editingId}<span class="ml-1 text-[10px] uppercase">editing</span>{/if}</div>
-					{#if auth.can('resources')}<button class={btnPrimary + ' ml-auto'} onclick={saveResource} disabled={busy === 'save'}><Save size={15} /> {editingId ? 'Update' : 'Save'} resource</button>{/if}
+					<div class="mono text-sm text-[var(--al-muted)]">{resourceKind === 'data' ? 'data' : 'resource'} "<span class="text-[var(--al-accent)]">{selectedType}</span>" "{resourceName}"{#if editingId}<span class="ml-1 text-[10px] uppercase">editing</span>{/if}</div>
+					{#if auth.can('resources')}<button class={btnPrimary + ' ml-auto'} onclick={saveResource} disabled={busy === 'save'}><Save size={15} /> {editingId ? 'Update' : 'Save'} {resourceKind === 'data' ? 'data source' : 'resource'}</button>{/if}
 				</div>
 				<SchemaForm {schema} bind:values {references} secrets={secretNames} />
 			{:else}
