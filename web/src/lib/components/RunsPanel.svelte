@@ -17,7 +17,8 @@
 		destroy: ACTION_COLOR.delete,
 		'import': '#56d4bc',
 		'state-rm': ACTION_COLOR.replace,
-		'state-mv': ACTION_COLOR.update
+		'state-mv': ACTION_COLOR.update,
+		'init-backend': '#c297ff'
 	};
 
 	$effect(() => {

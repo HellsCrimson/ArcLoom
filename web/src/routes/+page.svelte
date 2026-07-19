@@ -65,6 +65,12 @@
 	let stateLoading = $state(false);
 	let showImportResource = $state(false);
 	let importId = $state('');
+	// Backend (remote state) modal
+	let showBackend = $state(false);
+	let bkType = $state('');
+	let bkRows = $state<{ key: string; expr: string }[]>([]);
+	let bkMode = $state<'migrate' | 'reconfigure'>('migrate');
+	const BACKEND_TYPES = ['local', 's3', 'gcs', 'azurerm', 'http', 'pg', 'consul', 'kubernetes', 'oss', 'cos', 'remote'];
 	let showDeleteBlocked = $state(false);
 	let deleteBlockedCount = $state(0);
 	let deleteBlockedName = $state('');
@@ -829,9 +835,10 @@
 		}
 	}
 
-	// runStateOp streams a state-surgery operation (import / rm / mv) into the
-	// run pane and refreshes the state list when it settles.
-	function runStateOp(op: 'import' | 'state-rm' | 'state-mv', params: Record<string, string>) {
+	// runStateOp streams a state-surgery operation (import / rm / mv /
+	// init-backend) into the run pane and refreshes the state list when it
+	// settles.
+	function runStateOp(op: 'import' | 'state-rm' | 'state-mv' | 'init-backend', params: Record<string, string>) {
 		if (!project) return;
 		error = '';
 		planLog = [];
@@ -847,11 +854,52 @@
 				busy = '';
 				loadState();
 			} else if (ev.kind === 'done') {
-				planResult = op === 'import' ? 'Imported into state' : op === 'state-rm' ? 'Removed from state' : 'State address moved';
+				planResult =
+					op === 'import' ? 'Imported into state'
+					: op === 'state-rm' ? 'Removed from state'
+					: op === 'state-mv' ? 'State address moved'
+					: 'Backend initialized';
 				busy = '';
 				loadState();
 			}
 		}, params);
+	}
+
+	function openBackend() {
+		bkType = project?.backend?.type ?? '';
+		bkRows = project?.backend?.config
+			? Object.entries(project.backend.config).map(([key, av]) => ({ key, expr: attrToText(av) }))
+			: [];
+		bkMode = 'migrate';
+		showState = false;
+		showBackend = true;
+	}
+
+	// Saving the backend updates the model, then (with deploy permission)
+	// immediately re-initializes the workspace so the change takes effect —
+	// migrating the existing state or reconfiguring, per the chosen mode.
+	async function saveBackend() {
+		if (!project) return;
+		busy = 'backend';
+		error = '';
+		try {
+			const config: Record<string, AttrValue> = {};
+			for (const row of bkRows) {
+				const k = row.key.trim();
+				const e = row.expr.trim();
+				if (k && e) config[k] = { mode: 'expression', expr: e };
+			}
+			project = await api.setBackend(project.id, { type: bkType.trim(), config });
+			await refreshHcl();
+			showBackend = false;
+			busy = '';
+			if (auth.can('deploy')) {
+				runStateOp('init-backend', { migrate: bkMode === 'migrate' ? 'true' : 'false' });
+			}
+		} catch (err) {
+			error = (err as Error).message;
+			busy = '';
+		}
 	}
 
 	// Address of the resource currently in the form, for `tofu import`
@@ -1308,12 +1356,71 @@
 		bind:open={showState}
 		entries={stateEntries}
 		loading={stateLoading}
-		busy={busy === 'import' || busy === 'state-rm' || busy === 'state-mv'}
+		busy={busy === 'import' || busy === 'state-rm' || busy === 'state-mv' || busy === 'init-backend'}
 		canDeploy={auth.can('deploy')}
+		backendType={project.backend?.type ?? ''}
+		onConfigureBackend={auth.can('resources') ? openBackend : undefined}
 		onRefresh={loadState}
 		onRm={(address) => runStateOp('state-rm', { address })}
 		onMv={(from, to) => runStateOp('state-mv', { from, to })}
 	/>
+
+	<!-- Backend (remote state) configuration -->
+	<Modal title="State backend" bind:open={showBackend}>
+		<div class="space-y-3">
+			<p class="text-xs text-[var(--al-muted)]">
+				Where this project's state lives. Empty type = local state in the project workspace.
+				Values are raw HCL literals (no interpolation allowed by Terraform); put credentials in the
+				server's environment, never here.
+			</p>
+			<div>
+				<label for="bk-type" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Backend type</label>
+				<input id="bk-type" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="s3 · gcs · http · pg · … (empty = local)" bind:value={bkType} list="bk-types" />
+				<datalist id="bk-types">
+					{#each BACKEND_TYPES as t (t)}<option value={t}></option>{/each}
+				</datalist>
+			</div>
+			<div>
+				<div class="mb-1 flex items-center justify-between">
+					<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Configuration</span>
+					<button class="text-xs text-[var(--al-muted)] hover:text-[var(--al-accent)]" onclick={() => (bkRows = [...bkRows, { key: '', expr: '' }])}>+ add value</button>
+				</div>
+				{#if bkRows.length === 0}
+					<p class="text-xs text-[var(--al-muted)]">No configuration values.</p>
+				{/if}
+				<div class="space-y-1.5">
+					{#each bkRows as row, i (i)}
+						<div class="flex items-center gap-2">
+							<input class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" placeholder="bucket" bind:value={row.key} />
+							<input class="mono min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" placeholder={'"my-bucket" · true · 5432'} bind:value={row.expr} />
+							<button class="text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => (bkRows = bkRows.filter((_, j) => j !== i))} aria-label="Remove value"><Trash2 size={12} /></button>
+						</div>
+					{/each}
+				</div>
+			</div>
+			{#if auth.can('deploy')}
+				<div>
+					<span class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">On save</span>
+					<label class="flex items-start gap-2 text-sm text-[var(--al-text)]">
+						<input type="radio" class="mt-1" name="bk-mode" value="migrate" checked={bkMode === 'migrate'} onchange={() => (bkMode = 'migrate')} />
+						<span>Migrate existing state<span class="block text-xs text-[var(--al-muted)]">Copies the current state into the new backend (init -migrate-state).</span></span>
+					</label>
+					<label class="mt-1 flex items-start gap-2 text-sm text-[var(--al-text)]">
+						<input type="radio" class="mt-1" name="bk-mode" value="reconfigure" checked={bkMode === 'reconfigure'} onchange={() => (bkMode = 'reconfigure')} />
+						<span>Reconfigure only<span class="block text-xs text-[var(--al-muted)]">Uses whatever the new backend already holds; nothing is copied.</span></span>
+					</label>
+				</div>
+			{:else}
+				<p class="text-xs text-[var(--al-muted)]">You lack the deploy permission — the backend is saved but the workspace is re-initialized on the next deploy-user operation.</p>
+			{/if}
+		</div>
+		{#snippet footer()}
+			<button class={btnGhost} onclick={() => (showBackend = false)}>Cancel</button>
+			<button class={btnPrimary} onclick={saveBackend} disabled={busy === 'backend'}>
+				{#if busy === 'backend'}<Loader2 size={14} class="animate-spin" />{/if} Save backend
+			</button>
+		{/snippet}
+	</Modal>
 
 	<!-- Import a live resource into state -->
 	<Modal title="Import into state" bind:open={showImportResource}>

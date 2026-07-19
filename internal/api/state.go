@@ -2,13 +2,76 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
+	"github.com/HellsCrimson/ArcLoom/internal/model"
+	"github.com/HellsCrimson/ArcLoom/internal/store"
 )
+
+var backendTypeRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// handleSetBackend replaces (or clears, with an empty type) the project's
+// state backend. Saving only updates the model + generated HCL; the state
+// itself moves when the deploy-gated init-backend operation runs.
+func (s *Server) handleSetBackend(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req struct {
+		Type   string                  `json:"type"`
+		Config map[string]attrValueDTO `json:"config"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	req.Type = strings.TrimSpace(req.Type)
+	var backend *model.Backend
+	if req.Type != "" {
+		if !backendTypeRe.MatchString(req.Type) {
+			writeErr(w, http.StatusBadRequest, "invalid backend type")
+			return
+		}
+		config, err := attrsToModel(req.Config)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		for name, v := range config {
+			if v.Mode == model.ModeExpression {
+				if err := hclgen.ValidateExpr(v.Expr); err != nil {
+					writeErr(w, http.StatusBadRequest, name+": "+err.Error())
+					return
+				}
+			}
+		}
+		if len(config) == 0 {
+			config = nil
+		}
+		backend = &model.Backend{Type: req.Type, Config: config}
+	}
+	err := s.store.Update(id, func(p *model.Project) error {
+		p.Backend = backend
+		return nil
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	p, _ := s.store.Get(id)
+	writeJSON(w, http.StatusOK, p)
+}
 
 // stateEntry is one resource tracked in a project's persisted state, in the
 // address form the state ops (import / rm / mv) operate on.
@@ -23,17 +86,34 @@ type stateEntry struct {
 	Instances []string `json:"instances,omitempty"`
 }
 
-// handleStateList reads run/terraform.tfstate directly (no CLI round-trip) and
-// returns the tracked resources. A missing or unreadable state is an empty
+// handleStateList returns the resources tracked in the project's state. With
+// the default local backend it reads run/terraform.tfstate directly (no CLI
+// round-trip); with a configured backend it pulls the state through the CLI so
+// the list reflects the remote. A missing or unreadable state is an empty
 // list — the project simply has nothing deployed.
 func (s *Server) handleStateList(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if _, err := s.store.Get(id); err != nil {
+	p, err := s.store.Get(id)
+	if err != nil {
 		writeErr(w, http.StatusNotFound, "project not found")
 		return
 	}
-	data, err := os.ReadFile(filepath.Join(s.runDir(id), "terraform.tfstate"))
-	if err != nil {
+	var data []byte
+	if p.Backend != nil {
+		run, ok := s.runnerFor(string(p.Engine))
+		if !ok {
+			writeErr(w, http.StatusBadRequest, "unknown engine")
+			return
+		}
+		raw, perr := run.StatePull(r.Context(), s.runDir(id))
+		if perr != nil {
+			// Workspace not initialized against the backend yet (or backend
+			// unreachable): report empty rather than failing the panel.
+			writeJSON(w, http.StatusOK, []stateEntry{})
+			return
+		}
+		data = []byte(raw)
+	} else if data, err = os.ReadFile(filepath.Join(s.runDir(id), "terraform.tfstate")); err != nil {
 		writeJSON(w, http.StatusOK, []stateEntry{})
 		return
 	}

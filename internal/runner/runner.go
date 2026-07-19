@@ -76,6 +76,14 @@ type Runner interface {
 	// StateMv renames an address inside the persisted state, e.g. after a
 	// resource was renamed in the model.
 	StateMv(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, from, to string, out io.Writer) error
+	// InitBackend re-initializes the workspace after the backend configuration
+	// changed. migrate copies the existing state into the new backend
+	// (-force-copy, implies -migrate-state); otherwise the new backend is used
+	// as-is (-reconfigure) and the old state is left behind.
+	InitBackend(ctx context.Context, dir string, files map[string][]byte, migrate bool, out io.Writer) error
+	// StatePull returns the raw state JSON as the configured backend sees it
+	// (works for both local and remote backends).
+	StatePull(ctx context.Context, dir string) (string, error)
 	// Graph writes the generated files into a fresh workspace, initializes it,
 	// and returns the dependency graph in Graphviz DOT format.
 	Graph(ctx context.Context, files map[string][]byte) (string, error)

@@ -80,6 +80,11 @@ func (s *Server) handleImportHCL(w http.ResponseWriter, r *http.Request) {
 		} else {
 			resp.AddedModules = mergeModules(p, parsed.Modules)
 			resp.AddedLocalModules = mergeLocalModules(p, parsed.LocalModules)
+			// A backend block belongs to the root; only adopt it if the project
+			// doesn't already have one (never silently repoint state).
+			if parsed.Backend != nil && p.Backend == nil {
+				p.Backend = parsed.Backend
+			}
 		}
 
 		resp.AddedResources = mergeResourcesInto(scope, parsed.Resources)

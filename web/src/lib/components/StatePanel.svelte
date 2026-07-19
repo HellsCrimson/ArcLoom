@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Modal from './Modal.svelte';
 	import type { StateEntry } from '$lib/api/client';
-	import { Loader2, RefreshCw, PenLine, Trash2 } from 'lucide-svelte';
+	import { Loader2, RefreshCw, PenLine, Trash2, Settings } from 'lucide-svelte';
 
 	let {
 		open = $bindable(false),
@@ -9,6 +9,8 @@
 		loading = false,
 		busy = false,
 		canDeploy = false,
+		backendType = '',
+		onConfigureBackend,
 		onRefresh,
 		onRm,
 		onMv
@@ -18,6 +20,8 @@
 		loading?: boolean;
 		busy?: boolean;
 		canDeploy?: boolean;
+		backendType?: string; // '' = default local state
+		onConfigureBackend?: () => void;
 		onRefresh: () => void;
 		onRm: (address: string) => void;
 		onMv: (from: string, to: string) => void;
@@ -39,6 +43,15 @@
 </script>
 
 <Modal title="State" bind:open>
+	<div class="mb-2 flex items-center gap-2 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5">
+		<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Backend</span>
+		<span class="mono text-xs" style="color:{backendType ? '#c297ff' : 'var(--al-text)'};">{backendType || 'local (project workspace)'}</span>
+		{#if onConfigureBackend}
+			<button class="ml-auto flex items-center gap-1 rounded-md border border-[var(--al-border)] px-2 py-0.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel)]" onclick={onConfigureBackend} disabled={busy}>
+				<Settings size={12} /> Configure
+			</button>
+		{/if}
+	</div>
 	<div class="mb-2 flex items-center justify-between">
 		<p class="text-xs text-[var(--al-muted)]">
 			Resources tracked in this project's persisted state. Output of state operations streams to the run pane.

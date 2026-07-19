@@ -75,6 +75,33 @@ resource "random_password" "db" {
 	}
 }
 
+func TestParse_Backend(t *testing.T) {
+	src := `
+terraform {
+  backend "s3" {
+    bucket = "my-state"
+    key    = "infra.tfstate"
+  }
+  required_providers {
+    random = { source = "hashicorp/random" }
+  }
+}
+`
+	res, err := Parse(map[string][]byte{"main.tf": []byte(src)}, ids())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if res.Backend == nil || res.Backend.Type != "s3" {
+		t.Fatalf("backend not imported: %+v", res.Backend)
+	}
+	if v := res.Backend.Config["bucket"]; v.Mode != model.ModeLiteral {
+		t.Errorf("bucket should be a literal, got %s", v.Mode)
+	}
+	if len(res.Providers) != 1 || res.Providers[0].Source != "hashicorp/random" {
+		t.Errorf("required_providers still parsed alongside backend: %+v", res.Providers)
+	}
+}
+
 func TestParse_CountAndForEach(t *testing.T) {
 	src := `
 resource "random_pet" "srv" {

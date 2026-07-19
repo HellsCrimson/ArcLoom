@@ -18,6 +18,8 @@ import (
 
 // Result is what a parse produced, ready to merge into a project.
 type Result struct {
+	// Backend is the terraform { backend "<type>" {...} } block, if present.
+	Backend      *model.Backend
 	Providers    []model.ProviderInstance
 	Variables    []model.Variable
 	Locals       []model.Local
@@ -107,7 +109,7 @@ func parseRootBody(body *hclsyntax.Body, src []byte, name string, res *Result, p
 			}
 
 		case "terraform":
-			importRequiredProviders(blk, res, provIndex)
+			importRequiredProviders(blk, src, res, provIndex)
 
 		case "data":
 			if len(blk.Labels) == 2 {
@@ -255,9 +257,14 @@ func ensureProviderKey(res *Result, index map[string]int, key string) int {
 	return i
 }
 
-// importRequiredProviders reads terraform { required_providers { k = { source, version } } }.
-func importRequiredProviders(tfBlock *hclsyntax.Block, res *Result, index map[string]int) {
+// importRequiredProviders reads terraform { required_providers { ... } } and,
+// when present, the backend block (source text preserved via importAttrs).
+func importRequiredProviders(tfBlock *hclsyntax.Block, src []byte, res *Result, index map[string]int) {
 	for _, inner := range tfBlock.Body.Blocks {
+		if inner.Type == "backend" && len(inner.Labels) == 1 && res.Backend == nil {
+			res.Backend = &model.Backend{Type: inner.Labels[0], Config: importAttrs(inner.Body, src)}
+			continue
+		}
 		if inner.Type != "required_providers" {
 			continue
 		}

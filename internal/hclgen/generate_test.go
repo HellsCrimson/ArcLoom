@@ -88,6 +88,36 @@ func TestGenerate_DependsOn(t *testing.T) {
 	}
 }
 
+func TestGenerate_Backend(t *testing.T) {
+	p := &model.Project{
+		Backend: &model.Backend{Type: "s3", Config: map[string]model.AttrValue{
+			"bucket": {Mode: model.ModeLiteral, Literal: cty.StringVal("my-state")},
+			"key":    {Mode: model.ModeLiteral, Literal: cty.StringVal("infra.tfstate")},
+		}},
+		Providers: []model.ProviderInstance{{Key: "random", Source: "hashicorp/random"}},
+	}
+	out, err := Generate(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `backend "s3"`) || !strings.Contains(s, `bucket = "my-state"`) {
+		t.Errorf("backend block not emitted:\n%s", s)
+	}
+	// Backend must be inside the terraform block, before required_providers.
+	if strings.Index(s, `backend "s3"`) > strings.Index(s, "required_providers") {
+		t.Errorf("backend should precede required_providers:\n%s", s)
+	}
+	// Schema-fetch config must never include the backend.
+	pc, err := ProvidersConfig(p.Providers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(pc), "backend") {
+		t.Errorf("ProvidersConfig leaked the backend:\n%s", pc)
+	}
+}
+
 func TestGenerate_CountAndForEach(t *testing.T) {
 	p := &model.Project{
 		Providers: []model.ProviderInstance{{Key: "random", Source: "hashicorp/random"}},

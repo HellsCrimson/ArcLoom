@@ -96,6 +96,13 @@ export const api = {
 
 	stateList: (id: string) => fetch(`/api/projects/${id}/state`).then((r) => json<StateEntry[]>(r)),
 
+	setBackend: (id: string, body: { type: string; config: Record<string, AttrValue> }) =>
+		fetch(`/api/projects/${id}/backend`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body)
+		}).then((r) => json<Project>(r)),
+
 	getRun: (id: string, rid: string) =>
 		fetch(`/api/projects/${id}/runs/${rid}`).then((r) => json<RunRecord>(r)),
 
@@ -403,7 +410,7 @@ export interface StateEntry {
 export interface RunRecord {
 	id: string;
 	projectId: string;
-	op: 'plan' | 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv';
+	op: 'plan' | 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv' | 'init-backend';
 	user: string;
 	startedAt: string;
 	finishedAt: string;
@@ -465,14 +472,15 @@ export function streamPlan(projectId: string, onEvent: (e: PlanEvent) => void): 
 }
 
 // StreamableOp covers every state-mutating streamed operation.
-export type StreamableOp = 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv';
+export type StreamableOp = 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv' | 'init-backend';
 
 const OP_PATH: Record<StreamableOp, string> = {
 	apply: 'apply',
 	destroy: 'destroy',
 	'import': 'state/import',
 	'state-rm': 'state/rm',
-	'state-mv': 'state/mv'
+	'state-mv': 'state/mv',
+	'init-backend': 'state/init-backend'
 };
 
 // streamOp runs a mutating operation (apply/destroy/state surgery) and streams

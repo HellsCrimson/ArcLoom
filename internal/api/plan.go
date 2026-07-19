@@ -55,6 +55,13 @@ func (s *Server) handleStateRm(w http.ResponseWriter, r *http.Request) {
 	s.streamOp(w, r, "state-rm")
 }
 
+// handleInitBackend applies a backend change to the workspace:
+// ?migrate=true copies the existing state into the new backend, otherwise the
+// workspace is reconfigured and starts from whatever the new backend holds.
+func (s *Server) handleInitBackend(w http.ResponseWriter, r *http.Request) {
+	s.streamOp(w, r, "init-backend")
+}
+
 func (s *Server) handleStateMv(w http.ResponseWriter, r *http.Request) {
 	if !validAddress(r.URL.Query().Get("from")) || !validAddress(r.URL.Query().Get("to")) {
 		writeErr(w, http.StatusBadRequest, "from and to are required")
@@ -162,6 +169,9 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 	case "state-mv":
 		q := r.URL.Query()
 		err = run.StateMv(r.Context(), dir, files, tfVars, strings.TrimSpace(q.Get("from")), strings.TrimSpace(q.Get("to")), logW)
+		logW.flush()
+	case "init-backend":
+		err = run.InitBackend(r.Context(), dir, files, r.URL.Query().Get("migrate") == "true", logW)
 		logW.flush()
 	}
 

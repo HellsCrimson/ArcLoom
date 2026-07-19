@@ -289,6 +289,55 @@ func (t *TfExec) StateMv(ctx context.Context, dir string, files map[string][]byt
 	return nil
 }
 
+// InitBackend re-initializes the persistent workspace after a backend change.
+// It cannot reuse prepare (whose plain init would fail with "backend
+// configuration changed"); everything else — sync, lock — matches.
+func (t *TfExec) InitBackend(ctx context.Context, dir string, files map[string][]byte, migrate bool, out io.Writer) error {
+	unlock := lockDir(dir)
+	defer unlock()
+
+	ws, err := newPersistentWorkspace(dir, t.execPath, files)
+	if err != nil {
+		return err
+	}
+	tf, err := ws.terraform()
+	if err != nil {
+		return err
+	}
+	if out != nil {
+		tf.SetStdout(out)
+		tf.SetStderr(out)
+	}
+	opt := tfexec.Reconfigure(true)
+	if migrate {
+		// -force-copy implies -migrate-state and answers the copy prompt.
+		if err := tf.Init(ctx, tfexec.ForceCopy(true)); err != nil {
+			return fmt.Errorf("init -migrate-state: %w", err)
+		}
+		return nil
+	}
+	if err := tf.Init(ctx, opt); err != nil {
+		return fmt.Errorf("init -reconfigure: %w", err)
+	}
+	return nil
+}
+
+// StatePull returns the raw state JSON from whatever backend the workspace is
+// initialized against. Like Outputs it does not sync or init.
+func (t *TfExec) StatePull(ctx context.Context, dir string) (string, error) {
+	unlock := lockDir(dir)
+	defer unlock()
+	tf, err := tfexec.NewTerraform(dir, t.execPath)
+	if err != nil {
+		return "", fmt.Errorf("init tfexec: %w", err)
+	}
+	state, err := tf.StatePull(ctx)
+	if err != nil {
+		return "", fmt.Errorf("state pull: %w", err)
+	}
+	return state, nil
+}
+
 // Destroy destroys everything recorded in the persisted state.
 func (t *TfExec) Destroy(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error {
 	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)

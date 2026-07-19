@@ -121,10 +121,17 @@ export interface LocalModule {
 	inputs?: Record<string, AttrValue>;
 }
 
+// Backend configures remote state storage (terraform { backend "type" {...} }).
+export interface Backend {
+	type: string;
+	config?: Record<string, AttrValue>;
+}
+
 export interface Project {
 	id: string;
 	name: string;
 	engine: string;
+	backend?: Backend;
 	providers: ProviderInstance[];
 	variables?: Variable[];
 	locals?: Local[];

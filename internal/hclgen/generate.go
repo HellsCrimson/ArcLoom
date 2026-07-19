@@ -21,7 +21,7 @@ func Generate(p *model.Project) ([]byte, error) {
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
 
-	if err := writeTerraformBlock(body, p.Providers); err != nil {
+	if err := writeTerraformBlock(body, p.Providers, p.Backend); err != nil {
 		return nil, err
 	}
 	for _, prov := range p.Providers {
@@ -98,7 +98,9 @@ func Generate(p *model.Project) ([]byte, error) {
 func ProvidersConfig(providers []model.ProviderInstance) ([]byte, error) {
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
-	if err := writeTerraformBlock(body, providers); err != nil {
+	// No backend here: schema fetching must never touch (or initialize) the
+	// project's remote state.
+	if err := writeTerraformBlock(body, providers, nil); err != nil {
 		return nil, err
 	}
 	for _, prov := range providers {
@@ -110,8 +112,14 @@ func ProvidersConfig(providers []model.ProviderInstance) ([]byte, error) {
 	return hclwrite.Format(f.Bytes()), nil
 }
 
-func writeTerraformBlock(body *hclwrite.Body, providers []model.ProviderInstance) error {
+func writeTerraformBlock(body *hclwrite.Body, providers []model.ProviderInstance, backend *model.Backend) error {
 	tfBlock := body.AppendNewBlock("terraform", nil)
+	if backend != nil && backend.Type != "" {
+		bb := tfBlock.Body().AppendNewBlock("backend", []string{backend.Type})
+		if err := writeAttrs(bb.Body(), backend.Config); err != nil {
+			return fmt.Errorf("backend %q: %w", backend.Type, err)
+		}
+	}
 	rp := tfBlock.Body().AppendNewBlock("required_providers", nil)
 
 	// Sort by key for deterministic output.

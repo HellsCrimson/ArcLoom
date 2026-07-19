@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -166,10 +167,26 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 
 // deployedResourceCount reports how many managed resources the project's
 // persisted state still tracks. Missing or unreadable state counts as zero, so
-// projects that were never applied delete without friction.
-func (s *Server) deployedResourceCount(id string) int {
-	data, err := os.ReadFile(filepath.Join(s.runDir(id), "terraform.tfstate"))
+// projects that were never applied delete without friction. With a remote
+// backend the state is pulled through the CLI (best-effort — the state itself
+// survives project deletion, so the guard is advisory there).
+func (s *Server) deployedResourceCount(ctx context.Context, id string) int {
+	var data []byte
+	p, err := s.store.Get(id)
 	if err != nil {
+		return 0
+	}
+	if p.Backend != nil {
+		run, ok := s.runnerFor(string(p.Engine))
+		if !ok {
+			return 0
+		}
+		raw, perr := run.StatePull(ctx, s.runDir(id))
+		if perr != nil {
+			return 0
+		}
+		data = []byte(raw)
+	} else if data, err = os.ReadFile(filepath.Join(s.runDir(id), "terraform.tfstate")); err != nil {
 		return 0
 	}
 	var st struct {
@@ -196,7 +213,7 @@ func (s *Server) deployedResourceCount(id string) int {
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if r.URL.Query().Get("force") != "true" {
-		if n := s.deployedResourceCount(id); n > 0 {
+		if n := s.deployedResourceCount(r.Context(), id); n > 0 {
 			writeJSON(w, http.StatusConflict, map[string]any{
 				"error":    fmt.Sprintf("%d deployed resource(s) are still tracked in this project's state — destroy them first, or delete anyway to orphan them", n),
 				"deployed": n,

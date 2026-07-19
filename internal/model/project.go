@@ -8,11 +8,22 @@ const (
 	EngineTerraform Engine = "terraform"
 )
 
+// Backend configures remote state storage, emitted as
+// terraform { backend "<type>" { ... } }. Config values must be literal-ish
+// expressions (Terraform forbids interpolation in backend blocks); credentials
+// should come from the server's environment, not from config.
+type Backend struct {
+	Type   string               `json:"type" yaml:"type"` // "s3", "gcs", "http", "pg", "local", ...
+	Config map[string]AttrValue `json:"config,omitempty" yaml:"config,omitempty"`
+}
+
 // Project is the top-level container the UI edits.
 type Project struct {
 	ID          string             `json:"id" yaml:"id"`
 	Name        string             `json:"name" yaml:"name"`
 	Engine      Engine             `json:"engine" yaml:"engine"`
+	// Backend is nil for the default local state in the run/ workspace.
+	Backend     *Backend           `json:"backend,omitempty" yaml:"backend,omitempty"`
 	Providers   []ProviderInstance `json:"providers" yaml:"providers"`
 	Variables   []Variable         `json:"variables,omitempty" yaml:"variables,omitempty"`
 	Locals      []Local            `json:"locals,omitempty" yaml:"locals,omitempty"`
