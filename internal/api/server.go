@@ -105,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/projects/{id}/git/diff", s.handleGitDiff)
 			r.Get("/projects/{id}/runs", s.handleListRuns)
 			r.Get("/projects/{id}/runs/{rid}", s.handleGetRun)
+			r.Get("/projects/{id}/state", s.handleStateList)
 
 			// Resource editing (PermResources).
 			r.Group(func(r chi.Router) {
@@ -136,6 +137,10 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/projects/{id}/plan", s.handlePlan)
 				r.Post("/projects/{id}/apply", s.handleApply)
 				r.Post("/projects/{id}/destroy", s.handleDestroy)
+				// State surgery: adopt a live resource / fix drifted addresses.
+				r.Post("/projects/{id}/state/import", s.handleStateImport)
+				r.Post("/projects/{id}/state/rm", s.handleStateRm)
+				r.Post("/projects/{id}/state/mv", s.handleStateMv)
 			})
 
 			// Git operations (PermGit).

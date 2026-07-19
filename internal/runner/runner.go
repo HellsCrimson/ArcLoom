@@ -66,6 +66,16 @@ type Runner interface {
 	// Outputs reads the root output values from the state persisted in dir
 	// (as left by the last apply).
 	Outputs(ctx context.Context, dir string) (map[string]tfexec.OutputMeta, error)
+	// Import adopts an existing real-world resource (identified by id) into the
+	// persisted state under the given address. The workspace is synced and
+	// initialized first, so the address must exist in the generated config.
+	Import(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address, id string, out io.Writer) error
+	// StateRm removes an address from the persisted state (the real resource is
+	// left untouched; a later plan will want to recreate it).
+	StateRm(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error
+	// StateMv renames an address inside the persisted state, e.g. after a
+	// resource was renamed in the model.
+	StateMv(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, from, to string, out io.Writer) error
 	// Graph writes the generated files into a fresh workspace, initializes it,
 	// and returns the dependency graph in Graphviz DOT format.
 	Graph(ctx context.Context, files map[string][]byte) (string, error)

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp, DeleteBlockedError, type PlanChange, type RunOutput } from '$lib/api/client';
+	import { api, streamPlan, streamOp, DeleteBlockedError, type PlanChange, type RunOutput, type StateEntry } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
+	import StatePanel from '$lib/components/StatePanel.svelte';
 	import type { AttrValue, Engine, Module, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource, ResourceKind } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -16,7 +17,7 @@
 	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -58,6 +59,12 @@
 	let showDestroyConfirm = $state(false);
 	let destroyName = $state('');
 	let showRuns = $state(false);
+	// State panel + resource import
+	let showState = $state(false);
+	let stateEntries = $state<StateEntry[]>([]);
+	let stateLoading = $state(false);
+	let showImportResource = $state(false);
+	let importId = $state('');
 	let showDeleteBlocked = $state(false);
 	let deleteBlockedCount = $state(0);
 	let deleteBlockedName = $state('');
@@ -810,6 +817,54 @@
 		});
 	}
 
+	async function loadState() {
+		if (!project) return;
+		stateLoading = true;
+		try {
+			stateEntries = await api.stateList(project.id);
+		} catch {
+			stateEntries = [];
+		} finally {
+			stateLoading = false;
+		}
+	}
+
+	// runStateOp streams a state-surgery operation (import / rm / mv) into the
+	// run pane and refreshes the state list when it settles.
+	function runStateOp(op: 'import' | 'state-rm' | 'state-mv', params: Record<string, string>) {
+		if (!project) return;
+		error = '';
+		planLog = [];
+		planResult = '';
+		planChanges = [];
+		planCounts = null;
+		applyOutputs = [];
+		busy = op;
+		streamOp(project.id, op, (ev) => {
+			if (ev.kind === 'log') planLog = [...planLog, ev.line];
+			else if (ev.kind === 'error') {
+				error = ev.error;
+				busy = '';
+				loadState();
+			} else if (ev.kind === 'done') {
+				planResult = op === 'import' ? 'Imported into state' : op === 'state-rm' ? 'Removed from state' : 'State address moved';
+				busy = '';
+				loadState();
+			}
+		}, params);
+	}
+
+	// Address of the resource currently in the form, for `tofu import`
+	// (managed resources only — data sources are read, never imported).
+	const importAddress = $derived(
+		`${activeModule ? `module.${activeModule}.` : ''}${selectedType}.${resourceName}`
+	);
+
+	function runImport() {
+		showImportResource = false;
+		runStateOp('import', { address: importAddress, id: importId.trim() });
+	}
+
 	// Apply/destroy run against the project's persisted state, so a later plan
 	// reflects what is really deployed.
 	function runOp(op: 'apply' | 'destroy') {
@@ -889,6 +944,9 @@
 				{/if}
 				<button class={hdrBtn} onclick={() => (showRuns = true)}>
 					<History size={14} /> Runs
+				</button>
+				<button class={hdrBtn} onclick={() => { loadState(); showState = true; }}>
+					<Layers size={14} /> State
 				</button>
 				{#if auth.can('resources')}
 				<div class="relative">
@@ -1106,6 +1164,11 @@
 					</div>
 					<div class="mono text-sm text-[var(--al-muted)]">{resourceKind === 'data' ? 'data' : 'resource'} "<span class="text-[var(--al-accent)]">{selectedType}</span>" "{resourceName}"{#if editingId}<span class="ml-1 text-[10px] uppercase">editing</span>{/if}</div>
 					{#if auth.can('resources')}<button class={btnPrimary + ' ml-auto'} onclick={saveResource} disabled={busy === 'save'}><Save size={15} /> {editingId ? 'Update' : 'Save'} {resourceKind === 'data' ? 'data source' : 'resource'}</button>{/if}
+					{#if editingId && resourceKind === 'resource' && auth.can('deploy')}
+						<button class={btnGhost} title="Adopt an existing real-world resource into state ({importAddress})" onclick={() => { importId = ''; showImportResource = true; }} disabled={busy !== ''}>
+							<HardDriveDownload size={15} /> Import
+						</button>
+					{/if}
 				</div>
 				<SchemaForm {schema} bind:values {references} secrets={secretNames} />
 			{:else}
@@ -1121,7 +1184,7 @@
 				<HclView {hcl}>
 					{#snippet right()}
 						{#if auth.can('deploy')}
-						{@const running = busy === 'plan' || busy === 'apply' || busy === 'destroy'}
+						{@const running = busy === 'plan' || busy === 'apply' || busy === 'destroy' || busy === 'import' || busy === 'state-rm' || busy === 'state-mv'}
 						<button class={btnGhost} onclick={runPlan} disabled={!project || running}>
 							{#if busy === 'plan'}<Loader2 size={14} class="animate-spin" />{:else}<Play size={14} />{/if} Plan
 						</button>
@@ -1240,6 +1303,41 @@
 	/>
 
 	<RunsPanel bind:open={showRuns} projectId={project.id} />
+
+	<StatePanel
+		bind:open={showState}
+		entries={stateEntries}
+		loading={stateLoading}
+		busy={busy === 'import' || busy === 'state-rm' || busy === 'state-mv'}
+		canDeploy={auth.can('deploy')}
+		onRefresh={loadState}
+		onRm={(address) => runStateOp('state-rm', { address })}
+		onMv={(from, to) => runStateOp('state-mv', { from, to })}
+	/>
+
+	<!-- Import a live resource into state -->
+	<Modal title="Import into state" bind:open={showImportResource}>
+		<p class="mb-3 text-sm text-[var(--al-text)]">
+			Adopt an existing real-world resource as
+			<span class="mono text-[var(--al-accent)]">{importAddress}</span>.
+			The provider reads it by ID and records it in this project's state — nothing is created or changed.
+		</p>
+		<label for="import-id" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Resource ID</label>
+		<input
+			id="import-id"
+			class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]"
+			placeholder="provider-specific ID (e.g. i-0abc123, vpc-…, a value)"
+			bind:value={importId}
+			onkeydown={(e) => { if (e.key === 'Enter' && importId.trim()) runImport(); }}
+		/>
+		<p class="mt-1.5 text-xs text-[var(--al-muted)]">Attributes that differ from the form will show as changes on the next plan.</p>
+		{#snippet footer()}
+			<button class={btnGhost} onclick={() => (showImportResource = false)}>Cancel</button>
+			<button class={btnPrimary} onclick={runImport} disabled={!importId.trim()}>
+				<HardDriveDownload size={14} /> Import
+			</button>
+		{/snippet}
+	</Modal>
 
 	<!-- Apply confirmation -->
 	<Modal title="Apply changes" bind:open={showApplyConfirm}>

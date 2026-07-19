@@ -94,6 +94,8 @@ export const api = {
 
 	listRuns: (id: string) => fetch(`/api/projects/${id}/runs`).then((r) => json<RunRecord[]>(r)),
 
+	stateList: (id: string) => fetch(`/api/projects/${id}/state`).then((r) => json<StateEntry[]>(r)),
+
 	getRun: (id: string, rid: string) =>
 		fetch(`/api/projects/${id}/runs/${rid}`).then((r) => json<RunRecord>(r)),
 
@@ -387,11 +389,21 @@ export interface RunOutput {
 	sensitive: boolean;
 }
 
-// RunRecord is one recorded plan/apply/destroy operation.
+// StateEntry is one resource tracked in the project's persisted state.
+export interface StateEntry {
+	address: string;
+	mode: 'managed' | 'data';
+	type: string;
+	name: string;
+	module?: string;
+	instances?: string[];
+}
+
+// RunRecord is one recorded operation (plan/apply/destroy or state surgery).
 export interface RunRecord {
 	id: string;
 	projectId: string;
-	op: 'plan' | 'apply' | 'destroy';
+	op: 'plan' | 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv';
 	user: string;
 	startedAt: string;
 	finishedAt: string;
@@ -452,18 +464,33 @@ export function streamPlan(projectId: string, onEvent: (e: PlanEvent) => void): 
 	return () => es.close();
 }
 
-// streamOp runs apply or destroy and streams its SSE response. These mutate
-// real infrastructure, so they are POSTs consumed via fetch streaming —
-// EventSource can only GET, and a state-changing GET could be triggered by a
-// bare link. Returns a function that aborts the operation.
+// StreamableOp covers every state-mutating streamed operation.
+export type StreamableOp = 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv';
+
+const OP_PATH: Record<StreamableOp, string> = {
+	apply: 'apply',
+	destroy: 'destroy',
+	'import': 'state/import',
+	'state-rm': 'state/rm',
+	'state-mv': 'state/mv'
+};
+
+// streamOp runs a mutating operation (apply/destroy/state surgery) and streams
+// its SSE response. These mutate real infrastructure or state, so they are
+// POSTs consumed via fetch streaming — EventSource can only GET, and a
+// state-changing GET could be triggered by a bare link. Extra parameters
+// (import address/id, rm address, mv from/to) travel as query values. Returns
+// a function that aborts the operation.
 export function streamOp(
 	projectId: string,
-	op: 'apply' | 'destroy',
-	onEvent: (e: PlanEvent) => void
+	op: StreamableOp,
+	onEvent: (e: PlanEvent) => void,
+	params?: Record<string, string>
 ): () => void {
 	const ctrl = new AbortController();
 	(async () => {
-		const res = await fetch(`/api/projects/${projectId}/${op}`, {
+		const q = params ? `?${new URLSearchParams(params)}` : '';
+		const res = await fetch(`/api/projects/${projectId}/${OP_PATH[op]}${q}`, {
 			method: 'POST',
 			signal: ctrl.signal
 		});

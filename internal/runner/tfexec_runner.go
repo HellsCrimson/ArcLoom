@@ -248,6 +248,47 @@ func (t *TfExec) Outputs(ctx context.Context, dir string) (map[string]tfexec.Out
 	return out, nil
 }
 
+// Import adopts a live resource into the persisted state. It goes through the
+// same prepare path as plan/apply (workspace sync + init + secret TF_VAR_*
+// injection) because the provider must authenticate to read the resource.
+func (t *TfExec) Import(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address, id string, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+	defer cleanup()
+	if err != nil {
+		return err
+	}
+	if err := tf.Import(ctx, address, id); err != nil {
+		return fmt.Errorf("import: %w", err)
+	}
+	return nil
+}
+
+// StateRm removes an address from the persisted state.
+func (t *TfExec) StateRm(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+	defer cleanup()
+	if err != nil {
+		return err
+	}
+	if err := tf.StateRm(ctx, address); err != nil {
+		return fmt.Errorf("state rm: %w", err)
+	}
+	return nil
+}
+
+// StateMv renames an address inside the persisted state.
+func (t *TfExec) StateMv(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, from, to string, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+	defer cleanup()
+	if err != nil {
+		return err
+	}
+	if err := tf.StateMv(ctx, from, to); err != nil {
+		return fmt.Errorf("state mv: %w", err)
+	}
+	return nil
+}
+
 // Destroy destroys everything recorded in the persisted state.
 func (t *TfExec) Destroy(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error {
 	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)

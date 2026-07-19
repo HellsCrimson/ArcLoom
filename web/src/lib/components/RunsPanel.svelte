@@ -14,7 +14,10 @@
 	const OP_COLOR: Record<string, string> = {
 		plan: '#4c8dff',
 		apply: ACTION_COLOR.create,
-		destroy: ACTION_COLOR.delete
+		destroy: ACTION_COLOR.delete,
+		'import': '#56d4bc',
+		'state-rm': ACTION_COLOR.replace,
+		'state-mv': ACTION_COLOR.update
 	};
 
 	$effect(() => {

@@ -36,6 +36,40 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request)    { s.strea
 func (s *Server) handleApply(w http.ResponseWriter, r *http.Request)  { s.streamOp(w, r, "apply") }
 func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) { s.streamOp(w, r, "destroy") }
 
+// State surgery ops stream like plan/apply (import runs init and talks to the
+// provider). Parameters arrive as query values; they are validated here so a
+// bad request fails with a 400 before the SSE stream starts.
+func (s *Server) handleStateImport(w http.ResponseWriter, r *http.Request) {
+	if !validAddress(r.URL.Query().Get("address")) || strings.TrimSpace(r.URL.Query().Get("id")) == "" {
+		writeErr(w, http.StatusBadRequest, "address and id are required")
+		return
+	}
+	s.streamOp(w, r, "import")
+}
+
+func (s *Server) handleStateRm(w http.ResponseWriter, r *http.Request) {
+	if !validAddress(r.URL.Query().Get("address")) {
+		writeErr(w, http.StatusBadRequest, "address is required")
+		return
+	}
+	s.streamOp(w, r, "state-rm")
+}
+
+func (s *Server) handleStateMv(w http.ResponseWriter, r *http.Request) {
+	if !validAddress(r.URL.Query().Get("from")) || !validAddress(r.URL.Query().Get("to")) {
+		writeErr(w, http.StatusBadRequest, "from and to are required")
+		return
+	}
+	s.streamOp(w, r, "state-mv")
+}
+
+// validAddress is a light sanity check on a state address ("type.name",
+// "module.m.type.name[0]", 'x.y["key"]'); the CLI does the real validation.
+func validAddress(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	return addr != "" && !strings.ContainsAny(addr, " \t\n")
+}
+
 func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 	p, err := s.store.Get(chi.URLParam(r, "id"))
 	if err != nil {
@@ -117,6 +151,17 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		}
 	case "destroy":
 		err = run.Destroy(r.Context(), dir, files, tfVars, logW)
+		logW.flush()
+	case "import":
+		q := r.URL.Query()
+		err = run.Import(r.Context(), dir, files, tfVars, strings.TrimSpace(q.Get("address")), strings.TrimSpace(q.Get("id")), logW)
+		logW.flush()
+	case "state-rm":
+		err = run.StateRm(r.Context(), dir, files, tfVars, strings.TrimSpace(r.URL.Query().Get("address")), logW)
+		logW.flush()
+	case "state-mv":
+		q := r.URL.Query()
+		err = run.StateMv(r.Context(), dir, files, tfVars, strings.TrimSpace(q.Get("from")), strings.TrimSpace(q.Get("to")), logW)
 		logW.flush()
 	}
 
