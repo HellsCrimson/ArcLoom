@@ -5,9 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/store"
 )
@@ -59,6 +61,12 @@ func (s *Server) handleCreateLocalModule(w http.ResponseWriter, r *http.Request)
 	err := s.store.Update(id, func(p *model.Project) error {
 		for _, lm := range p.LocalModules {
 			if lm.Name == req.Name {
+				return errDuplicate
+			}
+		}
+		// Registry module calls share the `module "<name>"` namespace.
+		for _, m := range p.Modules {
+			if m.Name == req.Name {
 				return errDuplicate
 			}
 		}
@@ -144,3 +152,103 @@ func (s *Server) handleSetModuleInputs(w http.ResponseWriter, r *http.Request) {
 }
 
 var errDuplicate = errors.New("duplicate")
+
+// handleSetRegistryModule creates or updates (by name) a registry/external
+// module call: source + version + freeform config values. Inputs arrive as
+// AttrValues (the UI sends raw expressions); expression values are validated
+// here because store persist swallows generation errors.
+func (s *Server) handleSetRegistryModule(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req struct {
+		Name    string                  `json:"name"`
+		Source  string                  `json:"source"`
+		Version string                  `json:"version,omitempty"`
+		Config  map[string]attrValueDTO `json:"config"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	if !moduleNameRe.MatchString(req.Name) {
+		writeErr(w, http.StatusBadRequest, "invalid module name (letters, digits, _-; must start with a letter or _)")
+		return
+	}
+	if strings.TrimSpace(req.Source) == "" {
+		writeErr(w, http.StatusBadRequest, "source is required")
+		return
+	}
+	config, err := attrsToModel(req.Config)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	for name, v := range config {
+		if v.Mode == model.ModeExpression {
+			if err := hclgen.ValidateExpr(v.Expr); err != nil {
+				writeErr(w, http.StatusBadRequest, "input "+name+": "+err.Error())
+				return
+			}
+		}
+	}
+	if len(config) == 0 {
+		config = nil
+	}
+
+	err = s.store.Update(id, func(p *model.Project) error {
+		// A module call name must be unique across registry AND local modules
+		// (both emit `module "<name>"`).
+		for _, lm := range p.LocalModules {
+			if lm.Name == req.Name {
+				return errDuplicate
+			}
+		}
+		m := model.Module{Name: req.Name, Source: strings.TrimSpace(req.Source), Version: strings.TrimSpace(req.Version), Config: config}
+		for i := range p.Modules {
+			if p.Modules[i].Name == req.Name {
+				p.Modules[i] = m
+				return nil
+			}
+		}
+		p.Modules = append(p.Modules, m)
+		return nil
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if errors.Is(err, errDuplicate) {
+		writeErr(w, http.StatusBadRequest, "a local module with that name already exists")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	p, _ := s.store.Get(id)
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) handleDeleteRegistryModule(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	name := chi.URLParam(r, "name")
+	err := s.store.Update(id, func(p *model.Project) error {
+		out := p.Modules[:0]
+		for _, m := range p.Modules {
+			if m.Name != name {
+				out = append(out, m)
+			}
+		}
+		p.Modules = out
+		return nil
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	p, _ := s.store.Get(id)
+	writeJSON(w, http.StatusOK, p)
+}

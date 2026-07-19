@@ -59,6 +59,15 @@ export function modId(name: string): string {
 	return `mod:${name}`;
 }
 
+// rmodId is the canvas node id for a registry/external module call.
+export function rmodId(name: string): string {
+	return `rmod:${name}`;
+}
+
+// REGISTRY_MODULE_COLOR is the accent for registry module nodes (local module
+// groups use the app accent).
+export const REGISTRY_MODULE_COLOR = '#c297ff';
+
 // attrText returns the reference/expression text of an attribute value (or "").
 function attrText(v: AttrValue): string {
 	if (v.mode === 'reference') return v.ref ?? '';
@@ -82,7 +91,10 @@ export function crossScopeEdges(project: Project): Edge[] {
 		edges.push({ id: `x:${k}`, from, to, kind: 'ref' });
 	};
 
-	const localNames = new Set((project.localModules ?? []).map((m) => m.name));
+	// All module call names (local groups and registry calls) -> canvas node id.
+	const moduleIds = new Map<string, string>();
+	for (const lm of project.localModules ?? []) moduleIds.set(lm.name, modId(lm.name));
+	for (const m of project.modules ?? []) moduleIds.set(m.name, rmodId(m.name));
 	const rootAddr = new Map<string, string>(); // "type.name" / "data.type.name" -> node id
 	for (const r of project.resources) rootAddr.set(`${r.type}.${r.name}`, r.id);
 	for (const d of project.dataSources ?? []) rootAddr.set(`data.${d.type}.${d.name}`, d.id);
@@ -95,35 +107,42 @@ export function crossScopeEdges(project: Project): Edge[] {
 			let m: RegExpExecArray | null;
 			MODULE_RE.lastIndex = 0;
 			while ((m = MODULE_RE.exec(text))) {
-				if (localNames.has(m[1])) add(modId(m[1]), r.id);
+				const id = moduleIds.get(m[1]);
+				if (id) add(id, r.id);
 			}
 		}
 	}
 
-	// Module inputs -> references to root resources / data sources / other modules.
-	for (const lm of project.localModules ?? []) {
-		for (const v of Object.values(lm.inputs ?? {})) {
+	// Module inputs -> references to root resources / data sources / other
+	// modules. Local module inputs and registry module config are scanned alike.
+	const scanInputs = (name: string, values: AttrValue[]) => {
+		const selfId = moduleIds.get(name);
+		if (!selfId) return;
+		for (const v of values) {
 			const text = attrText(v);
 			if (!text) continue;
 			let d: RegExpExecArray | null;
 			DATA_RE.lastIndex = 0;
 			while ((d = DATA_RE.exec(text))) {
 				const id = rootAddr.get(`data.${d[1]}.${d[2]}`);
-				if (id) add(id, modId(lm.name));
+				if (id) add(id, selfId);
 			}
 			let a: RegExpExecArray | null;
 			ADDR_RE.lastIndex = 0;
 			while ((a = ADDR_RE.exec(text))) {
 				const id = rootAddr.get(`${a[1]}.${a[2]}`);
-				if (id) add(id, modId(lm.name));
+				if (id) add(id, selfId);
 			}
 			let mm: RegExpExecArray | null;
 			MODULE_RE.lastIndex = 0;
 			while ((mm = MODULE_RE.exec(text))) {
-				if (localNames.has(mm[1]) && mm[1] !== lm.name) add(modId(mm[1]), modId(lm.name));
+				const id = moduleIds.get(mm[1]);
+				if (id && mm[1] !== name) add(id, selfId);
 			}
 		}
-	}
+	};
+	for (const lm of project.localModules ?? []) scanInputs(lm.name, Object.values(lm.inputs ?? {}));
+	for (const m of project.modules ?? []) scanInputs(m.name, Object.values(m.config ?? {}));
 	return edges;
 }
 

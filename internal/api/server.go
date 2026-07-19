@@ -117,6 +117,8 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/projects/{id}/modules/local", s.handleCreateLocalModule)
 				r.Delete("/projects/{id}/modules/local/{name}", s.handleDeleteLocalModule)
 				r.Put("/projects/{id}/modules/local/{name}/inputs", s.handleSetModuleInputs)
+				r.Put("/projects/{id}/modules/registry", s.handleSetRegistryModule)
+				r.Delete("/projects/{id}/modules/registry/{name}", s.handleDeleteRegistryModule)
 				r.Put("/projects/{id}/secrets/{name}", s.handleSetSecret)
 				r.Delete("/projects/{id}/secrets/{name}", s.handleDeleteSecret)
 				r.Post("/projects/{id}/resources", s.handleUpsertResource)

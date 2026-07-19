@@ -2,13 +2,13 @@
 	import type { Project, Resource, ResourceKind } from '$lib/types';
 	import type { PlanChange } from '$lib/api/client';
 	import {
-		deriveEdges, crossScopeEdges, interiorLayout, modId, typeColor, typeLetter, baseAddr,
+		deriveEdges, crossScopeEdges, interiorLayout, modId, rmodId, typeColor, typeLetter, baseAddr,
 		layoutPositions, layoutMissing, LAYOUTS,
-		NODE_W, NODE_H, DOT_Y, MOD_HEADER_H, ACTION_COLOR, ACTION_SYMBOL, DATA_COLOR,
+		NODE_W, NODE_H, DOT_Y, MOD_HEADER_H, ACTION_COLOR, ACTION_SYMBOL, DATA_COLOR, REGISTRY_MODULE_COLOR,
 		type Edge, type LayoutMode
 	} from './graph';
 	import HclView from './HclView.svelte';
-	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group, Folder, FolderOpen, ChevronRight, ChevronDown, Play } from 'lucide-svelte';
+	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group, Folder, FolderOpen, ChevronRight, ChevronDown, Play, Package } from 'lucide-svelte';
 
 	const LAYOUT_ICONS: Record<LayoutMode, typeof Network> = {
 		'layered-h': Network,
@@ -31,6 +31,7 @@
 		onDeleteResource,
 		onRenameResource,
 		onSetDependsOn,
+		onEditRegistryModule,
 		onClose
 	}: {
 		project: Project;
@@ -45,6 +46,7 @@
 		onDeleteResource: (id: string, module?: string) => void;
 		onRenameResource: (id: string, name: string, module?: string) => void;
 		onSetDependsOn: (id: string, deps: string[], module?: string) => void;
+		onEditRegistryModule?: (name: string) => void;
 		onClose: () => void;
 	} = $props();
 
@@ -83,6 +85,7 @@
 	const providerFooter = $derived((activeProvider || 'no') + ' provider');
 
 	const localModules = $derived(project.localModules ?? []);
+	const registryModules = $derived(project.modules ?? []);
 	const rootDataSources = $derived(project.dataSources ?? []);
 
 	// lookupNode resolves a node id across root resources and data sources,
@@ -180,6 +183,7 @@
 		...project.resources,
 		...rootDataSources,
 		...localModules.map((lm) => ({ id: modId(lm.name), type: 'module', name: lm.name, attrs: {} })),
+		...registryModules.map((m) => ({ id: rmodId(m.name), type: 'module', name: m.name, attrs: {} })),
 		...ghosts.map((g) => ({ id: `ghost:${g.address}`, type: g.type, name: g.name, attrs: {} }))
 	]);
 	const macroEdges = $derived<Edge[]>([...deriveEdges(project.resources, rootDataSources), ...crossScopeEdges(project)]);
@@ -235,6 +239,14 @@
 		})
 	);
 
+	// Registry module cards (non-expandable; violet accent).
+	const registryNodes = $derived(
+		registryModules.map((m) => {
+			const pos = positions[rmodId(m.name)] ?? { x: 40, y: 40 };
+			return { ...m, id: rmodId(m.name), x: pos.x, y: pos.y, selected: rmodId(m.name) === selectedId };
+		})
+	);
+
 	// Root data-source cards (distinct color; rendered with kind "data").
 	const rootDataNodes = $derived(
 		rootDataSources.map((d) => {
@@ -262,6 +274,7 @@
 		const m = new Map<string, { x: number; y: number; w: number; h: number; color: string }>();
 		for (const n of rootNodes) m.set(n.id, { x: n.x, y: n.y, w: NODE_W, h: NODE_H, color: n.color });
 		for (const n of rootDataNodes) m.set(n.id, { x: n.x, y: n.y, w: NODE_W, h: NODE_H, color: n.color });
+		for (const n of registryNodes) m.set(n.id, { x: n.x, y: n.y, w: NODE_W, h: NODE_H, color: REGISTRY_MODULE_COLOR });
 		for (const mb of moduleBoxes) m.set(mb.id, { x: mb.pos.x, y: mb.pos.y, w: mb.w, h: mb.h, color: accent });
 		return m;
 	});
@@ -721,6 +734,31 @@
 						{@render modBadge(moduleChangeCounts(mb.name))}
 					</div>
 				{/if}
+			{/each}
+
+			<!-- registry/external module calls -->
+			{#each registryNodes as node (node.id)}
+				<!-- svelte-ignore a11y_click_events_have_key_events -->
+				<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+				<div
+					role="button"
+					tabindex="-1"
+					style="position:absolute;left:{node.x}px;top:{node.y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:#171226;border:1px solid {node.selected ? accent : 'rgba(194,151,255,0.35)'};box-shadow:{node.selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:grab;z-index:2;"
+					onmousedown={(e) => onBoxDown(e, node.id)}
+					onclick={() => { if (dragMoved) { dragMoved = false; return; } onEditRegistryModule?.(node.name); }}
+					title="{node.source}{node.version ? ' @ ' + node.version : ''}"
+				>
+					<div class="flex items-center gap-2">
+						<div style="width:22px;height:22px;border-radius:6px;background:{REGISTRY_MODULE_COLOR}22;color:{REGISTRY_MODULE_COLOR};display:flex;align-items:center;justify-content:center;flex:none;"><Package size={13} /></div>
+						<div style="min-width:0;">
+							<div style="font-size:13px;font-weight:700;color:#e6e9ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{node.name}</div>
+							<div class="font-mono" style="font-size:10px;color:rgba(194,151,255,0.65);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{node.source}</div>
+						</div>
+					</div>
+					<div role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{REGISTRY_MODULE_COLOR};border:2px solid #0a0e15;z-index:3;"></div>
+					<div role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{REGISTRY_MODULE_COLOR};border:2px solid #0a0e15;z-index:3;"></div>
+					{@render modBadge(moduleChangeCounts(node.name))}
+				</div>
 			{/each}
 
 			<!-- root resource nodes -->

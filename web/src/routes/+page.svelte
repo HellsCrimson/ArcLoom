@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api, streamPlan, streamOp, DeleteBlockedError, type PlanChange, type RunOutput } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
-	import type { AttrValue, Engine, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource, ResourceKind } from '$lib/types';
+	import type { AttrValue, Engine, Module, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource, ResourceKind } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import ProjectConfig from '$lib/components/ProjectConfig.svelte';
@@ -16,7 +16,7 @@
 	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -360,20 +360,85 @@
 		values = {};
 	}
 
+	// attrToText renders an AttrValue as editable raw-expression text (a
+	// reference or JSON literal is also a valid HCL expression).
+	function attrToText(av: AttrValue | undefined): string {
+		if (!av) return '';
+		return av.mode === 'expression' ? (av.expr ?? '') : av.mode === 'reference' ? (av.ref ?? '') : av.mode === 'literal' ? JSON.stringify(av.literal ?? '') : '';
+	}
+
 	// Draft values for the module-inputs modal (raw HCL text per variable).
 	let inputDraft = $state<Record<string, string>>({});
 	$effect(() => {
 		if (showInputs && activeMod) {
 			const d: Record<string, string> = {};
 			for (const v of activeMod.variables ?? []) {
-				const av = activeMod.inputs?.[v.name];
-				d[v.name] = av
-					? (av.mode === 'expression' ? (av.expr ?? '') : av.mode === 'reference' ? (av.ref ?? '') : av.mode === 'literal' ? JSON.stringify(av.literal ?? '') : '')
-					: '';
+				d[v.name] = attrToText(activeMod.inputs?.[v.name]);
 			}
 			inputDraft = d;
 		}
 	});
+
+	// ---- registry/external modules ----
+	const registryModules = $derived(project?.modules ?? []);
+	let showRegModule = $state(false);
+	let rmEditing = $state<string | null>(null); // original name when editing
+	let rmName = $state('');
+	let rmSource = $state('');
+	let rmVersion = $state('');
+	let rmRows = $state<{ key: string; expr: string }[]>([]);
+
+	function openRegModule(m?: Module) {
+		rmEditing = m?.name ?? null;
+		rmName = m?.name ?? '';
+		rmSource = m?.source ?? '';
+		rmVersion = m?.version ?? '';
+		rmRows = m?.config ? Object.entries(m.config).map(([key, av]) => ({ key, expr: attrToText(av) })) : [];
+		showRegModule = true;
+	}
+
+	async function saveRegModule() {
+		if (!project || !rmName.trim() || !rmSource.trim()) return;
+		busy = 'regmodule';
+		error = '';
+		try {
+			const config: Record<string, AttrValue> = {};
+			for (const row of rmRows) {
+				const k = row.key.trim();
+				const e = row.expr.trim();
+				if (k && e) config[k] = { mode: 'expression', expr: e };
+			}
+			// Upsert keys on name, so a rename must drop the old call first.
+			if (rmEditing && rmEditing !== rmName.trim()) {
+				await api.deleteRegistryModule(project.id, rmEditing);
+			}
+			project = await api.setRegistryModule(project.id, {
+				name: rmName.trim(),
+				source: rmSource.trim(),
+				version: rmVersion.trim() || undefined,
+				config
+			});
+			await refreshProjects();
+			await refreshHcl();
+			showRegModule = false;
+		} catch (err) {
+			error = (err as Error).message;
+		} finally {
+			busy = '';
+		}
+	}
+
+	async function deleteRegModule(name: string) {
+		if (!project) return;
+		if (!confirm(`Remove module "${name}" from the project?`)) return;
+		try {
+			project = await api.deleteRegistryModule(project.id, name);
+			await refreshProjects();
+			await refreshHcl();
+		} catch (err) {
+			error = (err as Error).message;
+		}
+	}
 
 	function submitInputs() {
 		const inputs: Record<string, AttrValue> = {};
@@ -875,6 +940,7 @@
 				onDeleteResource={editorDeleteResource}
 				onRenameResource={(id, name, mod) => resaveResource(id, { name }, mod)}
 				onSetDependsOn={(id, deps, mod) => resaveResource(id, { dependsOn: deps }, mod)}
+				onEditRegistryModule={(name) => { showEditor = false; openRegModule(registryModules.find((m) => m.name === name)); }}
 				onClose={() => (showEditor = false)}
 			/>
 		{:else}
@@ -934,7 +1000,10 @@
 				<div>
 					<div class="mb-1 flex items-center justify-between">
 						<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Structure</span>
-						<button class={iconBtn} title="New module" aria-label="New module" onclick={() => { nmName = ''; showNewModule = true; }}><Plus size={14} /></button>
+						<span class="flex items-center">
+							<button class={iconBtn} title="Add registry module" aria-label="Add registry module" onclick={() => openRegModule()}><Package size={14} /></button>
+							<button class={iconBtn} title="New local module" aria-label="New local module" onclick={() => { nmName = ''; showNewModule = true; }}><Plus size={14} /></button>
+						</span>
 					</div>
 
 					<!-- main (root) -->
@@ -987,6 +1056,16 @@
 								</li>
 							</ul>
 						{/if}
+					{/each}
+
+					<!-- registry/external module calls -->
+					{#each registryModules as m (m.name)}
+						<div class="group flex items-center">
+							<button class="flex flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]" onclick={() => openRegModule(m)} title="{m.source}{m.version ? ' @ ' + m.version : ''}">
+								<Package size={12} style="color:#c297ff" /> module.{m.name}
+							</button>
+							<button class="px-1 opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteRegModule(m.name)} aria-label="Delete registry module"><Trash2 size={12} /></button>
+						</div>
 					{/each}
 				</div>
 			{:else}
@@ -1253,6 +1332,48 @@
 		{#snippet footer()}
 			<button class={btnGhost} onclick={() => (showNewModule = false)}>Cancel</button>
 			<button class={btnPrimary} onclick={createModule} disabled={busy === 'module' || !nmName.trim()}>{#if busy === 'module'}<Loader2 size={14} class="animate-spin" />{/if} Create</button>
+		{/snippet}
+	</Modal>
+
+	<!-- Registry module modal (add / edit) -->
+	<Modal title={rmEditing ? `Module "${rmEditing}"` : 'Add registry module'} bind:open={showRegModule}>
+		<div class="space-y-3">
+			<div class="flex gap-2">
+				<div class="w-40">
+					<label for="rm-name" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Name</label>
+					<input id="rm-name" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="vpc" bind:value={rmName} />
+				</div>
+				<div class="min-w-0 flex-1">
+					<label for="rm-source" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Source</label>
+					<input id="rm-source" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="terraform-aws-modules/vpc/aws" bind:value={rmSource} />
+				</div>
+				<div class="w-28">
+					<label for="rm-version" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Version</label>
+					<input id="rm-version" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="~> 5.0" bind:value={rmVersion} />
+				</div>
+			</div>
+			<div>
+				<div class="mb-1 flex items-center justify-between">
+					<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Inputs (raw HCL)</span>
+					<button class="text-xs text-[var(--al-muted)] hover:text-[var(--al-accent)]" onclick={() => (rmRows = [...rmRows, { key: '', expr: '' }])}>+ add input</button>
+				</div>
+				{#if rmRows.length === 0}
+					<p class="text-xs text-[var(--al-muted)]">No inputs yet — the module is called with defaults.</p>
+				{/if}
+				<div class="space-y-1.5">
+					{#each rmRows as row, i (i)}
+						<div class="flex items-center gap-2">
+							<input class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" placeholder="name" bind:value={row.key} />
+							<input class="mono min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" placeholder={'value (HCL) — e.g. "10.0.0.0/16" or var.cidr'} bind:value={row.expr} />
+							<button class="text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => (rmRows = rmRows.filter((_, j) => j !== i))} aria-label="Remove input"><Trash2 size={12} /></button>
+						</div>
+					{/each}
+				</div>
+			</div>
+		</div>
+		{#snippet footer()}
+			<button class={btnGhost} onclick={() => (showRegModule = false)}>Cancel</button>
+			<button class={btnPrimary} onclick={saveRegModule} disabled={busy === 'regmodule' || !rmName.trim() || !rmSource.trim()}>{#if busy === 'regmodule'}<Loader2 size={14} class="animate-spin" />{/if} {rmEditing ? 'Update' : 'Add'} module</button>
 		{/snippet}
 	</Modal>
 
