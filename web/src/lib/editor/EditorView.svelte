@@ -136,13 +136,19 @@
 	});
 	// Planned deletes at root scope have no model node left to color; render
 	// them as non-interactive ghost cards so the disappearance is visible.
-	const ghosts = $derived(
-		planChanges.filter(
-			(c) =>
-				c.action === 'delete' && c.mode === 'managed' && !c.moduleAddress &&
-				!project.resources.some((r) => `${r.type}.${r.name}` === stripIndex(c.address))
-		)
-	);
+	// Instance addresses of a counted resource collapse into ONE ghost.
+	const ghosts = $derived.by(() => {
+		const seen = new Set<string>();
+		const out: typeof planChanges = [];
+		for (const c of planChanges) {
+			if (c.action !== 'delete' || c.mode !== 'managed' || c.moduleAddress) continue;
+			const addr = stripIndex(c.address);
+			if (seen.has(addr) || project.resources.some((r) => `${r.type}.${r.name}` === addr)) continue;
+			seen.add(addr);
+			out.push({ ...c, address: addr });
+		}
+		return out;
+	});
 	// Aggregate pending actions per local module (covers nested addresses too).
 	function moduleChangeCounts(name: string) {
 		const pref = `module.${name}`;

@@ -42,17 +42,20 @@ run it anywhere — with or without ArcLoom.
 - **Experienced engineers** who like the speed of a UI but refuse to give up
   version control, reviews, and portable code.
 
-## Why people like it
+## Main features
 
 | | |
 |---|---|
 | 🧩 **Works with any provider** | AWS, Google Cloud, Azure, Cloudflare, Kubernetes, and thousands more. ArcLoom learns each provider's options automatically — nothing is hardcoded, so you're never waiting for "support" to be added. |
-| 🎨 **A living map of your cloud** | Every resource is a node you can drag, connect and rearrange. Dependencies are drawn as lines, so you *see* how things fit together. |
+| 🎨 **A living map of your cloud** | Every resource is a node you can drag, connect and rearrange — including data sources, local modules (collapsible groups) and registry modules. Dependencies are drawn as lines, so you *see* how things fit together. |
 | 📝 **The code stays yours** | ArcLoom generates plain Terraform/OpenTofu. Open it, take it elsewhere, or hand it to a colleague — no proprietary format, no lock-in. |
-| 👀 **Preview before you touch anything** | Run a "plan" and watch exactly what *would* change, streamed live, before anything real happens. |
+| 👀 **Preview, then deploy** | Run a "plan" and watch exactly what *would* change — as a colored overlay right on the map — then apply or destroy from the same screen, with confirmations where it matters. |
+| 📡 **Drift detection** | ArcLoom can periodically compare your real infrastructure against what's deployed and badge the project the moment something changed behind your back. |
+| 🕘 **Every run remembered** | Plans, applies, destroys, drift checks — each one is recorded with who ran it, the full log, the diff and the outputs. |
 | 🔐 **Secrets stay secret** | API keys and passwords are encrypted and never written into your code, saved files, or history. |
 | 🕓 **Built-in history** | Every project is version-controlled out of the box. Commit, browse history, compare changes, roll back — and push to GitHub/GitLab when you're ready. |
-| 🏠 **Self-hosted & private** | Runs on your own machine or server. Your infrastructure details never leave your control. |
+| ⌨️ **Fast to drive** | A Ctrl+K command palette finds any resource or action instantly; undo/redo, multi-select, marquee, snap-to-grid and inline rename make the canvas feel like a real editor. |
+| 🏠 **Self-hosted & private** | Runs on your own machine or server, with local accounts, per-permission roles, and optional single sign-on. Your infrastructure details never leave your control. |
 
 ## How it works
 
@@ -64,13 +67,15 @@ A typical flow, start to finish:
    has, and marks the read-only ones for you.
 4. **Connect the dots.** Drag from one node to another to say "this depends on that."
 5. **Watch the code write itself** in the live panel beside the canvas.
-6. **Preview the plan** to see what would happen for real.
-7. **Commit to history** and, when you're ready, push it to your Git host.
+6. **Preview the plan** — every pending change is listed *and* drawn on the map.
+7. **Apply it.** ArcLoom runs the deployment, streams the output, and records
+   the run (with its outputs) in the project's history.
+8. **Commit to history** and, when you're ready, push it to your Git host.
 
 <div align="center">
 
 ![Adding a resource](docs/images/add-resource.png)
-<sub>*Pick any resource from the provider's full catalog.*</sub>
+<sub>*Pick any resource — or data source — from the provider's full catalog.*</sub>
 
 <br />
 
@@ -96,14 +101,63 @@ whole map so you can read it at a glance:
 
 </div>
 
-## More screenshots
+## See every change before it happens
+
+Run a plan and ArcLoom paints the result straight onto the map: green for new
+resources, amber for updates, orange for replacements — and deleted resources
+appear as dashed "ghost" cards so nothing disappears silently. The same diff is
+listed in the run pane; click any line to jump straight to that resource.
 
 <div align="center">
 
-![Live plan output](docs/images/plan-output.png)
-<sub>*See exactly what will change — before it changes.*</sub>
+![Plan overlay on the canvas](docs/images/plan-overlay.png)
+<sub>*The plan, drawn on your infrastructure map — with a summary legend.*</sub>
 
 <br />
+
+![Live plan output](docs/images/plan-output.png)
+<sub>*The same changes as a list beside the streaming logs — click a row to open that resource.*</sub>
+
+</div>
+
+## Know when reality drifts
+
+Infrastructure has a way of changing behind your back — someone deletes a file,
+tweaks a server, removes a DNS record. Turn on **drift detection** and ArcLoom
+periodically compares your real infrastructure against what you deployed, badges
+the project the moment they disagree, and records what changed. The State view
+also lists everything currently deployed, lets you rename or forget entries, and
+can move the project's state to a remote backend (S3, GCS, Postgres, …).
+
+<div align="center">
+
+![State and drift detection](docs/images/state-drift.png)
+<sub>*Deployed resources at a glance — and a heads-up when something changed outside ArcLoom.*</sub>
+
+<br />
+
+![Run history](docs/images/runs.png)
+<sub>*Every plan, apply and drift check is recorded — who, when, what changed.*</sub>
+
+</div>
+
+## Fast to drive
+
+Press **Ctrl+K** anywhere to search every command and every resource across the
+whole project — including inside modules. The canvas supports multi-select and
+marquee selection, bulk move and delete, snap-to-grid, inline rename, and
+undo/redo for every edit.
+
+<div align="center">
+
+![Command palette](docs/images/command-palette.png)
+<sub>*One shortcut to run anything or find any resource.*</sub>
+
+</div>
+
+## More screenshots
+
+<div align="center">
 
 ![Git history and diffs](docs/images/git-history.png)
 <sub>*Every project keeps its own history you can browse and roll back.*</sub>
@@ -119,9 +173,12 @@ whole map so you can read it at a glance:
 
 You don't have to start from scratch. ArcLoom can **import your existing setup**:
 
-- Paste or upload your current Terraform/OpenTofu files, and ArcLoom rebuilds
-  the visual map for you.
+- Paste or upload your current Terraform/OpenTofu files — resources, data
+  sources, variables, outputs, even modules — and ArcLoom rebuilds the visual
+  map for you.
 - Import a live state file to bring what you're *already* running onto the canvas.
+- Adopt individual live resources by ID (`terraform import`), straight from the
+  resource's form.
 
 <div align="center">
 
@@ -172,5 +229,7 @@ If discovery fails at startup, ArcLoom logs a warning and continues with local l
 ## Project status
 
 ArcLoom is **working today** and under active development. It already supports
-multiple providers, projects, imports, secrets, and built-in Git — with more on
-the way. Feedback and ideas are very welcome.
+multiple providers, projects, modules and data sources, plan/apply/destroy with
+full run history, drift detection, state management with remote backends,
+imports, secrets, role-based access, SSO, and built-in Git — with more on the
+way. Feedback and ideas are very welcome.
