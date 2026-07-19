@@ -24,23 +24,26 @@ class HistoryStore {
 	}
 
 	// observe ingests the current project state. A different project id resets
-	// the history; an identical snapshot is a no-op.
-	observe(id: string, snap: string): void {
+	// the history; an identical snapshot is a no-op. The returned status lets
+	// the caller react to genuine edits ('recorded') — e.g. clearing the stale
+	// plan overlay — without treating project switches or restores as edits.
+	observe(id: string, snap: string): 'reset' | 'replaced' | 'noop' | 'recorded' {
 		if (id !== this.#projectId) {
 			this.#projectId = id;
 			this.#stack = [snap];
 			this.#idx = 0;
-			return;
+			return 'reset';
 		}
 		if (this.#applying) {
 			this.#stack[this.#idx] = snap;
-			return;
+			return 'replaced';
 		}
-		if (snap === this.#stack[this.#idx]) return;
+		if (snap === this.#stack[this.#idx]) return 'noop';
 		// A new edit truncates any redo tail and caps the stack.
 		const kept = this.#stack.slice(Math.max(0, this.#idx + 2 - CAP), this.#idx + 1);
 		this.#stack = [...kept, snap];
 		this.#idx = this.#stack.length - 1;
+		return 'recorded';
 	}
 
 	// undo/redo move the pointer and return the snapshot to restore (null at the

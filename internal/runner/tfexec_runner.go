@@ -338,6 +338,25 @@ func (t *TfExec) StatePull(ctx context.Context, dir string) (string, error) {
 	return state, nil
 }
 
+// Validate runs config validation in the persistent workspace (same prepare
+// path as plan: sync + init). The streaming writers are detached before the
+// validate call itself — tfexec merges its JSON capture buffer with the
+// configured stdout, which would dump the raw diagnostics JSON into the log.
+func (t *TfExec) Validate(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (*tfjson.ValidateOutput, error) {
+	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+	defer cleanup()
+	if err != nil {
+		return nil, err
+	}
+	tf.SetStdout(io.Discard)
+	tf.SetStderr(io.Discard)
+	res, err := tf.Validate(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("validate: %w", err)
+	}
+	return res, nil
+}
+
 // Destroy destroys everything recorded in the persisted state.
 func (t *TfExec) Destroy(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error {
 	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)

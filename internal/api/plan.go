@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	tfjson "github.com/hashicorp/terraform-json"
 
 	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
@@ -35,6 +36,10 @@ func (s *Server) runDir(id string) string {
 func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request)    { s.streamOp(w, r, "plan") }
 func (s *Server) handleApply(w http.ResponseWriter, r *http.Request)  { s.streamOp(w, r, "apply") }
 func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) { s.streamOp(w, r, "destroy") }
+
+// handleValidate streams a config validation (sync + init + validate). Like
+// plan it is a read-only GET SSE consumed via EventSource.
+func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) { s.streamOp(w, r, "validate") }
 
 // State surgery ops stream like plan/apply (import runs init and talks to the
 // provider). Parameters arrive as query values; they are validated here so a
@@ -173,6 +178,30 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 	case "init-backend":
 		err = run.InitBackend(r.Context(), dir, files, r.URL.Query().Get("migrate") == "true", logW)
 		logW.flush()
+	case "validate":
+		var res *tfjson.ValidateOutput
+		res, err = run.Validate(r.Context(), dir, files, tfVars, logW)
+		logW.flush()
+		if err == nil && res != nil {
+			// Diagnostics go through logW so they land in both the stream and
+			// the run record's log.
+			for _, d := range res.Diagnostics {
+				loc := ""
+				if d.Range != nil {
+					loc = fmt.Sprintf(" (%s:%d)", d.Range.Filename, d.Range.Start.Line)
+				}
+				fmt.Fprintf(logW, "%s: %s%s\n", d.Severity, d.Summary, loc)
+				if d.Detail != "" {
+					fmt.Fprintf(logW, "  %s\n", d.Detail)
+				}
+			}
+			logW.flush()
+			sse.event("result", map[string]any{
+				"valid":        res.Valid,
+				"errorCount":   res.ErrorCount,
+				"warningCount": res.WarningCount,
+			})
+		}
 	}
 
 	rec.FinishedAt = time.Now()

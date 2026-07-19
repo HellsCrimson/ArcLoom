@@ -18,7 +18,7 @@
 	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -201,10 +201,18 @@
 
 	// Undo/redo: JSON.stringify deep-reads the project, so this effect re-runs
 	// on any model change (every mutation path reassigns or mutates `project`).
-	// The store dedupes identical snapshots and resets when the id changes.
+	// The store dedupes identical snapshots and resets when the id changes. A
+	// genuine edit also invalidates the plan overlay — the canvas badges and
+	// diff list describe a model that no longer exists.
 	$effect(() => {
-		if (project) history.observe(project.id, JSON.stringify(project));
-		else history.clear();
+		if (!project) {
+			history.clear();
+			return;
+		}
+		if (history.observe(project.id, JSON.stringify(project)) === 'recorded') {
+			planChanges = [];
+			planCounts = null;
+		}
 	});
 
 	async function undo() {
@@ -575,7 +583,7 @@
 		schema = null;
 		selectedType = '';
 		try {
-			const res = await api.addProvider(providerSource, engine);
+			const res = await api.addProvider(providerSource, engine, providerVersionForSource(providerSource));
 			resourceTypes = res.resourceTypes;
 			dataSourceTypes = res.dataSourceTypes ?? [];
 		} catch (err) {
@@ -599,9 +607,10 @@
 		resourceProvider = '';
 		resourceName = suggestName(t, kind);
 		try {
+			const ver = providerVersionForSource(providerSource);
 			schema = kind === 'data'
-				? await api.dataSourceSchema(providerSource, t, engine)
-				: await api.resourceSchema(providerSource, t, engine);
+				? await api.dataSourceSchema(providerSource, t, engine, ver)
+				: await api.resourceSchema(providerSource, t, engine, ver);
 		} catch (err) {
 			error = (err as Error).message;
 		} finally {
@@ -624,9 +633,10 @@
 		resourceProvider = r.provider ?? '';
 		const src = providerForType(r.type);
 		try {
+			const ver = providerVersionForSource(src);
 			schema = kind === 'data'
-				? await api.dataSourceSchema(src, r.type, engine)
-				: await api.resourceSchema(src, r.type, engine);
+				? await api.dataSourceSchema(src, r.type, engine, ver)
+				: await api.resourceSchema(src, r.type, engine, ver);
 		} catch (err) {
 			error = (err as Error).message;
 		} finally {
@@ -646,7 +656,7 @@
 		editingId = null;
 		selectedType = '';
 		try {
-			schema = await api.providerSchema(prov.source, engine);
+			schema = await api.providerSchema(prov.source, engine, prov.version);
 			values = JSON.parse(JSON.stringify(prov.config ?? {}));
 		} catch (err) {
 			error = (err as Error).message;
@@ -681,6 +691,12 @@
 	function providerForType(type: string): string {
 		const key = type.split('_')[0];
 		return project?.providers?.find((p) => p.key === key)?.source ?? providerSource;
+	}
+
+	// providerVersionForSource returns the version constraint the project pins
+	// a provider source to, so schema fetches match the pinned version.
+	function providerVersionForSource(source: string): string | undefined {
+		return project?.providers?.find((p) => p.source === source && p.version)?.version;
 	}
 
 	function suggestName(type: string, kind: ResourceKind = 'resource'): string {
@@ -793,8 +809,12 @@
 			const where = activeModule ? `module "${activeModule}"` : 'root';
 			const parts = [
 				`${res.addedResources} resources`,
+				res.addedDataSources ? `${res.addedDataSources} data sources` : '',
 				res.addedVariables ? `${res.addedVariables} variables` : '',
-				res.addedLocalModules ? `${res.addedLocalModules} modules` : '',
+				res.addedLocals ? `${res.addedLocals} locals` : '',
+				res.addedOutputs ? `${res.addedOutputs} outputs` : '',
+				res.addedLocalModules ? `${res.addedLocalModules} local modules` : '',
+				res.addedModules ? `${res.addedModules} registry modules` : '',
 				`${res.addedProviders} providers`
 			].filter(Boolean);
 			importMsg = `Imported into ${where}: ${parts.join(', ')}${res.warnings?.length ? ` · ${res.warnings.length} warning(s)` : ''}`;
@@ -844,7 +864,7 @@
 
 	// Returns a provider's resource and data source types for the editor palette.
 	async function editorLoadTypes(source: string): Promise<{ resourceTypes: string[]; dataSourceTypes: string[] }> {
-		const res = await api.addProvider(source, engine);
+		const res = await api.addProvider(source, engine, providerVersionForSource(source));
 		return { resourceTypes: res.resourceTypes, dataSourceTypes: res.dataSourceTypes ?? [] };
 	}
 
@@ -949,6 +969,30 @@
 				busy = '';
 			} else if (ev.kind === 'done') busy = '';
 		});
+	}
+
+	// runValidate streams a config validation into the run pane (diagnostics
+	// arrive as log lines; the result carries the counts).
+	function runValidate() {
+		if (!project) return;
+		error = '';
+		planLog = [];
+		planResult = '';
+		planChanges = [];
+		planCounts = null;
+		applyOutputs = [];
+		busy = 'validate';
+		streamPlan(project.id, (ev) => {
+			if (ev.kind === 'log') planLog = [...planLog, ev.line];
+			else if (ev.kind === 'result') {
+				planResult = ev.valid
+					? `Valid${ev.warningCount ? ` · ${ev.warningCount} warning(s)` : ''}`
+					: `${ev.errorCount ?? 0} validation error(s)`;
+			} else if (ev.kind === 'error') {
+				error = ev.error;
+				busy = '';
+			} else if (ev.kind === 'done') busy = '';
+		}, 'validate');
 	}
 
 	async function loadState() {
@@ -1391,7 +1435,10 @@
 				<HclView {hcl}>
 					{#snippet right()}
 						{#if auth.can('deploy')}
-						{@const running = busy === 'plan' || busy === 'apply' || busy === 'destroy' || busy === 'import' || busy === 'state-rm' || busy === 'state-mv'}
+						{@const running = busy === 'plan' || busy === 'validate' || busy === 'apply' || busy === 'destroy' || busy === 'import' || busy === 'state-rm' || busy === 'state-mv'}
+						<button class={btnGhost} title="Validate the generated configuration" onclick={runValidate} disabled={!project || running}>
+							{#if busy === 'validate'}<Loader2 size={14} class="animate-spin" />{:else}<ShieldCheck size={14} />{/if} Validate
+						</button>
 						<button class={btnGhost} onclick={runPlan} disabled={!project || running}>
 							{#if busy === 'plan'}<Loader2 size={14} class="animate-spin" />{:else}<Play size={14} />{/if} Plan
 						</button>

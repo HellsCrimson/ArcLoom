@@ -138,6 +138,7 @@ func (s *Server) Handler() http.Handler {
 			r.Group(func(r chi.Router) {
 				r.Use(s.requirePerm(user.PermDeploy))
 				r.Get("/projects/{id}/plan", s.handlePlan)
+				r.Get("/projects/{id}/validate", s.handleValidate)
 				r.Post("/projects/{id}/apply", s.handleApply)
 				r.Post("/projects/{id}/destroy", s.handleDestroy)
 				// State surgery: adopt a live resource / fix drifted addresses.

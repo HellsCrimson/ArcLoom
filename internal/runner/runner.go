@@ -84,6 +84,10 @@ type Runner interface {
 	// StatePull returns the raw state JSON as the configured backend sees it
 	// (works for both local and remote backends).
 	StatePull(ctx context.Context, dir string) (string, error)
+	// Validate syncs the generated files into the persistent workspace,
+	// initializes it, and runs the engine's config validation, returning the
+	// structured diagnostics.
+	Validate(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (*tfjson.ValidateOutput, error)
 	// Graph writes the generated files into a fresh workspace, initializes it,
 	// and returns the dependency graph in Graphviz DOT format.
 	Graph(ctx context.Context, files map[string][]byte) (string, error)

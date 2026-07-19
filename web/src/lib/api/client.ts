@@ -47,16 +47,16 @@ async function json<T>(res: Response): Promise<T> {
 export const api = {
 	engines: () => fetch('/api/engines').then((r) => json<EnginesResponse>(r)),
 
-	addProvider: (source: string, engine: string) =>
+	addProvider: (source: string, engine: string, version?: string) =>
 		fetch('/api/providers', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ source, engine })
+			body: JSON.stringify({ source, engine, version: version || undefined })
 		}).then((r) => json<ProviderResponse>(r)),
 
-	providerSchema: (source: string, engine: string) =>
+	providerSchema: (source: string, engine: string, version?: string) =>
 		fetch(
-			`/api/providers/${encodeURIComponent(source)}/schema?engine=${encodeURIComponent(engine)}`
+			`/api/providers/${encodeURIComponent(source)}/schema?engine=${encodeURIComponent(engine)}${version ? `&version=${encodeURIComponent(version)}` : ''}`
 		).then((r) => json<NormalizedSchema>(r)),
 
 	setProviderConfig: (
@@ -76,14 +76,14 @@ export const api = {
 			{ method: 'DELETE' }
 		).then((r) => json<Project>(r)),
 
-	resourceSchema: (source: string, type: string, engine: string) =>
+	resourceSchema: (source: string, type: string, engine: string, version?: string) =>
 		fetch(
-			`/api/providers/${encodeURIComponent(source)}/resources/${encodeURIComponent(type)}/schema?engine=${encodeURIComponent(engine)}`
+			`/api/providers/${encodeURIComponent(source)}/resources/${encodeURIComponent(type)}/schema?engine=${encodeURIComponent(engine)}${version ? `&version=${encodeURIComponent(version)}` : ''}`
 		).then((r) => json<NormalizedSchema>(r)),
 
-	dataSourceSchema: (source: string, type: string, engine: string) =>
+	dataSourceSchema: (source: string, type: string, engine: string, version?: string) =>
 		fetch(
-			`/api/providers/${encodeURIComponent(source)}/datasources/${encodeURIComponent(type)}/schema?engine=${encodeURIComponent(engine)}`
+			`/api/providers/${encodeURIComponent(source)}/datasources/${encodeURIComponent(type)}/schema?engine=${encodeURIComponent(engine)}${version ? `&version=${encodeURIComponent(version)}` : ''}`
 		).then((r) => json<NormalizedSchema>(r)),
 
 	listProjects: () =>
@@ -438,17 +438,30 @@ export interface RunRecord {
 }
 
 // PlanEvent types streamed over SSE. A plan's result carries the structured
-// diff; an apply's result carries the captured outputs.
+// diff; an apply's result carries the captured outputs; a validate's result
+// carries the diagnostic counts (the diagnostics themselves stream as log
+// lines).
 export type PlanEvent =
 	| { kind: 'log'; line: string }
-	| ({ kind: 'result'; outputs?: RunOutput[] } & Partial<PlanSummary>)
+	| ({
+			kind: 'result';
+			outputs?: RunOutput[];
+			valid?: boolean;
+			errorCount?: number;
+			warningCount?: number;
+	  } & Partial<PlanSummary>)
 	| { kind: 'error'; error: string }
 	| { kind: 'done' };
 
-// streamPlan opens an SSE connection and invokes onEvent for each event.
-// Returns a function that closes the stream.
-export function streamPlan(projectId: string, onEvent: (e: PlanEvent) => void): () => void {
-	const es = new EventSource(`/api/projects/${projectId}/plan`);
+// streamPlan opens an SSE connection for a read-only streamed op (plan or
+// validate — both GETs consumed via EventSource) and invokes onEvent for each
+// event. Returns a function that closes the stream.
+export function streamPlan(
+	projectId: string,
+	onEvent: (e: PlanEvent) => void,
+	op: 'plan' | 'validate' = 'plan'
+): () => void {
+	const es = new EventSource(`/api/projects/${projectId}/${op}`);
 
 	es.addEventListener('log', (ev) => {
 		const d = JSON.parse((ev as MessageEvent).data);
@@ -463,7 +476,10 @@ export function streamPlan(projectId: string, onEvent: (e: PlanEvent) => void): 
 			add: d.add ?? 0,
 			change: d.change ?? 0,
 			destroy: d.destroy ?? 0,
-			replace: d.replace ?? 0
+			replace: d.replace ?? 0,
+			valid: d.valid,
+			errorCount: d.errorCount ?? 0,
+			warningCount: d.warningCount ?? 0
 		});
 	});
 	es.addEventListener('error', (ev) => {

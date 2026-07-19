@@ -79,14 +79,14 @@ func (s *Server) handleAddProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Normalize and cache every resource type for later schema requests.
-	// TODO: key on the version resolved in .terraform.lock.hcl; slice 1 keys on
-	// the empty version so add + lookup agree.
+	// Normalize and cache every resource type for later schema requests. The
+	// cache is keyed on the version constraint the schemas were fetched under
+	// ("" = latest), so differently-pinned providers don't collide.
 	types := make([]string, 0, len(ps.ResourceSchemas))
 	for rt, rs := range ps.ResourceSchemas {
 		types = append(types, rt)
 		ns := schema.Normalize(fq, rt, rs)
-		key := cache.Key(string(run.Engine()), req.Source, "", rt)
+		key := cache.Key(string(run.Engine()), req.Source, req.Version, rt)
 		s.cache.Put(key, ns)
 	}
 	sort.Strings(types)
@@ -97,7 +97,7 @@ func (s *Server) handleAddProvider(w http.ResponseWriter, r *http.Request) {
 	for dt, ds := range ps.DataSourceSchemas {
 		dataTypes = append(dataTypes, dt)
 		ns := schema.Normalize(fq, dt, ds)
-		key := cache.Key(string(run.Engine()), req.Source, "", dataSchemaPrefix+dt)
+		key := cache.Key(string(run.Engine()), req.Source, req.Version, dataSchemaPrefix+dt)
 		s.cache.Put(key, ns)
 	}
 	sort.Strings(dataTypes)
@@ -119,6 +119,7 @@ func (s *Server) handleDataSourceSchema(w http.ResponseWriter, r *http.Request) 
 	}
 	dataType := chi.URLParam(r, "type")
 	engine := r.URL.Query().Get("engine")
+	version := r.URL.Query().Get("version")
 
 	run, ok := s.runnerFor(engine)
 	if !ok {
@@ -126,12 +127,12 @@ func (s *Server) handleDataSourceSchema(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if ns, ok := s.lookupCached(string(run.Engine()), source, dataSchemaPrefix+dataType); ok {
+	if ns, ok := s.lookupCached(string(run.Engine()), source, version, dataSchemaPrefix+dataType); ok {
 		writeJSON(w, http.StatusOK, ns)
 		return
 	}
 
-	prov := model.ProviderInstance{Key: providerKeyFromSource(source), Source: source}
+	prov := model.ProviderInstance{Key: providerKeyFromSource(source), Source: source, Version: version}
 	schemas, err := run.ProvidersSchema(r.Context(), []model.ProviderInstance{prov})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "schema fetch failed: "+err.Error())
@@ -148,7 +149,7 @@ func (s *Server) handleDataSourceSchema(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	ns := schema.Normalize(fq, dataType, ds)
-	s.cache.Put(cache.Key(string(run.Engine()), source, "", dataSchemaPrefix+dataType), ns)
+	s.cache.Put(cache.Key(string(run.Engine()), source, version, dataSchemaPrefix+dataType), ns)
 	writeJSON(w, http.StatusOK, ns)
 }
 
@@ -162,6 +163,7 @@ func (s *Server) handleResourceSchema(w http.ResponseWriter, r *http.Request) {
 	}
 	resourceType := chi.URLParam(r, "type")
 	engine := r.URL.Query().Get("engine")
+	version := r.URL.Query().Get("version")
 
 	run, ok := s.runnerFor(engine)
 	if !ok {
@@ -169,14 +171,13 @@ func (s *Server) handleResourceSchema(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try cache across any known version first (best-effort: refetch on miss).
-	if ns, ok := s.lookupCached(string(run.Engine()), source, resourceType); ok {
+	if ns, ok := s.lookupCached(string(run.Engine()), source, version, resourceType); ok {
 		writeJSON(w, http.StatusOK, ns)
 		return
 	}
 
-	// Cache miss: fetch schemas now.
-	prov := model.ProviderInstance{Key: providerKeyFromSource(source), Source: source}
+	// Cache miss: fetch schemas now, pinned to the requested constraint.
+	prov := model.ProviderInstance{Key: providerKeyFromSource(source), Source: source, Version: version}
 	schemas, err := run.ProvidersSchema(r.Context(), []model.ProviderInstance{prov})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "schema fetch failed: "+err.Error())
@@ -193,7 +194,7 @@ func (s *Server) handleResourceSchema(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ns := schema.Normalize(fq, resourceType, rs)
-	s.cache.Put(cache.Key(string(run.Engine()), source, "", resourceType), ns)
+	s.cache.Put(cache.Key(string(run.Engine()), source, version, resourceType), ns)
 	writeJSON(w, http.StatusOK, ns)
 }
 
@@ -210,18 +211,19 @@ func (s *Server) handleProviderSchema(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	engine := r.URL.Query().Get("engine")
+	version := r.URL.Query().Get("version")
 	run, ok := s.runnerFor(engine)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "unknown engine")
 		return
 	}
 
-	if ns, ok := s.cache.Get(cache.Key(string(run.Engine()), source, "", providerSchemaKey)); ok {
+	if ns, ok := s.lookupCached(string(run.Engine()), source, version, providerSchemaKey); ok {
 		writeJSON(w, http.StatusOK, ns)
 		return
 	}
 
-	prov := model.ProviderInstance{Key: providerKeyFromSource(source), Source: source}
+	prov := model.ProviderInstance{Key: providerKeyFromSource(source), Source: source, Version: version}
 	schemas, err := run.ProvidersSchema(r.Context(), []model.ProviderInstance{prov})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "schema fetch failed: "+err.Error())
@@ -233,19 +235,16 @@ func (s *Server) handleProviderSchema(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ns := schema.Normalize(fq, source, ps.ConfigSchema)
-	s.cache.Put(cache.Key(string(run.Engine()), source, "", providerSchemaKey), ns)
+	s.cache.Put(cache.Key(string(run.Engine()), source, version, providerSchemaKey), ns)
 	writeJSON(w, http.StatusOK, ns)
 }
 
-// lookupCached checks the in-memory cache for a resource type regardless of the
-// exact version segment (slice-1 convenience).
-func (s *Server) lookupCached(engine, source, resourceType string) (schema.NormalizedSchema, bool) {
-	// The cache key includes a version we may not know here; the handleAddProvider
-	// path always populates it, so try the empty-version key used on refetch too.
-	if ns, ok := s.cache.Get(cache.Key(engine, source, "", resourceType)); ok {
-		return ns, true
-	}
-	return schema.NormalizedSchema{}, false
+// lookupCached checks the cache under the requested version constraint. There
+// is deliberately no cross-version fallback: serving a "latest" schema for a
+// pinned provider is exactly the collision this keying fixes — an unseen
+// constraint just refetches once.
+func (s *Server) lookupCached(engine, source, version, resourceType string) (schema.NormalizedSchema, bool) {
+	return s.cache.Get(cache.Key(engine, source, version, resourceType))
 }
 
 // providerKeyFromSource extracts the local provider name, e.g.
