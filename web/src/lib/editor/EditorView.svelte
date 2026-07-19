@@ -8,7 +8,7 @@
 		type Edge, type LayoutMode
 	} from './graph';
 	import HclView from './HclView.svelte';
-	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group, Folder, FolderOpen, ChevronRight, ChevronDown, Play, Package } from 'lucide-svelte';
+	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group, Folder, FolderOpen, ChevronRight, ChevronDown, Play, Package, Magnet } from 'lucide-svelte';
 
 	const LAYOUT_ICONS: Record<LayoutMode, typeof Network> = {
 		'layered-h': Network,
@@ -43,7 +43,7 @@
 		loadTypes: (source: string) => Promise<{ resourceTypes: string[]; dataSourceTypes: string[] }>;
 		onAddType: (type: string, providerSource: string, kind?: ResourceKind) => void;
 		onEditResource: (r: Resource, module?: string) => void;
-		onDeleteResource: (id: string, module?: string) => void;
+		onDeleteResource: (id: string, module?: string) => void | Promise<void>;
 		onRenameResource: (id: string, name: string, module?: string) => void;
 		onSetDependsOn: (id: string, deps: string[], module?: string) => void;
 		onEditRegistryModule?: (name: string) => void;
@@ -56,10 +56,25 @@
 
 	let positions = $state<Record<string, { x: number; y: number }>>({});
 	let expanded = $state<Record<string, boolean>>({});
-	let dragging = $state<{ id: string; ox: number; oy: number } | null>(null);
+	// Dragging moves every selected top-level box at once (each keeps its own
+	// grab offset).
+	let dragging = $state<{ items: { id: string; ox: number; oy: number }[] } | null>(null);
 	let dragMoved = $state(false); // distinguishes a drag from a click
-	let connecting = $state<{ fromId: string; x: number; y: number } | null>(null);
-	let selectedId = $state<string | null>(null);
+	// Connections are scoped: root dots connect root nodes, a module's interior
+	// dots connect within that module (dependencies can't cross the boundary).
+	let connecting = $state<{ fromId: string; scope?: string; x: number; y: number } | null>(null);
+	let selected = $state<string[]>([]);
+	// Marquee selection (Shift+drag on empty canvas), in world coordinates.
+	let marquee = $state<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+	// Inline rename overlay on a card (replaces window.prompt).
+	let renaming = $state<{ id: string; scope?: string; value: string } | null>(null);
+	// Snap-to-grid: shared preference across projects (grid matches the 22px dots).
+	const GRID = 22;
+	let snap = $state(localStorage.getItem('arcloom.snap') === '1');
+	function toggleSnap() {
+		snap = !snap;
+		localStorage.setItem('arcloom.snap', snap ? '1' : '0');
+	}
 
 	// Viewport pan/zoom (world = (screen - t) / scale).
 	let tx = $state(0);
@@ -88,12 +103,16 @@
 	const registryModules = $derived(project.modules ?? []);
 	const rootDataSources = $derived(project.dataSources ?? []);
 
-	// lookupNode resolves a node id across root resources and data sources,
-	// returning the address form used in references / depends_on.
-	function lookupNode(id: string): { r: Resource; addr: string } | null {
-		const r = project.resources.find((x) => x.id === id);
+	// lookupNode resolves a node id to its resource and depends_on address in a
+	// scope: root when scope is undefined, otherwise inside that local module
+	// (module-interior addresses are local — "type.name", no module prefix).
+	function lookupNode(id: string, scope?: string): { r: Resource; addr: string } | null {
+		const lm = scope ? localModules.find((m) => m.name === scope) : undefined;
+		const resources = scope ? (lm?.resources ?? []) : project.resources;
+		const dataSources = scope ? (lm?.dataSources ?? []) : rootDataSources;
+		const r = resources.find((x) => x.id === id);
 		if (r) return { r, addr: `${r.type}.${r.name}` };
-		const d = rootDataSources.find((x) => x.id === id);
+		const d = dataSources.find((x) => x.id === id);
 		if (d) return { r: d, addr: `data.${d.type}.${d.name}` };
 		return null;
 	}
@@ -219,7 +238,7 @@
 				pos,
 				w: open ? interior.w : NODE_W,
 				h: open ? interior.h : NODE_H,
-				selected: modId(lm.name) === selectedId
+				selected: selected.includes(modId(lm.name))
 			};
 		})
 	);
@@ -234,7 +253,7 @@
 				y: pos.y,
 				color: typeColor(r.type),
 				letter: typeLetter(r.type),
-				selected: r.id === selectedId
+				selected: selected.includes(r.id)
 			};
 		})
 	);
@@ -243,7 +262,7 @@
 	const registryNodes = $derived(
 		registryModules.map((m) => {
 			const pos = positions[rmodId(m.name)] ?? { x: 40, y: 40 };
-			return { ...m, id: rmodId(m.name), x: pos.x, y: pos.y, selected: rmodId(m.name) === selectedId };
+			return { ...m, id: rmodId(m.name), x: pos.x, y: pos.y, selected: selected.includes(rmodId(m.name)) };
 		})
 	);
 
@@ -257,7 +276,7 @@
 				y: pos.y,
 				color: DATA_COLOR,
 				letter: typeLetter(d.type),
-				selected: d.id === selectedId
+				selected: selected.includes(d.id)
 			};
 		})
 	);
@@ -290,32 +309,45 @@
 
 	const edges = $derived.by(() => {
 		const b = boxes;
-		const out: Array<Edge & { color: string; d: string }> = [];
-		const push = (e: Edge, color: string, fromBox?: { x: number; y: number; w: number; h: number }, toBox?: { x: number; y: number; w: number; h: number }) => {
+		const out: Array<Edge & { color: string; d: string; scope?: string }> = [];
+		const push = (e: Edge, color: string, scope?: string, fromBox?: { x: number; y: number; w: number; h: number }, toBox?: { x: number; y: number; w: number; h: number }) => {
 			const f = fromBox ?? b.get(e.from);
 			const t = toBox ?? b.get(e.to);
 			if (!f || !t) return;
-			out.push({ ...e, color, d: edgePath(f, t) });
+			out.push({ ...e, color, scope, d: edgePath(f, t) });
 		};
 		// Root ↔ root.
 		for (const e of deriveEdges(project.resources, rootDataSources)) push(e, b.get(e.from)?.color ?? accent);
 		// Cross-scope (root ↔ module, module ↔ module).
 		for (const e of crossScopeEdges(project)) push(e, accent);
-		// Interior edges for expanded modules.
+		// Interior edges for expanded modules (scoped, so depends edges know
+		// which module to edit on click).
 		for (const mb of moduleBoxes) {
 			if (!mb.open) continue;
 			for (const e of deriveEdges(mb.lm.resources, mb.lm.dataSources ?? [])) {
 				const fa = childAbs(mb, e.from);
 				const ta = childAbs(mb, e.to);
-				push(e, mb.selected ? accent : '#5b6472', { ...fa, w: NODE_W, h: NODE_H }, { ...ta, w: NODE_W, h: NODE_H });
+				push(e, mb.selected ? accent : '#5b6472', mb.name, { ...fa, w: NODE_W, h: NODE_H }, { ...ta, w: NODE_W, h: NODE_H });
 			}
 		}
 		return out;
 	});
 
+	// Absolute boxes for module-interior cards (for the in-flight connection line).
+	const interiorBoxes = $derived.by(() => {
+		const m = new Map<string, { x: number; y: number; w: number; h: number }>();
+		for (const mb of moduleBoxes) {
+			if (!mb.open) continue;
+			for (const child of [...mb.lm.resources, ...(mb.lm.dataSources ?? [])]) {
+				m.set(child.id, { ...childAbs(mb, child.id), w: NODE_W, h: NODE_H });
+			}
+		}
+		return m;
+	});
+
 	const tempPath = $derived.by(() => {
 		if (!connecting) return null;
-		const from = boxes.get(connecting.fromId);
+		const from = boxes.get(connecting.fromId) ?? interiorBoxes.get(connecting.fromId);
 		if (!from) return null;
 		return `M ${from.x + from.w} ${from.y + from.h / 2} L ${connecting.x} ${connecting.y}`;
 	});
@@ -336,22 +368,44 @@
 		return { x: (e.clientX - rect.left - tx) / scale, y: (e.clientY - rect.top - ty) / scale };
 	}
 
-	// Start dragging a top-level box (root resource card or module group).
+	// Start dragging a top-level box (root resource card or module group). A
+	// Shift/Ctrl-click toggles the box in the selection instead; dragging a box
+	// that is part of the selection moves the whole selection.
 	function onBoxDown(e: MouseEvent, id: string) {
 		if (e.button !== 0) return;
 		e.stopPropagation();
 		const box = boxes.get(id);
 		if (!box) return;
+		if (e.shiftKey || e.ctrlKey || e.metaKey) {
+			selected = selected.includes(id) ? selected.filter((s) => s !== id) : [...selected, id];
+			return;
+		}
+		if (!selected.includes(id)) selected = [id];
 		const { x, y } = toWorld(e);
-		selectedId = id;
 		dragMoved = false;
-		dragging = { id, ox: x - box.x, oy: y - box.y };
+		dragging = {
+			items: selected
+				.filter((s) => boxes.has(s))
+				.map((s) => {
+					const b = boxes.get(s)!;
+					return { id: s, ox: x - b.x, oy: y - b.y };
+				})
+		};
 	}
 
 	function onCanvasDown(e: MouseEvent) {
 		if (e.button !== 0) return;
-		selectedId = null;
+		if (e.shiftKey) {
+			const { x, y } = toWorld(e);
+			marquee = { x0: x, y0: y, x1: x, y1: y };
+			return;
+		}
+		selected = [];
 		panning = { sx: e.clientX, sy: e.clientY, ox: tx, oy: ty };
+	}
+
+	function snapTo(v: number): number {
+		return snap ? Math.round(v / GRID) * GRID : v;
 	}
 
 	function onMove(e: MouseEvent) {
@@ -364,7 +418,13 @@
 		const { x, y } = toWorld(e);
 		if (dragging) {
 			dragMoved = true;
-			positions = { ...positions, [dragging.id]: { x: Math.max(0, x - dragging.ox), y: Math.max(0, y - dragging.oy) } };
+			const next = { ...positions };
+			for (const it of dragging.items) {
+				next[it.id] = { x: Math.max(0, snapTo(x - it.ox)), y: Math.max(0, snapTo(y - it.oy)) };
+			}
+			positions = next;
+		} else if (marquee) {
+			marquee = { ...marquee, x1: x, y1: y };
 		} else if (connecting) {
 			connecting = { ...connecting, x, y };
 		}
@@ -375,8 +435,50 @@
 			savePos();
 			dragging = null;
 		}
+		if (marquee) {
+			// Select every top-level box intersecting the marquee rectangle.
+			const x0 = Math.min(marquee.x0, marquee.x1),
+				x1 = Math.max(marquee.x0, marquee.x1),
+				y0 = Math.min(marquee.y0, marquee.y1),
+				y1 = Math.max(marquee.y0, marquee.y1);
+			const hits: string[] = [];
+			for (const [id, b] of boxes) {
+				if (id.startsWith('ghost:')) continue;
+				if (b.x < x1 && b.x + b.w > x0 && b.y < y1 && b.y + b.h > y0) hits.push(id);
+			}
+			selected = hits;
+			marquee = null;
+		}
 		if (connecting) connecting = null;
 		panning = null;
+	}
+
+	// Bulk delete for the current selection: resources and data sources only
+	// (module boxes have their own richer delete flows and are skipped).
+	// Sequential, because each delete triggers a project refresh in the page.
+	const deletableSelection = $derived(selected.filter((id) => lookupNode(id) !== null));
+	async function bulkDelete() {
+		const ids = deletableSelection;
+		if (ids.length === 0) return;
+		const names = ids.map((id) => lookupNode(id)!.addr).join(', ');
+		if (!confirm(`Delete ${ids.length} block${ids.length === 1 ? '' : 's'} from the model?\n\n${names}`)) return;
+		for (const id of ids) await onDeleteResource(id, undefined);
+		selected = [];
+	}
+
+	function onCanvasKey(e: KeyboardEvent) {
+		const t = e.target as HTMLElement | null;
+		if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+		if (e.key === 'Escape') {
+			if (renaming) renaming = null;
+			else if (connecting) connecting = null;
+			else if (marquee) marquee = null;
+			else if (selected.length) selected = [];
+			else onClose();
+		} else if ((e.key === 'Delete' || e.key === 'Backspace') && deletableSelection.length > 0) {
+			e.preventDefault();
+			bulkDelete();
+		}
 	}
 
 	function onWheel(e: WheelEvent) {
@@ -414,37 +516,68 @@
 		scale = 1;
 	}
 
-	function onDotDown(e: MouseEvent, id: string, role: string) {
+	function onDotDown(e: MouseEvent, id: string, role: string, scope?: string) {
 		e.stopPropagation();
 		if (role !== 'out') return;
 		const { x, y } = toWorld(e);
-		connecting = { fromId: id, x, y };
+		connecting = { fromId: id, scope, x, y };
 	}
 
-	function onDotUp(e: MouseEvent, id: string, role: string) {
+	// Completing a connection adds a depends_on — only within one scope, since a
+	// depends_on can't cross the module boundary.
+	function onDotUp(e: MouseEvent, id: string, role: string, scope?: string) {
 		e.stopPropagation();
-		if (role === 'in' && connecting && connecting.fromId !== id) {
-			const from = lookupNode(connecting.fromId);
-			const to = lookupNode(id);
+		if (role === 'in' && connecting && connecting.fromId !== id && connecting.scope === scope) {
+			const from = lookupNode(connecting.fromId, scope);
+			const to = lookupNode(id, scope);
 			if (from && to) {
 				const deps = to.r.dependsOn ?? [];
-				if (!deps.includes(from.addr)) onSetDependsOn(to.r.id, [...deps, from.addr]);
+				if (!deps.includes(from.addr)) onSetDependsOn(to.r.id, [...deps, from.addr], scope);
 			}
 		}
 		connecting = null;
 	}
 
-	function onEdgeClick(e: Edge) {
-		if (e.kind !== 'depends') return; // only root depends_on edges are editable
-		const to = lookupNode(e.to);
-		const from = lookupNode(e.from);
+	function onEdgeClick(e: Edge & { scope?: string }) {
+		if (e.kind !== 'depends') return; // ref edges derive from attrs, not editable here
+		const to = lookupNode(e.to, e.scope);
+		const from = lookupNode(e.from, e.scope);
 		if (!to || !from) return;
-		onSetDependsOn(to.r.id, (to.r.dependsOn ?? []).filter((d) => baseAddr(d) !== from.addr));
+		onSetDependsOn(to.r.id, (to.r.dependsOn ?? []).filter((d) => baseAddr(d) !== from.addr), e.scope);
 	}
 
-	function rename(id: string, name: string, scope?: string) {
-		const next = window.prompt('Resource name', name);
-		if (next && next.trim()) onRenameResource(id, next.trim().replace(/[^a-zA-Z0-9_]+/g, '_'), scope);
+	// A card's single click (open form) is delayed briefly so a double-click
+	// (inline rename) can cancel it — otherwise the first click closes the
+	// editor before the second lands.
+	let cardClickTimer: ReturnType<typeof setTimeout> | null = null;
+	function cardClick(e: MouseEvent, id: string, type: string, name: string, scope?: string) {
+		if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+		if (dragMoved) {
+			dragMoved = false;
+			return;
+		}
+		if (renaming?.id === id) return;
+		if (cardClickTimer) clearTimeout(cardClickTimer);
+		cardClickTimer = setTimeout(() => onEditResource({ id, type, name, attrs: {} } as Resource, scope), 250);
+	}
+
+	// Inline rename: double-click opens an input over the card's name.
+	function startRename(id: string, name: string, scope?: string) {
+		if (cardClickTimer) clearTimeout(cardClickTimer);
+		cardClickTimer = null;
+		renaming = { id, scope, value: name };
+	}
+	function commitRename() {
+		if (!renaming) return;
+		const { id, scope } = renaming;
+		const name = renaming.value.trim().replace(/[^a-zA-Z0-9_]+/g, '_');
+		const cur = lookupNode(id, scope);
+		renaming = null;
+		if (name && cur && name !== cur.r.name) onRenameResource(id, name, scope);
+	}
+	function focusSelect(node: HTMLInputElement) {
+		node.focus();
+		node.select();
 	}
 
 	function switchProvider(key: string) {
@@ -509,22 +642,37 @@
 	{/if}
 {/snippet}
 
-{#snippet card(id: string, x: number, y: number, name: string, type: string, color: string, letter: string, selected: boolean, connectable: boolean, scope: string | undefined, change: string | undefined, multi: { label: string; title: string } | undefined, kind: ResourceKind = 'resource')}
+{#snippet card(id: string, x: number, y: number, name: string, type: string, color: string, letter: string, selected: boolean, draggable: boolean, scope: string | undefined, change: string | undefined, multi: { label: string; title: string } | undefined, kind: ResourceKind = 'resource')}
 	{@const isData = kind === 'data'}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 	<div
 		role="button"
 		tabindex="-1"
-		style="position:absolute;left:{x}px;top:{y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:{isData ? '18px' : '12px'};padding:10px 12px;background:{isData ? '#0e1917' : '#10151f'};border:{selected ? '1px solid ' + accent : change ? '1px solid ' + ACTION_COLOR[change] : isData ? '1.5px dashed rgba(86,212,188,0.45)' : '1px solid rgba(255,255,255,0.10)'};box-shadow:{selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : change ? '0 0 0 1.5px ' + ACTION_COLOR[change] + '55, 0 6px 16px rgba(0,0,0,0.35)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:{connectable ? 'grab' : 'pointer'};z-index:2;"
-		onmousedown={(e) => { if (connectable) { onBoxDown(e, id); } else { e.stopPropagation(); } }}
-		onclick={() => { if (dragMoved) { dragMoved = false; return; } onEditResource({ id, type, name, attrs: {} } as Resource, scope); }}
-		ondblclick={(e) => { e.stopPropagation(); rename(id, name, scope); }}
+		style="position:absolute;left:{x}px;top:{y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:{isData ? '18px' : '12px'};padding:10px 12px;background:{isData ? '#0e1917' : '#10151f'};border:{selected ? '1px solid ' + accent : change ? '1px solid ' + ACTION_COLOR[change] : isData ? '1.5px dashed rgba(86,212,188,0.45)' : '1px solid rgba(255,255,255,0.10)'};box-shadow:{selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : change ? '0 0 0 1.5px ' + ACTION_COLOR[change] + '55, 0 6px 16px rgba(0,0,0,0.35)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:{draggable ? 'grab' : 'pointer'};z-index:2;"
+		onmousedown={(e) => { if (draggable) { onBoxDown(e, id); } else { e.stopPropagation(); } }}
+		onclick={(e) => cardClick(e, id, type, name, scope)}
+		ondblclick={(e) => { e.stopPropagation(); startRename(id, name, scope); }}
 	>
 		<div class="flex items-center gap-2">
 			<div style="width:22px;height:22px;border-radius:{isData ? '50%' : '6px'};background:{color};color:#0a0e15;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;">{letter}</div>
-			<div style="min-width:0;">
-				<div style="font-size:13px;font-weight:600;color:#e6e9ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{name}</div>
+			<div style="min-width:0;flex:1;">
+				{#if renaming?.id === id}
+					<!-- svelte-ignore a11y_autofocus -->
+					<input
+						class="font-mono"
+						style="width:100%;font-size:12px;font-weight:600;color:#e6e9ef;background:rgba(0,0,0,0.45);border:1px solid {accent};border-radius:5px;padding:1px 5px;outline:none;"
+						bind:value={renaming.value}
+						use:focusSelect
+						onmousedown={(e) => e.stopPropagation()}
+						onclick={(e) => e.stopPropagation()}
+						ondblclick={(e) => e.stopPropagation()}
+						onkeydown={(e) => { e.stopPropagation(); if (e.key === 'Enter') commitRename(); else if (e.key === 'Escape') renaming = null; }}
+						onblur={commitRename}
+					/>
+				{:else}
+					<div style="font-size:13px;font-weight:600;color:#e6e9ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="double-click to rename">{name}</div>
+				{/if}
 				<div class="font-mono" style="font-size:10px;color:{isData ? 'rgba(86,212,188,0.75)' : '#6b7480'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{isData ? `data.${type}` : type}</div>
 			</div>
 		</div>
@@ -549,14 +697,12 @@
 				style="position:absolute;right:-7px;bottom:-9px;padding:2px 6px;border-radius:8px;background:#0d1117;border:1px solid rgba(255,255,255,0.18);font-size:10px;font-weight:800;color:{color};z-index:4;pointer-events:none;"
 			>{multi.label}</div>
 		{/if}
-		{#if connectable}
-			<div title="Drag to connect (depends_on)" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'out')} onmouseup={(e) => onDotUp(e, id, 'out')}></div>
-			<div title="Drop a connection here" role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'in')} onmouseup={(e) => onDotUp(e, id, 'in')}></div>
-		{/if}
+		<div title="Drag to connect (depends_on{scope ? ', within this module' : ''})" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'out', scope)} onmouseup={(e) => onDotUp(e, id, 'out', scope)}></div>
+		<div title="Drop a connection here" role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'in', scope)} onmouseup={(e) => onDotUp(e, id, 'in', scope)}></div>
 	</div>
 {/snippet}
 
-<svelte:window onmousemove={onMove} onmouseup={onUp} />
+<svelte:window onmousemove={onMove} onmouseup={onUp} onkeydown={onCanvasKey} />
 
 <div
 	class="flex h-full w-full min-h-0"
@@ -664,24 +810,11 @@
 
 		<!-- hint -->
 		<div class="pointer-events-none absolute bottom-3.5 left-4 z-[4] text-[11px]" style="color:rgba(255,255,255,0.32);">
-			Drag empty space to pan · scroll to zoom · drag a node to move · drag the right dot to another node to add depends_on · click a module to expand · click a node to edit
+			Drag empty space to pan · scroll to zoom · Shift+drag for marquee select (Shift+click adds) · Del deletes selection · double-click a name to rename · drag the right dot to another node for depends_on · Esc clears / closes
 		</div>
 
 		<!-- world layer (pans / zooms together) -->
 		<div style="position:absolute;left:0;top:0;transform:translate({tx}px,{ty}px) scale({scale});transform-origin:0 0;">
-			<!-- edges -->
-			<svg style="position:absolute;left:0;top:0;overflow:visible;pointer-events:none;" width={worldSize.w} height={worldSize.h}>
-				{#each edges as e (e.id)}
-					<path d={e.d} stroke="transparent" stroke-width="14" fill="none" style="pointer-events:{e.kind === 'depends' ? 'auto' : 'none'};cursor:{e.kind === 'depends' ? 'pointer' : 'default'};" onmousedown={(ev) => ev.stopPropagation()} onclick={() => onEdgeClick(e)} role="presentation" />
-				{/each}
-				{#each edges as e (e.id)}
-					<path d={e.d} stroke={e.color} stroke-width="2" fill="none" stroke-dasharray={e.kind === 'depends' ? '5 4' : 'none'} opacity={e.kind === 'depends' ? '0.75' : '1'} style="pointer-events:none;" />
-				{/each}
-				{#if tempPath}
-					<path d={tempPath} stroke={accent} stroke-width="2" stroke-dasharray="6 4" fill="none" style="pointer-events:none;" />
-				{/if}
-			</svg>
-
 			<!-- module groups -->
 			{#each moduleBoxes as mb (mb.id)}
 				{#if mb.open}
@@ -697,7 +830,7 @@
 						<div
 							class="flex items-center gap-1.5"
 							style="height:{MOD_HEADER_H}px;padding:0 10px;cursor:grab;"
-							onclick={() => { if (dragMoved) { dragMoved = false; return; } toggleExpand(mb.name); }}
+							onclick={(e) => { if (e.shiftKey || e.ctrlKey || e.metaKey) return; if (dragMoved) { dragMoved = false; return; } toggleExpand(mb.name); }}
 							role="presentation"
 						>
 							<FolderOpen size={14} style="color:{accent};flex:none;" />
@@ -719,7 +852,7 @@
 						tabindex="-1"
 						style="position:absolute;left:{mb.pos.x}px;top:{mb.pos.y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:#121826;border:1px solid {mb.selected ? accent : 'rgba(124,162,247,0.30)'};box-shadow:{mb.selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:grab;z-index:2;"
 						onmousedown={(e) => onBoxDown(e, mb.id)}
-						onclick={() => { if (dragMoved) { dragMoved = false; return; } toggleExpand(mb.name); }}
+						onclick={(e) => { if (e.shiftKey || e.ctrlKey || e.metaKey) return; if (dragMoved) { dragMoved = false; return; } toggleExpand(mb.name); }}
 					>
 						<div class="flex items-center gap-2">
 							<div style="width:22px;height:22px;border-radius:6px;background:{accent}22;color:{accent};display:flex;align-items:center;justify-content:center;flex:none;"><Folder size={13} /></div>
@@ -736,6 +869,34 @@
 				{/if}
 			{/each}
 
+			<!-- edges: rendered after (and at the same z as) the module containers
+			     so interior depends edges stay clickable above a module's
+			     background; cards sit higher (z2) and are unaffected. -->
+			<svg style="position:absolute;left:0;top:0;overflow:visible;pointer-events:none;z-index:1;" width={worldSize.w} height={worldSize.h}>
+				{#each edges as e (e.id)}
+					<path d={e.d} stroke="transparent" stroke-width="14" fill="none" style="pointer-events:{e.kind === 'depends' ? 'auto' : 'none'};cursor:{e.kind === 'depends' ? 'pointer' : 'default'};" onmousedown={(ev) => ev.stopPropagation()} onclick={() => onEdgeClick(e)} role="presentation" />
+				{/each}
+				{#each edges as e (e.id)}
+					<path d={e.d} stroke={e.color} stroke-width="2" fill="none" stroke-dasharray={e.kind === 'depends' ? '5 4' : 'none'} opacity={e.kind === 'depends' ? '0.75' : '1'} style="pointer-events:none;" />
+				{/each}
+				{#if tempPath}
+					<path d={tempPath} stroke={accent} stroke-width="2" stroke-dasharray="6 4" fill="none" style="pointer-events:none;" />
+				{/if}
+				{#if marquee}
+					<rect
+						x={Math.min(marquee.x0, marquee.x1)}
+						y={Math.min(marquee.y0, marquee.y1)}
+						width={Math.abs(marquee.x1 - marquee.x0)}
+						height={Math.abs(marquee.y1 - marquee.y0)}
+						fill="{accent}18"
+						stroke={accent}
+						stroke-width="1.5"
+						stroke-dasharray="5 4"
+						style="pointer-events:none;"
+					/>
+				{/if}
+			</svg>
+
 			<!-- registry/external module calls -->
 			{#each registryNodes as node (node.id)}
 				<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -745,7 +906,7 @@
 					tabindex="-1"
 					style="position:absolute;left:{node.x}px;top:{node.y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:#171226;border:1px solid {node.selected ? accent : 'rgba(194,151,255,0.35)'};box-shadow:{node.selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:grab;z-index:2;"
 					onmousedown={(e) => onBoxDown(e, node.id)}
-					onclick={() => { if (dragMoved) { dragMoved = false; return; } onEditRegistryModule?.(node.name); }}
+					onclick={(e) => { if (e.shiftKey || e.ctrlKey || e.metaKey) return; if (dragMoved) { dragMoved = false; return; } onEditRegistryModule?.(node.name); }}
 					title="{node.source}{node.version ? ' @ ' + node.version : ''}"
 				>
 					<div class="flex items-center gap-2">
@@ -776,11 +937,11 @@
 				{#if mb.open}
 					{#each mb.lm.resources as r (r.id)}
 						{@const c = childAbs(mb, r.id)}
-						{@render card(r.id, c.x, c.y, r.name, r.type, typeColor(r.type), typeLetter(r.type), r.id === selectedId, false, mb.name, changeByAddr.get(`module.${mb.name}.${r.type}.${r.name}`), multiBadge(r))}
+						{@render card(r.id, c.x, c.y, r.name, r.type, typeColor(r.type), typeLetter(r.type), false, false, mb.name, changeByAddr.get(`module.${mb.name}.${r.type}.${r.name}`), multiBadge(r))}
 					{/each}
 					{#each mb.lm.dataSources ?? [] as d (d.id)}
 						{@const c = childAbs(mb, d.id)}
-						{@render card(d.id, c.x, c.y, d.name, d.type, DATA_COLOR, typeLetter(d.type), d.id === selectedId, false, mb.name, changeByAddr.get(`module.${mb.name}.data.${d.type}.${d.name}`), multiBadge(d), 'data')}
+						{@render card(d.id, c.x, c.y, d.name, d.type, DATA_COLOR, typeLetter(d.type), false, false, mb.name, changeByAddr.get(`module.${mb.name}.data.${d.type}.${d.name}`), multiBadge(d), 'data')}
 					{/each}
 				{/if}
 			{/each}
@@ -817,6 +978,14 @@
 
 		<!-- zoom controls -->
 		<div class="absolute bottom-3.5 right-4 z-[5] flex items-center gap-1" style="background:rgba(13,17,23,0.85);backdrop-filter:blur(8px);padding:4px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);">
+			<button
+				class="rounded-md px-2 py-1 hover:bg-white/10"
+				style="color:{snap ? accent : 'rgba(255,255,255,0.6)'};"
+				onclick={toggleSnap}
+				title="Snap dragged nodes to the grid ({snap ? 'on' : 'off'})"
+				aria-label="Toggle snap to grid"
+				aria-pressed={snap}
+			><Magnet size={14} /></button>
 			<button class="rounded-md px-2 py-1 text-white/60 hover:bg-white/10 hover:text-white/90" onclick={() => zoomBy(1 / 1.2)} title="Zoom out" aria-label="Zoom out"><Minus size={14} /></button>
 			<button class="min-w-[42px] rounded-md px-1 py-1 text-[11px] text-white/60 hover:bg-white/10 hover:text-white/90" onclick={resetView} title="Reset view">{Math.round(scale * 100)}%</button>
 			<button class="rounded-md px-2 py-1 text-white/60 hover:bg-white/10 hover:text-white/90" onclick={() => zoomBy(1.2)} title="Zoom in" aria-label="Zoom in"><Plus size={14} /></button>

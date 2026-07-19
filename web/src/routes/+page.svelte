@@ -11,6 +11,7 @@
 	import GitPanel from '$lib/components/GitPanel.svelte';
 	import UserMenu from '$lib/components/UserMenu.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
+	import CommandPalette, { type PaletteItem } from '$lib/components/CommandPalette.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { history } from '$lib/stores/history.svelte';
 	import EditorView from '$lib/editor/EditorView.svelte';
@@ -18,7 +19,7 @@
 	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck, AlertTriangle
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck, AlertTriangle, Search
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -111,6 +112,7 @@
 
 	// Secrets
 	let showSecrets = $state(false);
+	let showPalette = $state(false);
 	let secretsList = $state<SecretMeta[]>([]);
 	let secretsLocalEnabled = $state(false);
 	const secretNames = $derived(secretsList.map((s) => s.name));
@@ -269,11 +271,23 @@
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+		const k = e.key.toLowerCase();
+		// Ctrl+K opens the command palette from anywhere, including inputs.
+		if (k === 'k') {
+			e.preventDefault();
+			showPalette = !showPalette;
+			return;
+		}
 		const t = e.target as HTMLElement | null;
 		// Leave native undo alone inside text inputs.
 		if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-		const k = e.key.toLowerCase();
-		if (k === 'z' && !e.shiftKey) {
+		if (k === 'enter') {
+			// Ctrl+Enter runs a plan (matches the palette hint).
+			if (project && auth.can('deploy') && busy === '') {
+				e.preventDefault();
+				runPlan();
+			}
+		} else if (k === 'z' && !e.shiftKey) {
 			e.preventDefault();
 			undo();
 		} else if ((k === 'z' && e.shiftKey) || k === 'y') {
@@ -281,6 +295,51 @@
 			redo();
 		}
 	}
+
+	// Command palette entries: permission-filtered commands plus every resource
+	// across all scopes (global search; selecting one opens its form).
+	const paletteItems = $derived.by<PaletteItem[]>(() => {
+		const items: PaletteItem[] = [];
+		const resItem = (addr: string): PaletteItem => ({
+			id: `res:${addr}`,
+			label: addr,
+			group: 'resources',
+			mono: true,
+			run: () => jumpToAddress(addr)
+		});
+		if (project) {
+			items.push({ id: 'cmd:editor', label: 'Open visual editor', group: 'commands', run: () => { error = ''; showEditor = true; } });
+			items.push({ id: 'cmd:vars', label: 'Variables, locals & outputs', group: 'commands', run: () => (showConfig = true) });
+			items.push({ id: 'cmd:secrets', label: 'Secrets', group: 'commands', run: () => { loadSecrets(); showSecrets = true; } });
+			if (auth.can('git')) items.push({ id: 'cmd:git', label: 'Git', group: 'commands', run: () => (showGit = true) });
+			items.push({ id: 'cmd:runs', label: 'Run history', group: 'commands', run: () => (showRuns = true) });
+			items.push({ id: 'cmd:state', label: 'State & drift', group: 'commands', run: () => { loadState(); loadDrift(); showState = true; } });
+			if (auth.can('deploy')) {
+				items.push({ id: 'cmd:plan', label: 'Plan', hint: 'Ctrl+Enter', group: 'commands', run: runPlan });
+				items.push({ id: 'cmd:validate', label: 'Validate', group: 'commands', run: runValidate });
+				items.push({ id: 'cmd:apply', label: 'Apply…', group: 'commands', run: () => (showApplyConfirm = true) });
+				items.push({ id: 'cmd:destroy', label: 'Destroy…', group: 'commands', run: () => { destroyName = ''; showDestroyConfirm = true; } });
+			}
+			if (auth.can('resources')) {
+				items.push({ id: 'cmd:import-hcl', label: 'Import HCL', group: 'commands', run: () => { importMsg = ''; showImportHcl = true; } });
+				items.push({ id: 'cmd:import-state', label: 'Import state', group: 'commands', run: () => { importMsg = ''; showImportState = true; } });
+			}
+		}
+		if (auth.can('resources')) items.push({ id: 'cmd:new-project', label: 'New project', group: 'commands', run: newProject });
+		if (auth.isAdmin) items.push({ id: 'cmd:settings', label: 'Settings', group: 'commands', run: () => (showSettings = true) });
+		if (project) {
+			for (const r of project.resources) items.push(resItem(`${r.type}.${r.name}`));
+			for (const d of project.dataSources ?? []) items.push(resItem(`data.${d.type}.${d.name}`));
+			for (const lm of project.localModules ?? []) {
+				for (const r of lm.resources) items.push(resItem(`module.${lm.name}.${r.type}.${r.name}`));
+				for (const d of lm.dataSources ?? []) items.push(resItem(`module.${lm.name}.data.${d.type}.${d.name}`));
+			}
+			for (const m of registryModules) {
+				items.push({ id: `res:module.${m.name}`, label: `module.${m.name}`, hint: m.source, group: 'resources', mono: true, run: () => openRegModule(m) });
+			}
+		}
+		return items;
+	});
 
 	onMount(async () => {
 		try {
@@ -920,6 +979,41 @@
 		editResource(found?.r ?? r, found?.kind ?? 'resource');
 	}
 
+	// jumpToAddress resolves a plan/diff address to its model block and opens the
+	// schema form in the right scope. Instance indexes ("[0]", '["a"]') are
+	// stripped; a registry-module interior address opens the module's modal.
+	// Returns false when nothing matches (e.g. a planned delete already gone
+	// from the model).
+	function jumpToAddress(address: string): boolean {
+		if (!project) return false;
+		let addr = address.replace(/\[[^\]]*\]/g, '');
+		let moduleName: string | undefined;
+		const m = addr.match(/^module\.([A-Za-z0-9_-]+)\.(.+)$/);
+		if (m) {
+			moduleName = m[1];
+			addr = m[2];
+		}
+		if (addr.startsWith('module.')) return false; // nested modules aren't in the model
+		const kind: ResourceKind = addr.startsWith('data.') ? 'data' : 'resource';
+		const [type, name] = addr.replace(/^data\./, '').split('.');
+		if (!type || !name) return false;
+		if (moduleName && !project.localModules?.some((lm) => lm.name === moduleName)) {
+			const reg = registryModules.find((rm) => rm.name === moduleName);
+			if (reg) {
+				openRegModule(reg);
+				return true;
+			}
+			return false;
+		}
+		const pool = kind === 'data' ? scopeDataSources(moduleName) : scopeResources(moduleName);
+		const r = pool.find((x) => x.type === type && x.name === name);
+		if (!r) return false;
+		activeModule = moduleName ?? null;
+		showEditor = false;
+		editResource(r, kind);
+		return true;
+	}
+
 	async function editorDeleteResource(id: string, moduleName?: string) {
 		if (!project) return;
 		try {
@@ -1159,6 +1253,8 @@
 
 <svelte:window onclick={() => (showImportMenu = false)} onkeydown={handleKeydown} />
 
+<CommandPalette bind:open={showPalette} items={paletteItems} />
+
 <div class="flex h-screen flex-col">
 	<header class="flex items-center gap-3 border-b border-[var(--al-border)] bg-[var(--al-panel)] px-4 py-2">
 		<div class="flex items-center gap-2 font-semibold">
@@ -1236,6 +1332,9 @@
 		{/if}
 
 		<div class="ml-auto flex items-center gap-2 text-sm">
+			<button class={hdrBtn} onclick={() => (showPalette = true)} title="Search commands and resources (Ctrl+K)">
+				<Search size={13} /> <span class="text-[10px] text-[var(--al-muted)]">Ctrl K</span>
+			</button>
 			<span class="text-xs text-[var(--al-muted)]">engine</span>
 			<span class="mono rounded border border-[var(--al-border)] px-2 py-0.5 text-xs text-[var(--al-muted)]">{engine || defaultEngine}</span>
 			{#if auth.isAdmin}
@@ -1521,11 +1620,16 @@
 				{#if planChanges.length > 0}
 					<div class="max-h-[45%] flex-none overflow-auto border-b py-1" style="border-color:rgba(255,255,255,0.07);">
 						{#each planChanges as c (c.address)}
-							<div class="flex items-center gap-2 px-[18px] py-0.5 font-mono" style="font-size:11.5px;line-height:1.6;">
+							<button
+								class="flex w-full items-center gap-2 px-[18px] py-0.5 text-left font-mono hover:bg-white/5"
+								style="font-size:11.5px;line-height:1.6;"
+								title="{c.address} — click to open"
+								onclick={() => jumpToAddress(c.address)}
+							>
 								<span class="w-3 flex-none text-center font-bold" style="color:{ACTION_COLOR[c.action]}">{ACTION_SYMBOL[c.action]}</span>
-								<span class="truncate" style="color:#c9d3dc;" title={c.address}>{c.address}</span>
+								<span class="truncate" style="color:#c9d3dc;">{c.address}</span>
 								<span class="ml-auto flex-none text-[10px]" style="color:{ACTION_COLOR[c.action]}">{c.action}</span>
-							</div>
+							</button>
 						{/each}
 					</div>
 				{/if}
