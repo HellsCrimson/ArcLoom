@@ -67,6 +67,9 @@ export interface Resource {
 	name: string;
 	attrs: Record<string, AttrValue>;
 	dependsOn?: string[];
+	// count / for_each meta-arguments as raw HCL expressions (mutually exclusive).
+	count?: string;
+	forEach?: string;
 }
 
 export interface ProviderInstance {

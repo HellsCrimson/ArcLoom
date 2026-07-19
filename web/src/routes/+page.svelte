@@ -39,6 +39,11 @@
 	let editingId = $state<string | null>(null);
 	let editingProviderKey = $state('');
 	let values = $state<Record<string, AttrValue>>({});
+	// count / for_each meta-args (raw HCL expressions, mutually exclusive), and
+	// the edited resource's depends_on (managed on the canvas, preserved here).
+	let resourceCount = $state('');
+	let resourceForEach = $state('');
+	let resourceDependsOn = $state<string[] | undefined>(undefined);
 
 	let hcl = $state('');
 	let planLog = $state<string[]>([]);
@@ -409,6 +414,9 @@
 		selectedType = t;
 		editingId = null;
 		values = {};
+		resourceCount = '';
+		resourceForEach = '';
+		resourceDependsOn = undefined;
 		resourceName = suggestName(t);
 		try {
 			schema = await api.resourceSchema(providerSource, t, engine);
@@ -419,7 +427,7 @@
 		}
 	}
 
-	async function editResource(r: { id: string; type: string; name: string; attrs: Record<string, AttrValue> }) {
+	async function editResource(r: Resource) {
 		error = '';
 		busy = 'schema';
 		formKind = 'resource';
@@ -427,6 +435,9 @@
 		editingId = r.id;
 		resourceName = r.name;
 		values = JSON.parse(JSON.stringify(r.attrs ?? {}));
+		resourceCount = r.count ?? '';
+		resourceForEach = r.forEach ?? '';
+		resourceDependsOn = r.dependsOn;
 		const src = providerForType(r.type);
 		try {
 			schema = await api.resourceSchema(src, r.type, engine);
@@ -501,7 +512,10 @@
 				name: resourceName,
 				providerSource,
 				module: activeModule ?? undefined,
-				attrs: buildAttrs()
+				attrs: buildAttrs(),
+				dependsOn: resourceDependsOn,
+				count: resourceCount.trim() || undefined,
+				forEach: resourceForEach.trim() || undefined
 			});
 			project = await api.getProject(project.id);
 			await refreshProjects();
@@ -662,7 +676,9 @@
 				providerSource: project.providers.find((p) => p.key === r.type.split('_')[0])?.source,
 				module: moduleName,
 				attrs: r.attrs,
-				dependsOn: patch.dependsOn ?? r.dependsOn
+				dependsOn: patch.dependsOn ?? r.dependsOn,
+				count: r.count,
+				forEach: r.forEach
 			});
 			await refreshProject();
 		} catch (err) {
@@ -940,6 +956,14 @@
 					<div>
 						<label for="resource-name" class="mb-1 block text-xs text-[var(--al-muted)]">resource name</label>
 						<input id="resource-name" class="mono rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={resourceName} />
+					</div>
+					<div>
+						<label for="resource-count" class="mb-1 block text-xs text-[var(--al-muted)]" title="count meta-argument — an HCL expression, e.g. 3 or var.replicas">count</label>
+						<input id="resource-count" class="mono w-28 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" bind:value={resourceCount} placeholder="3 · var.n" disabled={resourceForEach.trim() !== ''} />
+					</div>
+					<div>
+						<label for="resource-foreach" class="mb-1 block text-xs text-[var(--al-muted)]" title="for_each meta-argument — a set or map expression, e.g. toset([&quot;a&quot;, &quot;b&quot;])">for_each</label>
+						<input id="resource-foreach" class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" bind:value={resourceForEach} placeholder="toset([…]) · var.map" disabled={resourceCount.trim() !== ''} />
 					</div>
 					<div class="mono text-sm text-[var(--al-muted)]">resource "<span class="text-[var(--al-accent)]">{selectedType}</span>" "{resourceName}"{#if editingId}<span class="ml-1 text-[10px] uppercase">editing</span>{/if}</div>
 					{#if auth.can('resources')}<button class={btnPrimary + ' ml-auto'} onclick={saveResource} disabled={busy === 'save'}><Save size={15} /> {editingId ? 'Update' : 'Save'} resource</button>{/if}

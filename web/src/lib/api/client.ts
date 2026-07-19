@@ -166,6 +166,8 @@ export const api = {
 			module?: string;
 			attrs: Record<string, AttrValue>;
 			dependsOn?: string[];
+			count?: string;
+			forEach?: string;
 		}
 	) =>
 		fetch(`/api/projects/${projectId}/resources`, {

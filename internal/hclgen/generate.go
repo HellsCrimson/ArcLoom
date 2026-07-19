@@ -137,6 +137,24 @@ func writeProviderBlock(body *hclwrite.Body, prov model.ProviderInstance) error 
 // or "data"), including attributes, depends_on, and nested blocks.
 func writeBlockWithKeyword(body *hclwrite.Body, keyword string, r model.Resource) error {
 	blk := body.AppendNewBlock(keyword, []string{r.Type, r.Name})
+	// count / for_each lead the block, matching terraform style.
+	if r.Count != "" && r.ForEach != "" {
+		return fmt.Errorf("%s.%s: count and for_each are mutually exclusive", r.Type, r.Name)
+	}
+	if r.Count != "" {
+		toks, err := tokensForExpr(r.Count)
+		if err != nil {
+			return fmt.Errorf("%s.%s count: %w", r.Type, r.Name, err)
+		}
+		blk.Body().SetAttributeRaw("count", toks)
+	}
+	if r.ForEach != "" {
+		toks, err := tokensForExpr(r.ForEach)
+		if err != nil {
+			return fmt.Errorf("%s.%s for_each: %w", r.Type, r.Name, err)
+		}
+		blk.Body().SetAttributeRaw("for_each", toks)
+	}
 	if err := writeAttrs(blk.Body(), r.Attrs); err != nil {
 		return err
 	}
@@ -357,6 +375,14 @@ func parseTraversal(ref string) (hcl.Traversal, error) {
 		trav = append(trav, hcl.TraverseAttr{Name: p})
 	}
 	return trav, nil
+}
+
+// ValidateExpr reports whether a string is a well-formed HCL expression, for
+// callers that accept raw expressions (count / for_each) and want to reject
+// bad input at the API boundary instead of at generation time.
+func ValidateExpr(expr string) error {
+	_, err := tokensForExpr(expr)
+	return err
 }
 
 // tokensForExpr lexes a raw HCL expression and validates it before emitting, so

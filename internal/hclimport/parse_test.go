@@ -75,6 +75,44 @@ resource "random_password" "db" {
 	}
 }
 
+func TestParse_CountAndForEach(t *testing.T) {
+	src := `
+resource "random_pet" "srv" {
+  count  = var.replicas
+  length = 3
+}
+
+resource "random_password" "db" {
+  for_each = toset(["a", "b"])
+  length   = 16
+}
+`
+	res, err := Parse(map[string][]byte{"main.tf": []byte(src)}, ids())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	byName := map[string]model.Resource{}
+	for _, r := range res.Resources {
+		byName[r.Name] = r
+	}
+	srv, db := byName["srv"], byName["db"]
+	if srv.Count != "var.replicas" {
+		t.Errorf("count not lifted: %q", srv.Count)
+	}
+	if _, ok := srv.Attrs["count"]; ok {
+		t.Error("count leaked into Attrs")
+	}
+	if db.ForEach != `toset(["a", "b"])` {
+		t.Errorf("for_each not lifted: %q", db.ForEach)
+	}
+	if _, ok := db.Attrs["for_each"]; ok {
+		t.Error("for_each leaked into Attrs")
+	}
+	if v := srv.Attrs["length"]; v.Mode != model.ModeLiteral {
+		t.Errorf("length should stay a literal attr, got %s", v.Mode)
+	}
+}
+
 func TestParse_VariablesLocalsOutputsDataModule(t *testing.T) {
 	src := `
 variable "region" {

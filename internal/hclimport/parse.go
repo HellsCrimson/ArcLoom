@@ -285,6 +285,19 @@ func importResource(blk *hclsyntax.Block, src []byte, id string) model.Resource 
 		Name:  blk.Labels[1],
 		Attrs: importAttrs(blk.Body, src),
 	}
+	// count / for_each are meta-arguments, not provider attributes: lift them
+	// out of Attrs into their dedicated fields (kept as raw expression text).
+	if a, ok := blk.Body.Attributes["count"]; ok {
+		r.Count = rawSource(a.Expr, src)
+		delete(r.Attrs, "count")
+	}
+	if a, ok := blk.Body.Attributes["for_each"]; ok {
+		r.ForEach = rawSource(a.Expr, src)
+		delete(r.Attrs, "for_each")
+	}
+	if len(r.Attrs) == 0 {
+		r.Attrs = nil
+	}
 	// Nested blocks -> r.Blocks[type] = [...]
 	for _, nested := range blk.Body.Blocks {
 		nb := model.Resource{Attrs: importAttrs(nested.Body, src)}

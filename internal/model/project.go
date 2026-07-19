@@ -94,6 +94,11 @@ type Resource struct {
 	// DependsOn holds explicit dependency addresses ("aws_vpc.main"), emitted as
 	// the depends_on meta-argument.
 	DependsOn []string `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
+	// Count and ForEach are the count / for_each meta-arguments, stored as raw
+	// HCL expressions ("3", "var.replicas", `toset(["a", "b"])`). At most one
+	// may be set.
+	Count   string `json:"count,omitempty" yaml:"count,omitempty"`
+	ForEach string `json:"forEach,omitempty" yaml:"forEach,omitempty"`
 }
 
 // LocalName returns the provider local name inferred from a resource type,

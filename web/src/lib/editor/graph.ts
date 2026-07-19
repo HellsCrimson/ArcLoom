@@ -154,8 +154,12 @@ export function deriveEdges(resources: Resource[]): Edge[] {
 			const a = dep.split('.').slice(0, 2).join('.');
 			add(addr.get(a), r.id, 'depends');
 		}
-		for (const v of Object.values(r.attrs ?? {})) {
-			const text = v.mode === 'reference' ? (v.ref ?? '') : v.mode === 'expression' ? (v.expr ?? '') : '';
+		const texts = Object.values(r.attrs ?? {}).map((v) =>
+			v.mode === 'reference' ? (v.ref ?? '') : v.mode === 'expression' ? (v.expr ?? '') : ''
+		);
+		// count / for_each are expressions too and may reference other resources.
+		texts.push(r.count ?? '', r.forEach ?? '');
+		for (const text of texts) {
 			if (!text) continue;
 			let m: RegExpExecArray | null;
 			ADDR_RE.lastIndex = 0;

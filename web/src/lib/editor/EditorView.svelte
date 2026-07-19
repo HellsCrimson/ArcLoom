@@ -83,9 +83,19 @@
 	const localModules = $derived(project.localModules ?? []);
 
 	// --- Plan overlay: map last plan's changes onto canvas nodes by address. ---
+	// Counted / for_each resources plan as per-instance addresses ("x.y[0]",
+	// 'x.y["a"]') but render as one node, so the instance index is stripped and
+	// the most severe pending action wins for the node's color.
+	const stripIndex = (addr: string) => addr.replace(/\[[^\]]*\]/g, '');
+	const SEVERITY: Record<string, number> = { read: 0, update: 1, create: 2, delete: 3, replace: 4 };
 	const changeByAddr = $derived.by(() => {
 		const m = new Map<string, string>();
-		for (const c of planChanges) if (c.mode === 'managed') m.set(c.address, c.action);
+		for (const c of planChanges) {
+			if (c.mode !== 'managed') continue;
+			const key = stripIndex(c.address);
+			const prev = m.get(key);
+			if (!prev || (SEVERITY[c.action] ?? 0) > (SEVERITY[prev] ?? 0)) m.set(key, c.action);
+		}
 		return m;
 	});
 	// Planned deletes at root scope have no model node left to color; render
@@ -94,7 +104,7 @@
 		planChanges.filter(
 			(c) =>
 				c.action === 'delete' && c.mode === 'managed' && !c.moduleAddress &&
-				!project.resources.some((r) => `${r.type}.${r.name}` === c.address)
+				!project.resources.some((r) => `${r.type}.${r.name}` === stripIndex(c.address))
 		)
 	);
 	// Aggregate pending actions per local module (covers nested addresses too).
@@ -423,6 +433,18 @@
 		typeFilter ? paletteTypes.filter((t) => t.includes(typeFilter)) : paletteTypes
 	);
 
+	// multiBadge summarizes a resource's count / for_each for its canvas card:
+	// a literal count shows "×3", anything else "×N" / "∀" with the expression
+	// in the tooltip.
+	function multiBadge(r: Pick<Resource, 'count' | 'forEach'>): { label: string; title: string } | undefined {
+		if (r.count) {
+			const n = /^\d+$/.test(r.count.trim()) ? r.count.trim() : 'N';
+			return { label: `×${n}`, title: `count = ${r.count}` };
+		}
+		if (r.forEach) return { label: '∀', title: `for_each = ${r.forEach}` };
+		return undefined;
+	}
+
 	const gridBg = 'radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px)';
 </script>
 
@@ -437,7 +459,7 @@
 	{/if}
 {/snippet}
 
-{#snippet card(id: string, x: number, y: number, name: string, type: string, color: string, letter: string, selected: boolean, connectable: boolean, scope: string | undefined, change: string | undefined)}
+{#snippet card(id: string, x: number, y: number, name: string, type: string, color: string, letter: string, selected: boolean, connectable: boolean, scope: string | undefined, change: string | undefined, multi: { label: string; title: string } | undefined)}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 	<div
@@ -468,6 +490,13 @@
 				title="planned: {change}"
 				style="position:absolute;left:-7px;top:-7px;width:16px;height:16px;border-radius:50%;background:{ACTION_COLOR[change]};color:#0a0e15;font-size:11px;font-weight:800;line-height:1;display:flex;align-items:center;justify-content:center;z-index:4;"
 			>{ACTION_SYMBOL[change]}</div>
+		{/if}
+		{#if multi}
+			<div
+				class="font-mono"
+				title={multi.title}
+				style="position:absolute;right:-7px;bottom:-9px;padding:2px 6px;border-radius:8px;background:#0d1117;border:1px solid rgba(255,255,255,0.18);font-size:10px;font-weight:800;color:{color};z-index:4;pointer-events:none;"
+			>{multi.label}</div>
 		{/if}
 		{#if connectable}
 			<div title="Drag to connect (depends_on)" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'out')} onmouseup={(e) => onDotUp(e, id, 'out')}></div>
@@ -646,7 +675,7 @@
 
 			<!-- root resource nodes -->
 			{#each rootNodes as node (node.id)}
-				{@render card(node.id, node.x, node.y, node.name, node.type, node.color, node.letter, node.selected, true, undefined, changeByAddr.get(`${node.type}.${node.name}`))}
+				{@render card(node.id, node.x, node.y, node.name, node.type, node.color, node.letter, node.selected, true, undefined, changeByAddr.get(`${node.type}.${node.name}`), multiBadge(node))}
 			{/each}
 
 			<!-- expanded modules' interior resource nodes -->
@@ -654,7 +683,7 @@
 				{#if mb.open}
 					{#each mb.lm.resources as r (r.id)}
 						{@const c = childAbs(mb, r.id)}
-						{@render card(r.id, c.x, c.y, r.name, r.type, typeColor(r.type), typeLetter(r.type), r.id === selectedId, false, mb.name, changeByAddr.get(`module.${mb.name}.${r.type}.${r.name}`))}
+						{@render card(r.id, c.x, c.y, r.name, r.type, typeColor(r.type), typeLetter(r.type), r.id === selectedId, false, mb.name, changeByAddr.get(`module.${mb.name}.${r.type}.${r.name}`), multiBadge(r))}
 					{/each}
 				{/if}
 			{/each}

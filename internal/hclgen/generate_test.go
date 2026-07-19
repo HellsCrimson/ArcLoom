@@ -88,6 +88,48 @@ func TestGenerate_DependsOn(t *testing.T) {
 	}
 }
 
+func TestGenerate_CountAndForEach(t *testing.T) {
+	p := &model.Project{
+		Providers: []model.ProviderInstance{{Key: "random", Source: "hashicorp/random"}},
+		Resources: []model.Resource{
+			{Type: "random_pet", Name: "srv",
+				Count: "var.replicas",
+				Attrs: map[string]model.AttrValue{"length": {Mode: model.ModeLiteral, Literal: cty.NumberIntVal(2)}},
+			},
+			{Type: "random_password", Name: "db",
+				ForEach: `toset(["a", "b"])`,
+				Attrs:   map[string]model.AttrValue{"length": {Mode: model.ModeLiteral, Literal: cty.NumberIntVal(16)}},
+			},
+		},
+	}
+	out, err := Generate(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "count  = var.replicas") {
+		t.Errorf("count not emitted as an expression:\n%s", s)
+	}
+	if !strings.Contains(s, `for_each = toset(["a", "b"])`) {
+		t.Errorf("for_each not emitted as an expression:\n%s", s)
+	}
+	// count must come before the regular attributes.
+	if strings.Index(s, "count") > strings.Index(s, "length = 2") {
+		t.Errorf("count should lead the block:\n%s", s)
+	}
+
+	// Both set on one resource is an error.
+	bad := &model.Project{Resources: []model.Resource{{Type: "random_pet", Name: "x", Count: "1", ForEach: "var.m"}}}
+	if _, err := Generate(bad); err == nil {
+		t.Error("expected error when both count and for_each are set")
+	}
+	// A malformed count expression is rejected.
+	badExpr := &model.Project{Resources: []model.Resource{{Type: "random_pet", Name: "x", Count: "]] nope"}}}
+	if _, err := Generate(badExpr); err == nil {
+		t.Error("expected error for invalid count expression")
+	}
+}
+
 func TestGenerate_SecretEmitsSensitiveVariable(t *testing.T) {
 	p := &model.Project{
 		Providers: []model.ProviderInstance{{Key: "random", Source: "hashicorp/random"}},

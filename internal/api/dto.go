@@ -65,6 +65,9 @@ type resourceRequest struct {
 	Module         string                  `json:"module,omitempty"` // "" = root, else local module name
 	Attrs          map[string]attrValueDTO `json:"attrs"`
 	DependsOn      []string                `json:"dependsOn,omitempty"`
+	// Count / ForEach are raw HCL expressions (mutually exclusive).
+	Count   string `json:"count,omitempty"`
+	ForEach string `json:"forEach,omitempty"`
 }
 
 // engineDTO describes an available CLI engine.

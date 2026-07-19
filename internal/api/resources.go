@@ -245,6 +245,19 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if strings.TrimSpace(req.Count) != "" && strings.TrimSpace(req.ForEach) != "" {
+		writeErr(w, http.StatusBadRequest, "count and for_each are mutually exclusive")
+		return
+	}
+	for name, expr := range map[string]string{"count": req.Count, "for_each": req.ForEach} {
+		if strings.TrimSpace(expr) == "" {
+			continue
+		}
+		if err := hclgen.ValidateExpr(expr); err != nil {
+			writeErr(w, http.StatusBadRequest, name+": "+err.Error())
+			return
+		}
+	}
 
 	var saved model.Resource
 	err = s.store.Update(id, func(p *model.Project) error {
@@ -252,7 +265,10 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return store.ErrNotFound
 		}
-		res := model.Resource{ID: req.ID, Type: req.Type, Name: req.Name, Attrs: attrs, DependsOn: req.DependsOn}
+		res := model.Resource{
+			ID: req.ID, Type: req.Type, Name: req.Name, Attrs: attrs, DependsOn: req.DependsOn,
+			Count: strings.TrimSpace(req.Count), ForEach: strings.TrimSpace(req.ForEach),
+		}
 		if res.ID == "" {
 			res.ID = uuid.NewString()
 		}
