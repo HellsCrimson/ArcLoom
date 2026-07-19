@@ -98,6 +98,15 @@ export const api = {
 
 	getProject: (id: string) => fetch(`/api/projects/${id}`).then((r) => json<Project>(r)),
 
+	// replaceProject swaps the whole editable model (undo/redo restore). The
+	// server preserves identity fields and the state backend.
+	replaceProject: (id: string, body: Project) =>
+		fetch(`/api/projects/${id}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body)
+		}).then((r) => json<Project>(r)),
+
 	listRuns: (id: string) => fetch(`/api/projects/${id}/runs`).then((r) => json<RunRecord[]>(r)),
 
 	stateList: (id: string) => fetch(`/api/projects/${id}/state`).then((r) => json<StateEntry[]>(r)),

@@ -327,6 +327,48 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+var errBadModel = errors.New("invalid model")
+
+// handleReplaceProject replaces a project's entire editable model in one call.
+// This backs client-side undo/redo, which restores full snapshots. Identity
+// (ID, Name, Engine) and the state Backend are always preserved from the
+// stored project: a snapshot restore must never rename the project or repoint
+// its state. The incoming model is generated up front because store persist
+// swallows generation errors.
+func (s *Server) handleReplaceProject(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var incoming model.Project
+	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	err := s.store.Update(id, func(p *model.Project) error {
+		incoming.ID = p.ID
+		incoming.Name = p.Name
+		incoming.Engine = p.Engine
+		incoming.Backend = p.Backend
+		if _, gerr := hclgen.GenerateFiles(&incoming); gerr != nil {
+			return fmt.Errorf("%w: %s", errBadModel, gerr)
+		}
+		*p = incoming
+		return nil
+	})
+	if errors.Is(err, errBadModel) {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	p, _ := s.store.Get(id)
+	writeJSON(w, http.StatusOK, p)
+}
+
 func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	p, err := s.store.Get(chi.URLParam(r, "id"))
 	if err != nil {

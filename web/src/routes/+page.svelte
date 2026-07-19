@@ -12,12 +12,13 @@
 	import UserMenu from '$lib/components/UserMenu.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { history } from '$lib/stores/history.svelte';
 	import EditorView from '$lib/editor/EditorView.svelte';
 	import HclView from '$lib/editor/HclView.svelte';
 	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -197,6 +198,80 @@
 	const configCount = $derived(
 		scopeConfig.variables.length + scopeConfig.locals.length + scopeConfig.outputs.length
 	);
+
+	// Undo/redo: JSON.stringify deep-reads the project, so this effect re-runs
+	// on any model change (every mutation path reassigns or mutates `project`).
+	// The store dedupes identical snapshots and resets when the id changes.
+	$effect(() => {
+		if (project) history.observe(project.id, JSON.stringify(project));
+		else history.clear();
+	});
+
+	async function undo() {
+		if (busy || !project || !auth.can('resources')) return;
+		await restoreSnapshot(history.undo(), () => history.redo());
+	}
+
+	async function redo() {
+		if (busy || !project || !auth.can('resources')) return;
+		await restoreSnapshot(history.redo(), () => history.undo());
+	}
+
+	// restoreSnapshot replaces the whole model with a history snapshot; revert
+	// un-moves the history pointer if the server call fails.
+	async function restoreSnapshot(snap: string | null, revert: () => void) {
+		if (!snap || !project) return;
+		busy = 'restore';
+		error = '';
+		history.beginApply();
+		let restored = false;
+		try {
+			project = await api.replaceProject(project.id, JSON.parse(snap));
+			// The restored model may invalidate what is on screen.
+			if (activeModule && !project.localModules?.some((m) => m.name === activeModule)) {
+				activeModule = null;
+			}
+			planChanges = [];
+			planCounts = null;
+			await refreshProjects();
+			await refreshHcl();
+			restored = true;
+		} catch (err) {
+			revert();
+			error = (err as Error).message;
+		} finally {
+			history.endApply();
+			busy = '';
+		}
+		if (!restored) return;
+		// Re-open (or close) the form so it can't show pre-restore values.
+		if (formKind === 'resource' && editingId) {
+			const found = findInScope(editingId, activeModule ?? undefined);
+			if (found) await editResource(found.r, found.kind);
+			else resetFormOnly();
+		} else if (formKind === 'provider' && editingProviderKey) {
+			const prov = project.providers.find(
+				(p) => p.key === editingProviderKey && (p.alias ?? '') === editingProviderAlias
+			);
+			if (prov && !providerAliasNew) await configureProvider(prov);
+			else if (!prov) resetFormOnly();
+		}
+	}
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+		const t = e.target as HTMLElement | null;
+		// Leave native undo alone inside text inputs.
+		if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+		const k = e.key.toLowerCase();
+		if (k === 'z' && !e.shiftKey) {
+			e.preventDefault();
+			undo();
+		} else if ((k === 'z' && e.shiftKey) || k === 'y') {
+			e.preventDefault();
+			redo();
+		}
+	}
 
 	onMount(async () => {
 		try {
@@ -1003,7 +1078,7 @@
 
 </script>
 
-<svelte:window onclick={() => (showImportMenu = false)} />
+<svelte:window onclick={() => (showImportMenu = false)} onkeydown={handleKeydown} />
 
 <div class="flex h-screen flex-col">
 	<header class="flex items-center gap-3 border-b border-[var(--al-border)] bg-[var(--al-panel)] px-4 py-2">
@@ -1028,6 +1103,10 @@
 
 		{#if project}
 			<div class="ml-3 flex items-center gap-1.5 border-l border-[var(--al-border)] pl-3">
+				{#if auth.can('resources')}
+					<button class="{iconBtn} disabled:pointer-events-none disabled:opacity-30" title="Undo (Ctrl+Z)" aria-label="Undo" onclick={undo} disabled={!history.canUndo || busy !== ''}><Undo2 size={15} /></button>
+					<button class="{iconBtn} disabled:pointer-events-none disabled:opacity-30" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" onclick={redo} disabled={!history.canRedo || busy !== ''}><Redo2 size={15} /></button>
+				{/if}
 				<button
 					class="{hdrBtn} {showEditor ? 'border-[var(--al-accent)] bg-[var(--al-accent-weak)] text-[var(--al-accent)]' : ''}"
 					onclick={openEditor}

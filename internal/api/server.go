@@ -112,6 +112,7 @@ func (s *Server) Handler() http.Handler {
 				r.Use(s.requirePerm(user.PermResources))
 				r.Post("/providers", s.handleAddProvider)
 				r.Post("/projects", s.handleCreateProject)
+				r.Put("/projects/{id}", s.handleReplaceProject)
 				r.Delete("/projects/{id}", s.handleDeleteProject)
 				r.Put("/projects/{id}/providers/{key}", s.handleSetProviderConfig)
 				r.Delete("/projects/{id}/providers/{key}", s.handleDeleteProviderInstance)
