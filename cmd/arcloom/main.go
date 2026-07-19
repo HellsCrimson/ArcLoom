@@ -157,6 +157,11 @@ func main() {
 	}
 	rcancel()
 
+	// Scheduled drift checks (refresh-only plans) for projects that enabled
+	// them; stopped on shutdown so no plan outlives the server.
+	driftCtx, driftCancel := context.WithCancel(context.Background())
+	go srv.StartDriftScheduler(driftCtx)
+
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           srv.Handler(),
@@ -173,6 +178,7 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+	driftCancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

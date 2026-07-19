@@ -189,11 +189,32 @@ export interface GitCommit {
 	date: string;
 }
 
+// DriftConfig is a project's scheduled drift-check setting (periodic
+// refresh-only plans on the server).
+export interface DriftConfig {
+	enabled: boolean;
+	intervalMinutes: number;
+}
+
+// DriftStatus is the outcome of the latest scheduled drift check. In-memory on
+// the server: absent until the first check after a restart.
+export interface DriftStatus {
+	checkedAt: string;
+	drifted: boolean;
+	add: number;
+	change: number;
+	destroy: number;
+	replace: number;
+	error?: string;
+}
+
 export interface ProjectSummary {
 	id: string;
 	name: string;
 	engine: string;
 	resourceCount: number;
+	driftEnabled?: boolean;
+	drift?: DriftStatus;
 }
 
 // A computed-only field is read-only: shown for reference, never sent as input.

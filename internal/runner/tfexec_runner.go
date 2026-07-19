@@ -155,12 +155,23 @@ const planFileName = "tfplan"
 // the state left by the last apply (empty state on a fresh project). The plan
 // is saved to a file and re-read as JSON to extract per-resource changes.
 func (t *TfExec) Plan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error) {
+	return t.plan(ctx, dir, files, tfVars, out, false)
+}
+
+// RefreshPlan runs plan -refresh-only: it only compares the persisted state
+// against the real infrastructure (drift), ignoring pending config changes.
+// HasChanges then means "state no longer matches reality".
+func (t *TfExec) RefreshPlan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error) {
+	return t.plan(ctx, dir, files, tfVars, out, true)
+}
+
+func (t *TfExec) plan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer, refreshOnly bool) (PlanResult, error) {
 	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
 	defer cleanup()
 	if err != nil {
 		return PlanResult{}, err
 	}
-	hasChanges, err := tf.Plan(ctx, tfexec.Out(planFileName))
+	hasChanges, err := tf.Plan(ctx, tfexec.Out(planFileName), tfexec.RefreshOnly(refreshOnly))
 	if err != nil {
 		return PlanResult{}, fmt.Errorf("plan: %w", err)
 	}
@@ -176,7 +187,13 @@ func (t *TfExec) Plan(ctx context.Context, dir string, files map[string][]byte, 
 	if err != nil || plan == nil {
 		return res, nil
 	}
-	for _, rc := range plan.ResourceChanges {
+	// In a refresh-only plan the interesting set is ResourceDrift (state vs
+	// reality); ResourceChanges is all no-ops there.
+	changes := plan.ResourceChanges
+	if refreshOnly {
+		changes = plan.ResourceDrift
+	}
+	for _, rc := range changes {
 		if rc.Change == nil {
 			continue
 		}

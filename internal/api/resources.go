@@ -59,14 +59,22 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	driftStates := s.driftStatuses()
 	out := make([]map[string]any, 0, len(projects))
 	for _, p := range projects {
-		out = append(out, map[string]any{
+		entry := map[string]any{
 			"id":            p.ID,
 			"name":          p.Name,
 			"engine":        p.Engine,
 			"resourceCount": len(p.Resources),
-		})
+		}
+		if s.settings != nil && s.settings.Drift(p.ID).Enabled {
+			entry["driftEnabled"] = true
+		}
+		if st, ok := driftStates[p.ID]; ok {
+			entry["drift"] = st
+		}
+		out = append(out, entry)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i]["name"].(string) < out[j]["name"].(string)
@@ -324,6 +332,12 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	if s.runs != nil {
 		_ = s.runs.DeleteProject(id) // best-effort; the project itself is gone
 	}
+	if s.settings != nil {
+		_ = s.settings.DeleteDrift(id)
+	}
+	s.driftMu.Lock()
+	delete(s.driftStates, id)
+	s.driftMu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
 

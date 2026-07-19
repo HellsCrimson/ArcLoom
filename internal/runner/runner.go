@@ -57,6 +57,10 @@ type Runner interface {
 	// injected as TF_VAR_<name> (used for secret values) and never written to
 	// disk. It returns whether changes are pending.
 	Plan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error)
+	// RefreshPlan is Plan with -refresh-only: it reports drift between the
+	// persisted state and the real infrastructure, ignoring config changes.
+	// Changes come from the plan's resource_drift set.
+	RefreshPlan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error)
 	// Apply syncs the generated files into the persistent workspace at dir,
 	// initializes it, and applies the configuration. State is persisted in dir.
 	Apply(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error

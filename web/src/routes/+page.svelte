@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp, DeleteBlockedError, type PlanChange, type RunOutput, type StateEntry } from '$lib/api/client';
+	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type PlanChange, type RunOutput, type StateEntry } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
 	import StatePanel from '$lib/components/StatePanel.svelte';
-	import type { AttrValue, Engine, Module, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource, ResourceKind } from '$lib/types';
+	import type { AttrValue, DriftConfig, Engine, Module, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource, ResourceKind } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import ProjectConfig from '$lib/components/ProjectConfig.svelte';
@@ -18,7 +18,7 @@
 	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck, AlertTriangle
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -70,6 +70,7 @@
 	let showState = $state(false);
 	let stateEntries = $state<StateEntry[]>([]);
 	let stateLoading = $state(false);
+	let driftInfo = $state<DriftInfo | null>(null);
 	let showImportResource = $state(false);
 	let importId = $state('');
 	// Backend (remote state) modal
@@ -298,6 +299,15 @@
 	async function refreshProjects() {
 		projects = await api.listProjects();
 	}
+
+	// Poll the project list so scheduled drift checks show up as badges without
+	// a reload. Registered outside the async onMount (whose cleanup is ignored).
+	onMount(() => {
+		const iv = setInterval(() => {
+			if (auth.user || !auth.authEnabled) refreshProjects().catch(() => {});
+		}, 60_000);
+		return () => clearInterval(iv);
+	});
 
 	async function selectProject(id: string) {
 		error = '';
@@ -1007,6 +1017,31 @@
 		}
 	}
 
+	async function loadDrift() {
+		if (!project) return;
+		try {
+			driftInfo = await api.getDrift(project.id);
+		} catch {
+			driftInfo = null;
+		}
+	}
+
+	async function saveDrift(cfg: DriftConfig) {
+		if (!project) return;
+		error = '';
+		try {
+			await api.setDrift(project.id, cfg);
+			await loadDrift();
+			await refreshProjects(); // picker badge follows the schedule state
+		} catch (err) {
+			error = (err as Error).message;
+		}
+	}
+
+	// Latest scheduled drift check for the selected project (from the picker
+	// list, which polls), for the header badge.
+	const currentDrift = $derived(projects.find((p) => p.id === project?.id)?.drift);
+
 	// runStateOp streams a state-surgery operation (import / rm / mv /
 	// init-backend) into the run pane and refreshes the state list when it
 	// settles.
@@ -1137,11 +1172,23 @@
 				onchange={(e) => selectProject(e.currentTarget.value)}
 			>
 				{#if projects.length === 0}<option value="" disabled selected>No projects</option>{/if}
-				{#each projects as p (p.id)}<option value={p.id}>{p.name} · {p.resourceCount}</option>{/each}
+				{#each projects as p (p.id)}<option value={p.id}>{p.name} · {p.resourceCount}{p.drift?.drifted ? ' ⚠' : ''}</option>{/each}
 			</select>
 			<button class={iconBtn} title="New project" onclick={newProject} aria-label="New project"><Plus size={16} /></button>
 			{#if project}
 				<button class={iconBtn} title="Delete project" onclick={removeProject} aria-label="Delete project"><Trash2 size={16} /></button>
+			{/if}
+			{#if currentDrift?.drifted || currentDrift?.error}
+				<button
+					class="flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium"
+					style="border-color:{currentDrift.error ? '#f85149' : '#e3b341'}66;color:{currentDrift.error ? '#f85149' : '#e3b341'};background:{currentDrift.error ? '#f85149' : '#e3b341'}14;"
+					title={currentDrift.error
+						? `Drift check failed: ${currentDrift.error}`
+						: `Drift detected at ${new Date(currentDrift.checkedAt).toLocaleString()} — open State for details`}
+					onclick={() => { loadState(); loadDrift(); showState = true; }}
+				>
+					<AlertTriangle size={12} /> {currentDrift.error ? 'drift check failed' : 'drift'}
+				</button>
 			{/if}
 		</div>
 
@@ -1169,7 +1216,7 @@
 				<button class={hdrBtn} onclick={() => (showRuns = true)}>
 					<History size={14} /> Runs
 				</button>
-				<button class={hdrBtn} onclick={() => { loadState(); showState = true; }}>
+				<button class={hdrBtn} onclick={() => { loadState(); loadDrift(); showState = true; }}>
 					<Layers size={14} /> State
 				</button>
 				{#if auth.can('resources')}
@@ -1565,8 +1612,10 @@
 		busy={busy === 'import' || busy === 'state-rm' || busy === 'state-mv' || busy === 'init-backend'}
 		canDeploy={auth.can('deploy')}
 		backendType={project.backend?.type ?? ''}
+		drift={driftInfo}
+		onSaveDrift={auth.can('deploy') ? saveDrift : undefined}
 		onConfigureBackend={auth.can('resources') ? openBackend : undefined}
-		onRefresh={loadState}
+		onRefresh={() => { loadState(); loadDrift(); }}
 		onRm={(address) => runStateOp('state-rm', { address })}
 		onMv={(from, to) => runStateOp('state-mv', { from, to })}
 	/>

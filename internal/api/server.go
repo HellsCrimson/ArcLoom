@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/go-chi/chi/v5"
@@ -37,11 +38,18 @@ type Server struct {
 	users    user.Store
 	settings *settings.Store
 	runs     runs.Store // may be nil (history disabled, e.g. in tests)
+
+	// Drift scheduler state: latest check outcome per project (in-memory) and
+	// a nudge channel so config changes take effect without waiting a tick.
+	driftMu     sync.Mutex
+	driftStates map[string]driftStatus
+	driftKick   chan struct{}
 }
 
 // New builds a Server. runners maps each available engine to its runner.
 func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store) *Server {
-	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist}
+	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist,
+		driftStates: map[string]driftStatus{}, driftKick: make(chan struct{}, 1)}
 	s.auth.Store(authn)
 	return s
 }
@@ -106,6 +114,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/projects/{id}/runs", s.handleListRuns)
 			r.Get("/projects/{id}/runs/{rid}", s.handleGetRun)
 			r.Get("/projects/{id}/state", s.handleStateList)
+			r.Get("/projects/{id}/drift", s.handleGetDrift)
 
 			// Resource editing (PermResources).
 			r.Group(func(r chi.Router) {
@@ -146,6 +155,8 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/projects/{id}/state/rm", s.handleStateRm)
 				r.Post("/projects/{id}/state/mv", s.handleStateMv)
 				r.Post("/projects/{id}/state/init-backend", s.handleInitBackend)
+				// Drift schedule: enabling it makes the server run plans.
+				r.Put("/projects/{id}/drift", s.handleSetDrift)
 			})
 
 			// Git operations (PermGit).

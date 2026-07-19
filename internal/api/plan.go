@@ -115,18 +115,12 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 
 	// Resolve secrets referenced by the project into TF_VAR_ injections. Values
 	// are held in memory only and never written to disk or HCL.
-	tfVars := map[string]string{}
-	for _, ref := range hclgen.CollectSecretRefs(p) {
-		val, found, serr := s.secrets.Resolve(p.ID, ref)
-		if serr != nil {
-			sse.event("error", map[string]string{"error": "secret " + ref + ": " + serr.Error()})
-			return
-		}
-		if !found {
-			sse.event("log", map[string]string{"line": "warning: secret " + ref + " is not set (" + op + " may prompt or fail)"})
-			continue
-		}
-		tfVars[model.SecretVarName(ref)] = val
+	tfVars, err := s.resolveTFVars(p, func(ref string) {
+		sse.event("log", map[string]string{"line": "warning: secret " + ref + " is not set (" + op + " may prompt or fail)"})
+	})
+	if err != nil {
+		sse.event("error", map[string]string{"error": err.Error()})
+		return
 	}
 
 	// Stream CLI output line-by-line as "log" events, and mirror it into a
@@ -219,6 +213,25 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		return
 	}
 	sse.event("done", map[string]bool{"ok": true})
+}
+
+// resolveTFVars resolves the secrets a project references into TF_VAR_
+// injections. Missing secrets are reported through onMissing (non-fatal, the
+// engine may prompt or fail); resolution errors abort.
+func (s *Server) resolveTFVars(p *model.Project, onMissing func(ref string)) (map[string]string, error) {
+	tfVars := map[string]string{}
+	for _, ref := range hclgen.CollectSecretRefs(p) {
+		val, found, err := s.secrets.Resolve(p.ID, ref)
+		if err != nil {
+			return nil, fmt.Errorf("secret %s: %w", ref, err)
+		}
+		if !found {
+			onMissing(ref)
+			continue
+		}
+		tfVars[model.SecretVarName(ref)] = val
+	}
+	return tfVars, nil
 }
 
 // readOutputs captures root outputs after a successful apply. Sensitive values

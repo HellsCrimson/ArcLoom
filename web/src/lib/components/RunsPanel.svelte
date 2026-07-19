@@ -18,7 +18,9 @@
 		'import': '#56d4bc',
 		'state-rm': ACTION_COLOR.replace,
 		'state-mv': ACTION_COLOR.update,
-		'init-backend': '#c297ff'
+		'init-backend': '#c297ff',
+		validate: '#79c0ff',
+		drift: '#e3b341'
 	};
 
 	$effect(() => {
@@ -128,7 +130,7 @@
 						<span class="text-sm text-[var(--al-text)]">{when(r)}</span>
 						<span class="text-xs text-[var(--al-muted)]">· {duration(r)}{#if r.user}&nbsp;· {r.user}{/if}</span>
 						<span class="ml-auto flex items-center gap-2 font-mono text-[11px] font-semibold">
-							{#if r.op === 'plan' && r.plan}
+							{#if (r.op === 'plan' || r.op === 'drift') && r.plan}
 								{#if r.plan.hasChanges}
 									<span style="color:{ACTION_COLOR.create}">+{r.plan.add}</span>
 									<span style="color:{ACTION_COLOR.update}">~{r.plan.change}</span>

@@ -9,7 +9,9 @@ import type {
 	SecretsResponse,
 	GitStatus,
 	GitCommit,
-	AttrValue
+	AttrValue,
+	DriftConfig,
+	DriftStatus
 } from '$lib/types';
 import { auth } from '$lib/stores/auth.svelte';
 
@@ -120,6 +122,16 @@ export const api = {
 
 	getRun: (id: string, rid: string) =>
 		fetch(`/api/projects/${id}/runs/${rid}`).then((r) => json<RunRecord>(r)),
+
+	getDrift: (id: string) =>
+		fetch(`/api/projects/${id}/drift`).then((r) => json<DriftInfo>(r)),
+
+	setDrift: (id: string, config: DriftConfig) =>
+		fetch(`/api/projects/${id}/drift`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(config)
+		}).then((r) => json<{ config: DriftConfig }>(r)),
 
 	deleteProject: async (id: string, force = false) => {
 		const res = await fetch(`/api/projects/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' });
@@ -422,11 +434,18 @@ export interface StateEntry {
 	instances?: string[];
 }
 
+// DriftInfo is a project's drift schedule plus (once a check has run) the
+// latest check outcome.
+export interface DriftInfo {
+	config: DriftConfig;
+	status?: DriftStatus;
+}
+
 // RunRecord is one recorded operation (plan/apply/destroy or state surgery).
 export interface RunRecord {
 	id: string;
 	projectId: string;
-	op: 'plan' | 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv' | 'init-backend';
+	op: 'plan' | 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv' | 'init-backend' | 'validate' | 'drift';
 	user: string;
 	startedAt: string;
 	finishedAt: string;

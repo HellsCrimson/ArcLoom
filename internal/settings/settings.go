@@ -1,5 +1,6 @@
 // Package settings persists mutable, app-level configuration edited at runtime
-// (currently the OIDC SSO provider). It is a single YAML document on disk; the
+// (the OIDC SSO provider and per-project drift schedules). It is a single YAML
+// document on disk; the
 // OIDC client secret is encrypted at rest with the ARCLOOM_SECRET_KEY-derived
 // key (reusing internal/secrets), so it never touches disk in plaintext.
 package settings
@@ -8,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -34,8 +36,18 @@ type SSO struct {
 	ClientSecretEnc string `yaml:"client_secret_enc,omitempty"`
 }
 
+// Drift is one project's drift-detection schedule: a periodic refresh-only
+// plan that compares the persisted state against real infrastructure.
+type Drift struct {
+	Enabled         bool `yaml:"enabled" json:"enabled"`
+	IntervalMinutes int  `yaml:"interval_minutes" json:"intervalMinutes"`
+}
+
 type document struct {
 	SSO SSO `yaml:"sso"`
+	// Drift maps project ID -> drift schedule. Kept here (not on the project
+	// model) so it stays out of generated HCL, Git and undo/redo snapshots.
+	Drift map[string]Drift `yaml:"drift,omitempty"`
 }
 
 // Store is a disk-backed settings document.
@@ -108,6 +120,45 @@ func (s *Store) SetSSO(in SSO) error {
 	in.ClientSecret = ""
 	in.ClientSecretEnc = enc
 	s.doc.SSO = in
+	return s.persist()
+}
+
+// Drift returns a project's drift schedule (zero value when none is stored).
+func (s *Store) Drift(projectID string) Drift {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.doc.Drift[projectID]
+}
+
+// DriftAll returns a copy of every stored drift schedule, keyed by project ID.
+func (s *Store) DriftAll() map[string]Drift {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]Drift, len(s.doc.Drift))
+	maps.Copy(out, s.doc.Drift)
+	return out
+}
+
+// SetDrift persists a project's drift schedule.
+func (s *Store) SetDrift(projectID string, d Drift) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.doc.Drift == nil {
+		s.doc.Drift = map[string]Drift{}
+	}
+	s.doc.Drift[projectID] = d
+	return s.persist()
+}
+
+// DeleteDrift removes a project's drift schedule (used when the project is
+// deleted).
+func (s *Store) DeleteDrift(projectID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.doc.Drift[projectID]; !ok {
+		return nil
+	}
+	delete(s.doc.Drift, projectID)
 	return s.persist()
 }
 

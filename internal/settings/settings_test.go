@@ -55,6 +55,39 @@ func TestSetSSO_EmptySecretKeepsExisting(t *testing.T) {
 	}
 }
 
+func TestDrift_RoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.yaml")
+	s, _ := NewStore(path, "")
+	if d := s.Drift("p1"); d.Enabled {
+		t.Fatalf("unset drift should be zero: %+v", d)
+	}
+	if err := s.SetDrift("p1", Drift{Enabled: true, IntervalMinutes: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDrift("p2", Drift{Enabled: false, IntervalMinutes: 60}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Survives a reload; DriftAll sees both entries.
+	s2, err := NewStore(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := s2.Drift("p1"); !d.Enabled || d.IntervalMinutes != 30 {
+		t.Fatalf("drift round-trip lost data: %+v", d)
+	}
+	if all := s2.DriftAll(); len(all) != 2 || all["p2"].IntervalMinutes != 60 {
+		t.Fatalf("DriftAll = %+v", all)
+	}
+
+	if err := s2.DeleteDrift("p1"); err != nil {
+		t.Fatal(err)
+	}
+	if all := s2.DriftAll(); len(all) != 1 {
+		t.Fatalf("delete left %+v", all)
+	}
+}
+
 func TestSetSSO_RequiresKeyForSecret(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.yaml")
 	s, _ := NewStore(path, "") // no master key
