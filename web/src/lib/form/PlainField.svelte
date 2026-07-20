@@ -1,18 +1,26 @@
 <script lang="ts">
-	// PlainField edits a plain JS value (no value-mode wrapper). It is used for
-	// the interiors of containers (list/map/object), where slice-1 supports
-	// literal values only. It recurses on itself for nested structures.
-	import type { Field } from '$lib/types';
+	// PlainField is the literal-mode editor for one value. Scalars edit the raw
+	// `value.literal`; containers edit the structural `value.items` / `value.entries`
+	// (each element itself an AttrValue with its own mode toggle), so a reference
+	// or secret can live inside a list/map/object.
+	import type { AttrValue, Field } from '$lib/types';
 	import ListEditor from './ListEditor.svelte';
 	import MapEditor from './MapEditor.svelte';
 	import NestedBlock from './NestedBlock.svelte';
-	import { objectElem } from './defaults';
+	import { ensureLiteralShape } from './defaults';
 
-	let { field, value = $bindable() }: { field: Field; value: unknown } = $props();
+	let {
+		field,
+		value = $bindable(),
+		references = [],
+		secrets = []
+	}: { field: Field; value: AttrValue; references?: string[]; secrets?: string[] } = $props();
 
-	// A `block` (list/set of objects) is edited as a list whose rows are nested
-	// object forms. Synthesize the element field once.
-	const blockAsList = $derived({ ...field, widget: 'list' as const, elem: objectElem(field) });
+	// Seed items/entries for container widgets (idempotent) before the structural
+	// editors bind. Also migrates legacy `literal` collections on first open.
+	$effect(() => {
+		ensureLiteralShape(field, value);
+	});
 
 	const inputCls =
 		'w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm text-[var(--al-text)] outline-none focus:border-[var(--al-accent)]';
@@ -22,13 +30,13 @@
 	<input
 		class={inputCls}
 		type={field.sensitive ? 'password' : 'text'}
-		bind:value={value as string}
+		bind:value={value.literal as string}
 		placeholder={field.type}
 	/>
 {:else if field.widget === 'textarea'}
-	<textarea class="{inputCls} mono min-h-20" bind:value={value as string}></textarea>
+	<textarea class="{inputCls} mono min-h-20" bind:value={value.literal as string}></textarea>
 {:else if field.widget === 'number'}
-	<input class={inputCls} type="number" bind:value={value as number} />
+	<input class={inputCls} type="number" bind:value={value.literal as number} />
 {:else if field.widget === 'checkbox'}
 	<!-- Use an explicit onchange (not bind:checked) so an untouched checkbox
 	     stays undefined rather than writing `false` back on mount, which would
@@ -37,19 +45,19 @@
 		<input
 			type="checkbox"
 			class="h-4 w-4 accent-[var(--al-accent)]"
-			checked={value === true}
-			onchange={(e) => (value = e.currentTarget.checked)}
+			checked={value.literal === true}
+			onchange={(e) => (value.literal = e.currentTarget.checked)}
 		/>
-		<span class="text-[var(--al-muted)]">{value === undefined ? '(unset)' : value ? 'true' : 'false'}</span>
+		<span class="text-[var(--al-muted)]"
+			>{value.literal === undefined ? '(unset)' : value.literal ? 'true' : 'false'}</span
+		>
 	</label>
-{:else if field.widget === 'list'}
-	<ListEditor {field} bind:value={value as unknown[]} />
-{:else if field.widget === 'block'}
-	<ListEditor field={blockAsList} bind:value={value as unknown[]} />
+{:else if field.widget === 'list' || field.widget === 'block'}
+	<ListEditor {field} bind:items={value.items as AttrValue[]} {references} {secrets} />
 {:else if field.widget === 'map'}
-	<MapEditor {field} bind:value={value as Record<string, unknown>} />
+	<MapEditor {field} bind:entries={value.entries!} {references} {secrets} />
 {:else if field.widget === 'object'}
-	<NestedBlock {field} bind:value={value as Record<string, unknown>} />
+	<NestedBlock {field} bind:entries={value.entries!} {references} {secrets} />
 {:else}
-	<input class={inputCls} type="text" bind:value={value as string} />
+	<input class={inputCls} type="text" bind:value={value.literal as string} />
 {/if}

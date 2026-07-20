@@ -18,6 +18,15 @@ type attrValueDTO struct {
 	Ref       string          `json:"ref,omitempty"`
 	Expr      string          `json:"expr,omitempty"`
 	SecretRef string          `json:"secretRef,omitempty"`
+	// Items / Entries carry a structural collection literal whose members are
+	// themselves AttrValues (so references/secrets can nest inside).
+	Items   []attrValueDTO `json:"items,omitempty"`
+	Entries []attrEntryDTO `json:"entries,omitempty"`
+}
+
+type attrEntryDTO struct {
+	Key   string       `json:"key"`
+	Value attrValueDTO `json:"value"`
 }
 
 func (d attrValueDTO) toModel() (model.AttrValue, error) {
@@ -28,18 +37,39 @@ func (d attrValueDTO) toModel() (model.AttrValue, error) {
 		SecretRef: d.SecretRef,
 	}
 	if d.Mode == model.ModeLiteral {
-		if len(d.Literal) == 0 {
-			return av, fmt.Errorf("literal value missing")
+		switch {
+		case d.Items != nil:
+			av.Items = make([]model.AttrValue, len(d.Items))
+			for i, it := range d.Items {
+				m, err := it.toModel()
+				if err != nil {
+					return av, fmt.Errorf("item %d: %w", i, err)
+				}
+				av.Items[i] = m
+			}
+		case d.Entries != nil:
+			av.Entries = make([]model.AttrEntry, len(d.Entries))
+			for i, e := range d.Entries {
+				m, err := e.Value.toModel()
+				if err != nil {
+					return av, fmt.Errorf("entry %q: %w", e.Key, err)
+				}
+				av.Entries[i] = model.AttrEntry{Key: e.Key, Value: m}
+			}
+		default:
+			if len(d.Literal) == 0 {
+				return av, fmt.Errorf("literal value missing")
+			}
+			t, err := ctyjson.ImpliedType(d.Literal)
+			if err != nil {
+				return av, fmt.Errorf("infer literal type: %w", err)
+			}
+			v, err := ctyjson.Unmarshal(d.Literal, t)
+			if err != nil {
+				return av, fmt.Errorf("decode literal: %w", err)
+			}
+			av.Literal = v
 		}
-		t, err := ctyjson.ImpliedType(d.Literal)
-		if err != nil {
-			return av, fmt.Errorf("infer literal type: %w", err)
-		}
-		v, err := ctyjson.Unmarshal(d.Literal, t)
-		if err != nil {
-			return av, fmt.Errorf("decode literal: %w", err)
-		}
-		av.Literal = v
 	}
 	return av, nil
 }

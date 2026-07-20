@@ -778,22 +778,35 @@
 		return n;
 	}
 
+	// cleanAttr prunes an AttrValue to what should be sent: unset scalars, empty
+	// collections, and incomplete references/secrets/expressions collapse to
+	// undefined so they're dropped. Recurses into structural collections so a
+	// nested reference/secret is preserved but an empty nested slot is not.
+	function cleanAttr(v: AttrValue): AttrValue | undefined {
+		if (v.mode === 'reference') return v.ref ? { mode: 'reference', ref: v.ref } : undefined;
+		if (v.mode === 'expression') return v.expr ? { mode: 'expression', expr: v.expr } : undefined;
+		if (v.mode === 'secret') return v.secretRef ? { mode: 'secret', secretRef: v.secretRef } : undefined;
+		// literal
+		if (v.items !== undefined) {
+			const items = v.items.map(cleanAttr).filter((x): x is AttrValue => x !== undefined);
+			return items.length ? { mode: 'literal', items } : undefined;
+		}
+		if (v.entries !== undefined) {
+			const entries = v.entries
+				.map((e) => ({ key: e.key.trim(), value: cleanAttr(e.value) }))
+				.filter((e): e is { key: string; value: AttrValue } => e.key !== '' && e.value !== undefined);
+			return entries.length ? { mode: 'literal', entries } : undefined;
+		}
+		const lit = v.literal;
+		if (lit === undefined || lit === null || lit === '') return undefined;
+		return { mode: 'literal', literal: lit };
+	}
+
 	function buildAttrs(): Record<string, AttrValue> {
 		const out: Record<string, AttrValue> = {};
 		for (const [name, v] of Object.entries(values)) {
-			if (v.mode === 'literal') {
-				const lit = v.literal;
-				if (lit === undefined || lit === null || lit === '') continue;
-				if (Array.isArray(lit) && lit.length === 0) continue;
-				if (typeof lit === 'object' && !Array.isArray(lit) && Object.keys(lit).length === 0) continue;
-				out[name] = { mode: 'literal', literal: lit };
-			} else if (v.mode === 'reference' && v.ref) {
-				out[name] = { mode: 'reference', ref: v.ref };
-			} else if (v.mode === 'expression' && v.expr) {
-				out[name] = { mode: 'expression', expr: v.expr };
-			} else if (v.mode === 'secret' && v.secretRef) {
-				out[name] = { mode: 'secret', secretRef: v.secretRef };
-			}
+			const cleaned = cleanAttr(v);
+			if (cleaned) out[name] = cleaned;
 		}
 		return out;
 	}

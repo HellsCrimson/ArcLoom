@@ -365,33 +365,76 @@ func writeAttrs(body *hclwrite.Body, attrs map[string]model.AttrValue) error {
 
 // setAttr writes one attribute, dispatching on value mode.
 func setAttr(body *hclwrite.Body, name string, v model.AttrValue) error {
+	// A plain literal keeps the SetAttributeValue path so all-literal output is
+	// byte-for-byte unchanged. Everything else (references, expressions, secrets,
+	// and structural collections containing them) is emitted as raw tokens.
+	if v.Mode == model.ModeLiteral && v.Items == nil && v.Entries == nil {
+		body.SetAttributeValue(name, v.Literal)
+		return nil
+	}
+	toks, err := valueTokens(v)
+	if err != nil {
+		return fmt.Errorf("attribute %q: %w", name, err)
+	}
+	body.SetAttributeRaw(name, toks)
+	return nil
+}
+
+// valueTokens renders any AttrValue (at any nesting depth) to HCL tokens,
+// dispatching on mode. Structural collections (Items/Entries) recurse so a
+// reference or secret can appear inside a list/map/object.
+func valueTokens(v model.AttrValue) (hclwrite.Tokens, error) {
 	switch v.Mode {
 	case model.ModeLiteral:
-		body.SetAttributeValue(name, v.Literal)
+		switch {
+		case v.Items != nil:
+			elems := make([]hclwrite.Tokens, len(v.Items))
+			for i, it := range v.Items {
+				t, err := valueTokens(it)
+				if err != nil {
+					return nil, err
+				}
+				elems[i] = t
+			}
+			return hclwrite.TokensForTuple(elems), nil
+		case v.Entries != nil:
+			// Sort by key so output is deterministic, matching writeAttrs.
+			entries := append([]model.AttrEntry(nil), v.Entries...)
+			sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
+			attrs := make([]hclwrite.ObjectAttrTokens, len(entries))
+			for i, e := range entries {
+				vt, err := valueTokens(e.Value)
+				if err != nil {
+					return nil, err
+				}
+				attrs[i] = hclwrite.ObjectAttrTokens{
+					Name:  hclwrite.TokensForValue(cty.StringVal(e.Key)),
+					Value: vt,
+				}
+			}
+			return hclwrite.TokensForObject(attrs), nil
+		default:
+			return hclwrite.TokensForValue(v.Literal), nil
+		}
 	case model.ModeReference:
 		trav, err := parseTraversal(v.Ref)
 		if err != nil {
-			return fmt.Errorf("attribute %q: %w", name, err)
+			return nil, err
 		}
-		body.SetAttributeTraversal(name, trav)
+		return hclwrite.TokensForTraversal(trav), nil
 	case model.ModeExpression:
-		toks, err := tokensForExpr(v.Expr)
-		if err != nil {
-			return fmt.Errorf("attribute %q: %w", name, err)
-		}
-		body.SetAttributeRaw(name, toks)
+		return tokensForExpr(v.Expr)
 	case model.ModeSecret:
 		// A secret is referenced as an input variable; its value is injected as
 		// TF_VAR_<name> at run time and never written to HCL.
 		trav, err := parseTraversal("var." + model.SecretVarName(v.SecretRef))
 		if err != nil {
-			return fmt.Errorf("attribute %q: %w", name, err)
+			return nil, err
 		}
-		body.SetAttributeTraversal(name, trav)
+		return hclwrite.TokensForTraversal(trav), nil
 	default:
-		return fmt.Errorf("attribute %q: unknown value mode %q", name, v.Mode)
+		return nil, fmt.Errorf("unknown value mode %q", v.Mode)
 	}
-	return nil
 }
 
 // parseTraversal turns a dotted reference like "random_pet.name.id" into an

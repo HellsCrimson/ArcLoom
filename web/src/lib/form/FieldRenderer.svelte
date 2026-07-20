@@ -1,11 +1,12 @@
 <script lang="ts">
-	// FieldRenderer is the top-level editor for one attribute. It adds the
-	// Literal / Reference / Expression value-mode toggle around the underlying
-	// literal editor (PlainField). Reference mode picks from other resources'
-	// outputs; Expression mode is a raw HCL string.
+	// FieldRenderer is the editor for one value at any nesting depth. It adds the
+	// Literal / Reference / Expression / Secret value-mode toggle around the
+	// underlying literal editor (PlainField). It is used both for top-level
+	// attributes and — recursively — for the interior of lists/maps/objects, so a
+	// reference or secret can be placed inside a collection.
 	import type { AttrValue, Field, ValueMode } from '$lib/types';
 	import PlainField from './PlainField.svelte';
-	import { defaultForField } from './defaults';
+	import { ensureLiteralShape } from './defaults';
 
 	let {
 		field,
@@ -23,7 +24,7 @@
 
 	function setMode(m: ValueMode) {
 		value.mode = m;
-		if (m === 'literal' && value.literal === undefined) value.literal = defaultForField(field);
+		if (m === 'literal') ensureLiteralShape(field, value);
 	}
 
 	const inputCls =
@@ -70,6 +71,6 @@
 			<input class="{inputCls} mono" placeholder="secret name (add one in Secrets)" bind:value={value.secretRef} />
 		{/if}
 	{:else}
-		<PlainField {field} bind:value={value.literal} />
+		<PlainField {field} bind:value {references} {secrets} />
 	{/if}
 </div>

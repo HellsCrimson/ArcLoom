@@ -1,31 +1,36 @@
 <script lang="ts">
-	import type { Field } from '$lib/types';
-	import PlainField from './PlainField.svelte';
-	import { defaultForField } from './defaults';
+	import type { AttrValue, Field } from '$lib/types';
+	import FieldRenderer from './FieldRenderer.svelte';
+	import { defaultAttr, elemField } from './defaults';
 	import { Plus, Trash2 } from 'lucide-svelte';
 
-	let { field, value = $bindable() }: { field: Field; value: unknown[] } = $props();
+	let {
+		field,
+		items = $bindable(),
+		references = [],
+		secrets = []
+	}: { field: Field; items: AttrValue[]; references?: string[]; secrets?: string[] } = $props();
 
-	// Ensure we always work with an array.
+	// Always work with an array (the parent may bind an undefined slot).
 	$effect(() => {
-		if (!Array.isArray(value)) value = [];
+		if (!Array.isArray(items)) items = [];
 	});
 
-	const elem = $derived(field.elem ?? ({ ...field, widget: 'text' } as Field));
+	const elem = $derived(elemField(field));
 
 	function add() {
-		value = [...(value ?? []), defaultForField(elem)];
+		items = [...(items ?? []), defaultAttr(elem)];
 	}
 	function remove(i: number) {
-		value = value.filter((_, idx) => idx !== i);
+		items = items.filter((_, idx) => idx !== i);
 	}
 </script>
 
 <div class="space-y-2">
-	{#each value ?? [] as _, i (i)}
+	{#each items ?? [] as _, i (i)}
 		<div class="flex items-start gap-2">
 			<div class="flex-1">
-				<PlainField field={elem} bind:value={value[i]} />
+				<FieldRenderer field={elem} bind:value={items[i]} {references} {secrets} />
 			</div>
 			<button
 				type="button"

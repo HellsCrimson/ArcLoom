@@ -1,43 +1,41 @@
 <script lang="ts">
-	import type { Field } from '$lib/types';
-	import PlainField from './PlainField.svelte';
-	import { defaultForField } from './defaults';
+	import type { AttrEntry, Field } from '$lib/types';
+	import FieldRenderer from './FieldRenderer.svelte';
+	import { defaultAttr, elemField } from './defaults';
 	import { Plus, Trash2 } from 'lucide-svelte';
 
-	let { field, value = $bindable() }: { field: Field; value: Record<string, unknown> } = $props();
+	let {
+		field,
+		entries = $bindable(),
+		references = [],
+		secrets = []
+	}: { field: Field; entries: AttrEntry[]; references?: string[]; secrets?: string[] } = $props();
 
-	const elem = $derived(field.elem ?? ({ ...field, widget: 'text' } as Field));
-
-	// Rows are the source of truth so keys can be renamed without remounting the
-	// value editors. They are synced into the bound value object reactively.
-	let rows = $state<Array<{ k: string; v: unknown }>>(
-		Object.entries(value ?? {}).map(([k, v]) => ({ k, v }))
-	);
-
+	// Always work with an array (the parent may bind an undefined slot).
 	$effect(() => {
-		const out: Record<string, unknown> = {};
-		for (const r of rows) if (r.k) out[r.k] = r.v;
-		value = out;
+		if (!Array.isArray(entries)) entries = [];
 	});
 
+	const elem = $derived(elemField(field));
+
 	function add() {
-		rows = [...rows, { k: '', v: defaultForField(elem) }];
+		entries = [...(entries ?? []), { key: '', value: defaultAttr(elem) }];
 	}
 	function remove(i: number) {
-		rows = rows.filter((_, idx) => idx !== i);
+		entries = entries.filter((_, idx) => idx !== i);
 	}
 </script>
 
 <div class="space-y-2">
-	{#each rows as row, i (i)}
+	{#each entries ?? [] as entry, i (i)}
 		<div class="flex items-start gap-2">
 			<input
 				class="w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]"
 				placeholder="key"
-				bind:value={row.k}
+				bind:value={entry.key}
 			/>
 			<div class="flex-1">
-				<PlainField field={elem} bind:value={row.v} />
+				<FieldRenderer field={elem} bind:value={entry.value} {references} {secrets} />
 			</div>
 			<button
 				type="button"

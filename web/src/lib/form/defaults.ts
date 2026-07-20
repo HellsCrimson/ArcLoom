@@ -1,16 +1,10 @@
-import type { Field } from '$lib/types';
+import type { AttrValue, Field } from '$lib/types';
 
-// defaultForField returns the initial literal value for a field's widget.
+// defaultForField returns the initial literal value for a scalar field's widget.
 // Scalars start unset (undefined) so untouched optional attributes are dropped
-// from the payload; containers start empty so their editors can bind safely.
+// from the payload.
 export function defaultForField(f: Field): unknown {
 	switch (f.widget) {
-		case 'list':
-		case 'block':
-			return [];
-		case 'map':
-		case 'object':
-			return {};
 		case 'number':
 		case 'checkbox':
 			return undefined;
@@ -32,4 +26,78 @@ export function objectElem(f: Field): Field {
 		computed: false,
 		sensitive: false
 	};
+}
+
+// isContainer reports whether a widget holds nested values (list/map/object).
+export function isContainer(f: Field): boolean {
+	return f.widget === 'list' || f.widget === 'block' || f.widget === 'map' || f.widget === 'object';
+}
+
+// elemField returns the element field of a list/set/block (the type of each
+// item), synthesizing a text element when the schema left it implicit.
+export function elemField(field: Field): Field {
+	if (field.widget === 'block') return objectElem(field);
+	return field.elem ?? ({ ...field, widget: 'text' } as Field);
+}
+
+// rawToAttr wraps a legacy raw JS value (from a pre-existing literal collection)
+// into an AttrValue for the given field, recursing into container structure so
+// old projects load into the mode-aware editors.
+export function rawToAttr(field: Field, raw: unknown): AttrValue {
+	const av: AttrValue = { mode: 'literal' };
+	if (field.widget === 'list' || field.widget === 'block') {
+		const arr = Array.isArray(raw) ? raw : [];
+		av.items = arr.map((x) => rawToAttr(elemField(field), x));
+	} else if (field.widget === 'map') {
+		const obj = isPlainObject(raw) ? raw : {};
+		av.entries = Object.entries(obj).map(([k, v]) => ({ key: k, value: rawToAttr(elemField(field), v) }));
+	} else if (field.widget === 'object') {
+		const obj = isPlainObject(raw) ? raw : {};
+		av.entries = (field.fields ?? []).map((c) => ({ key: c.name, value: rawToAttr(c, obj[c.name]) }));
+	} else {
+		av.literal = raw;
+	}
+	return av;
+}
+
+// ensureLiteralShape makes a literal-mode container AttrValue editable by the
+// structural editors: it seeds `items`/`entries` (from a legacy `literal` value
+// or empty), then clears the now-redundant `literal`. Idempotent.
+//
+// It reseeds from a non-empty legacy `literal` even when the structural array is
+// already an empty [] — a child editor may default the slot to [] before this
+// runs, and dropping the legacy data then would silently lose it.
+export function ensureLiteralShape(field: Field, av: AttrValue): void {
+	if (av.mode !== 'literal') return;
+	if (field.widget === 'list' || field.widget === 'block') {
+		const legacy = Array.isArray(av.literal) ? av.literal : [];
+		if (!av.items || (av.items.length === 0 && legacy.length > 0)) {
+			av.items = legacy.map((x) => rawToAttr(elemField(field), x));
+		}
+		av.literal = undefined;
+	} else if (field.widget === 'map') {
+		const legacy = isPlainObject(av.literal) ? av.literal : {};
+		if (!av.entries || (av.entries.length === 0 && Object.keys(legacy).length > 0)) {
+			av.entries = Object.entries(legacy).map(([k, v]) => ({ key: k, value: rawToAttr(elemField(field), v) }));
+		}
+		av.literal = undefined;
+	} else if (field.widget === 'object') {
+		const legacy = isPlainObject(av.literal) ? av.literal : {};
+		if (!av.entries || (av.entries.length === 0 && Object.keys(legacy).length > 0)) {
+			av.entries = (field.fields ?? []).map((c) => ({ key: c.name, value: rawToAttr(c, legacy[c.name]) }));
+		}
+		av.literal = undefined;
+	}
+}
+
+// defaultAttr builds a fresh literal AttrValue for a field, seeding container
+// shape so nested editors can bind immediately.
+export function defaultAttr(field: Field): AttrValue {
+	const av: AttrValue = { mode: 'literal' };
+	ensureLiteralShape(field, av);
+	return av;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+	return typeof v === 'object' && v !== null && !Array.isArray(v);
 }

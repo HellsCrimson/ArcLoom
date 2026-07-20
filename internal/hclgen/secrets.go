@@ -10,10 +10,14 @@ import (
 // (ModeSecret) used anywhere in the project.
 func CollectSecretRefs(p *model.Project) []string {
 	set := map[string]bool{}
+	// Walk recurses into structural collections (Items/Entries) so a secret used
+	// inside a list/map/object is still discovered and its var auto-declared.
 	visit := func(av model.AttrValue) {
-		if av.Mode == model.ModeSecret && av.SecretRef != "" {
-			set[av.SecretRef] = true
-		}
+		av.Walk(func(n model.AttrValue) {
+			if n.Mode == model.ModeSecret && n.SecretRef != "" {
+				set[n.SecretRef] = true
+			}
+		})
 	}
 	visitAttrs := func(attrs map[string]model.AttrValue) {
 		for _, av := range attrs {

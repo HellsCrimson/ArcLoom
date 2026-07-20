@@ -36,13 +36,23 @@ export interface NormalizedSchema {
 export type ValueMode = 'literal' | 'reference' | 'expression' | 'secret';
 
 // AttrValue is the wire form sent back to the server. `literal` is a raw JSON
-// value whose cty type is inferred server-side.
+// value whose cty type is inferred server-side. A collection literal whose
+// elements are themselves mode-switchable (so a reference/secret can nest
+// inside) is carried structurally via `items` (list/set/block) or `entries`
+// (map/object) instead of `literal`.
 export interface AttrValue {
 	mode: ValueMode;
 	literal?: unknown;
 	ref?: string;
 	expr?: string;
 	secretRef?: string;
+	items?: AttrValue[];
+	entries?: AttrEntry[];
+}
+
+export interface AttrEntry {
+	key: string;
+	value: AttrValue;
 }
 
 export interface Engine {
