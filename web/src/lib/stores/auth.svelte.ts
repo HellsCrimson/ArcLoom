@@ -51,9 +51,12 @@ class AuthStore {
 		this.user = d.user;
 	}
 
-	// refresh loads the current session state (called once on mount).
-	async refresh(): Promise<void> {
-		this.loading = true;
+	// refresh loads the current session state. `showLoading` toggles the global
+	// loading gate (which unmounts the app while true); pass true only for the
+	// initial mount load. Post-mount refreshes (e.g. after a settings change)
+	// must NOT flip it, or the whole page — and any open modal — remounts.
+	async refresh(showLoading = false): Promise<void> {
+		if (showLoading) this.loading = true;
 		try {
 			const r = await fetch('/api/auth/me', { credentials: 'same-origin' });
 			if (r.ok) {

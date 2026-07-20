@@ -188,6 +188,14 @@ export interface GitStatus {
 	hasCommits: boolean;
 	hasRemote: boolean;
 	remoteUrl?: string;
+	ahead: number;
+	behind: number;
+}
+
+export interface GitBranch {
+	name: string;
+	current: boolean;
+	short: string;
 }
 
 export interface GitCommit {

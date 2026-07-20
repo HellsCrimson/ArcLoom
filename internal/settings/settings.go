@@ -48,6 +48,9 @@ type document struct {
 	// Drift maps project ID -> drift schedule. Kept here (not on the project
 	// model) so it stays out of generated HCL, Git and undo/redo snapshots.
 	Drift map[string]Drift `yaml:"drift,omitempty"`
+	// License is the ArcLoom Enterprise license token (vendor-signed, verified
+	// offline). Stored in plaintext — it is signed, not secret.
+	License string `yaml:"license,omitempty"`
 }
 
 // Store is a disk-backed settings document.
@@ -120,6 +123,21 @@ func (s *Store) SetSSO(in SSO) error {
 	in.ClientSecret = ""
 	in.ClientSecretEnc = enc
 	s.doc.SSO = in
+	return s.persist()
+}
+
+// License returns the stored license token ("" when none).
+func (s *Store) License() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.doc.License
+}
+
+// SetLicense persists the license token (empty clears it).
+func (s *Store) SetLicense(token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.doc.License = token
 	return s.persist()
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/config"
+	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/session"
 	"github.com/HellsCrimson/ArcLoom/internal/store"
 	"github.com/HellsCrimson/ArcLoom/internal/user"
@@ -32,8 +33,11 @@ func newRBACServer(t *testing.T) (http.Handler, user.Store, session.Store) {
 	cfg := config.Config{AuthEnabled: true, CookieName: "arcloom_session", SessionTTL: time.Hour, DefaultEngine: "tofu"}
 	sessions := session.NewMemory()
 	authn := auth.New(auth.NewLocalProvider(users))
-	h := New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, sessions, users, testSettings(t), nil).Handler()
-	return h, users, sessions
+	srv := New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, sessions, users, testSettings(t), nil)
+	// Run RBAC tests as an enterprise install so the community seat limit doesn't
+	// block creating additional users.
+	srv.license.Install(&license.License{Tier: license.TierEnterprise})
+	return srv.Handler(), users, sessions
 }
 
 func do(t *testing.T, h http.Handler, method, path string, cookie *http.Cookie, body string) *httptest.ResponseRecorder {

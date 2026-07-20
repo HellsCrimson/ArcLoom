@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -143,6 +144,21 @@ func main() {
 			log.Printf("WARNING: could not seed SSO settings from env: %v", err)
 		} else {
 			log.Printf("seeded SSO settings from ARCLOOM_OIDC_* env")
+		}
+	}
+
+	// Seed the Enterprise license from ARCLOOM_LICENSE on first run (a token, or
+	// a path to a file holding one). After that the persisted settings license is
+	// authoritative; api.New loads and verifies it against the embedded key.
+	if cfg.License != "" && set.License() == "" {
+		token := cfg.License
+		if data, err := os.ReadFile(cfg.License); err == nil {
+			token = strings.TrimSpace(string(data))
+		}
+		if err := set.SetLicense(token); err != nil {
+			log.Printf("WARNING: could not seed license from ARCLOOM_LICENSE: %v", err)
+		} else {
+			log.Printf("seeded license from ARCLOOM_LICENSE")
 		}
 	}
 

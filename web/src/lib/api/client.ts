@@ -9,6 +9,7 @@ import type {
 	SecretsResponse,
 	GitStatus,
 	GitCommit,
+	GitBranch,
 	AttrValue,
 	DriftConfig,
 	DriftStatus
@@ -299,8 +300,17 @@ export const api = {
 				credentials: 'same-origin',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(body)
-			}).then((r) => json<SSOSettings>(r))
+			}).then((r) => json<SSOSettings>(r)),
+		setLicense: (token: string) =>
+			fetch('/api/admin/settings/license', {
+				method: 'PUT',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ token })
+			}).then((r) => json<LicenseStatus>(r))
 	},
+
+	getLicense: () => fetch('/api/license', { credentials: 'same-origin' }).then((r) => json<LicenseStatus>(r)),
 
 	git: {
 		status: (id: string) => fetch(`/api/projects/${id}/git/status`).then((r) => json<GitStatus>(r)),
@@ -326,15 +336,34 @@ export const api = {
 		push: (id: string, username: string, token: string) =>
 			gitAction(`/api/projects/${id}/git/push`, { username, token }),
 		pull: (id: string, username: string, token: string) =>
-			gitAction(`/api/projects/${id}/git/pull`, { username, token })
+			gitAction(`/api/projects/${id}/git/pull`, { username, token }),
+		branches: (id: string) =>
+			fetch(`/api/projects/${id}/git/branches`).then((r) => json<GitBranch[]>(r)),
+		createBranch: (id: string, name: string) =>
+			gitAction(`/api/projects/${id}/git/branch`, { name }),
+		deleteBranch: (id: string, name: string) =>
+			gitAction(`/api/projects/${id}/git/branch?name=${encodeURIComponent(name)}`, undefined, 'DELETE'),
+		checkout: (id: string, name: string) =>
+			fetch(`/api/projects/${id}/git/checkout`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name })
+			}).then((r) => json<Project>(r)),
+		merge: (id: string, name: string) =>
+			fetch(`/api/projects/${id}/git/merge`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name })
+			}).then((r) => json<Project>(r))
 	}
 };
 
-async function gitAction(url: string, body: unknown): Promise<void> {
+async function gitAction(url: string, body: unknown, method = 'POST'): Promise<void> {
 	const r = await fetch(url, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(body)
+		method,
+		...(body === undefined
+			? {}
+			: { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 	});
 	if (!r.ok && r.status !== 204) {
 		on401(r.status);
@@ -378,6 +407,17 @@ export interface SSOUpdate {
 	clientSecret?: string;
 	redirectUrl: string;
 	scopes: string;
+}
+
+export interface LicenseStatus {
+	tier: 'community' | 'enterprise';
+	licensee?: string;
+	features: string[];
+	seatLimit: number; // 0 = unlimited
+	seatsUsed: number;
+	expiresAt?: string;
+	expired: boolean;
+	keyConfigured: boolean;
 }
 
 export interface ImportResult {

@@ -99,6 +99,81 @@ func (s *Server) handleGitRestore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
+func (s *Server) handleGitBranches(w http.ResponseWriter, r *http.Request) {
+	branches, err := git.Branches(s.projectDir(chi.URLParam(r, "id")))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if branches == nil {
+		branches = []git.Branch{}
+	}
+	writeJSON(w, http.StatusOK, branches)
+}
+
+func (s *Server) handleGitCreateBranch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	if err := git.CreateBranch(s.projectDir(chi.URLParam(r, "id")), req.Name); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleGitDeleteBranch(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeErr(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := git.DeleteBranch(s.projectDir(chi.URLParam(r, "id")), name); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGitCheckout switches branches and returns the reloaded project (the
+// model is re-read from the target branch's arcloom.yaml).
+func (s *Server) handleGitCheckout(w http.ResponseWriter, r *http.Request) {
+	s.gitReloadOp(w, r, git.SwitchBranch)
+}
+
+// handleGitMerge fast-forward merges a branch into the current one and returns
+// the reloaded project.
+func (s *Server) handleGitMerge(w http.ResponseWriter, r *http.Request) {
+	s.gitReloadOp(w, r, git.MergeBranch)
+}
+
+// gitReloadOp runs a git op that mutates the working tree by branch name, then
+// returns the reloaded project so the UI re-renders the restored model.
+func (s *Server) gitReloadOp(w http.ResponseWriter, r *http.Request, fn func(dir, name string) error) {
+	id := chi.URLParam(r, "id")
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		writeErr(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := fn(s.projectDir(id), req.Name); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	p, err := s.store.Get(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
 func (s *Server) handleGitRemote(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		URL string `json:"url"`

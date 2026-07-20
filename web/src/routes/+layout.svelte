@@ -8,9 +8,10 @@
 	let { children } = $props();
 
 	// Resolve the current session once on mount. The heavy app (+page.svelte)
-	// only mounts when authenticated.
+	// only mounts when authenticated. Pass showLoading so the gate shows the
+	// loading state for this first resolution only.
 	$effect(() => {
-		auth.refresh();
+		auth.refresh(true);
 	});
 </script>
 

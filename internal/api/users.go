@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
@@ -96,6 +97,12 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := s.users.ByUsername(req.Username); err == nil {
 		writeErr(w, http.StatusConflict, "a user with that username already exists")
+		return
+	}
+	// Seat limit: the community tier caps user count; more requires a license
+	// granting the multi-user feature.
+	if s.license.SeatsExceeded(s.userCount()) {
+		writeErr(w, http.StatusForbidden, fmt.Sprintf("user limit reached (%d) — ArcLoom Enterprise is required for more users", s.license.SeatLimit()))
 		return
 	}
 	hash, err := auth.Hash(req.Password)

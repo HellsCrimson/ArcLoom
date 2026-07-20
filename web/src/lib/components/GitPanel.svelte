@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
-	import type { GitStatus, GitCommit, Project } from '$lib/types';
+	import type { GitStatus, GitCommit, GitBranch as GitBranchType, Project } from '$lib/types';
 	import Modal from './Modal.svelte';
 	import {
-		GitBranch, GitCommitVertical, History, Loader2, Upload, Download, RotateCcw, Cloud
+		GitBranch, GitCommitVertical, History, Loader2, Upload, Download, RotateCcw, Cloud,
+		GitMerge, Trash2, Plus, ArrowUp, ArrowDown
 	} from 'lucide-svelte';
 
 	let {
@@ -14,6 +15,8 @@
 
 	let status = $state<GitStatus | null>(null);
 	let commits = $state<GitCommit[]>([]);
+	let branches = $state<GitBranchType[]>([]);
+	let newBranch = $state('');
 	let diff = $state('');
 	let selectedCommit = $state<string | null>(null); // null = working diff
 	let message = $state('');
@@ -36,10 +39,78 @@
 		try {
 			status = await api.git.status(projectId);
 			commits = await api.git.log(projectId);
+			branches = await api.git.branches(projectId);
 			remoteUrl = status.remoteUrl ?? remoteUrl;
 			await loadDiff(selectedCommit);
 		} catch (e) {
 			err = (e as Error).message;
+		}
+	}
+
+	async function createBranch() {
+		if (!newBranch.trim()) return;
+		busy = 'branch';
+		err = '';
+		info = '';
+		try {
+			await api.git.createBranch(projectId, newBranch.trim());
+			info = `Switched to new branch ${newBranch.trim()}`;
+			newBranch = '';
+			await refresh();
+		} catch (e) {
+			err = (e as Error).message;
+		} finally {
+			busy = '';
+		}
+	}
+
+	async function switchBranch(name: string) {
+		busy = 'switch';
+		err = '';
+		info = '';
+		try {
+			const p = await api.git.checkout(projectId, name);
+			onRestored(p);
+			info = `On branch ${name}`;
+			selectedCommit = null;
+			await refresh();
+		} catch (e) {
+			err = (e as Error).message;
+		} finally {
+			busy = '';
+		}
+	}
+
+	async function mergeBranch(name: string) {
+		if (!confirm(`Fast-forward merge ${name} into ${status?.branch}?`)) return;
+		busy = 'merge';
+		err = '';
+		info = '';
+		try {
+			const p = await api.git.merge(projectId, name);
+			onRestored(p);
+			info = `Merged ${name} into ${status?.branch}`;
+			selectedCommit = null;
+			await refresh();
+		} catch (e) {
+			err = (e as Error).message;
+		} finally {
+			busy = '';
+		}
+	}
+
+	async function deleteBranch(name: string) {
+		if (!confirm(`Delete branch ${name}?`)) return;
+		busy = 'delbranch';
+		err = '';
+		try {
+			await api.git.deleteBranch(projectId, name);
+			info = `Deleted branch ${name}`;
+			await refresh();
+		} catch (e) {
+			err = (e as Error).message;
+		} finally {
+			busy = '';
 		}
 	}
 
@@ -153,6 +224,12 @@
 		<GitBranch size={14} />
 		{#if status?.initialized}
 			<span class="mono text-[var(--al-text)]">{status.branch || '(no commits)'}</span>
+			{#if status.ahead > 0}
+				<span class="inline-flex items-center gap-0.5 text-[var(--al-accent)]" title="commits ahead of origin"><ArrowUp size={11} />{status.ahead}</span>
+			{/if}
+			{#if status.behind > 0}
+				<span class="inline-flex items-center gap-0.5 text-[var(--al-danger)]" title="commits behind origin"><ArrowDown size={11} />{status.behind}</span>
+			{/if}
 			<span>· {status.clean ? 'clean' : `${status.files?.length ?? 0} change(s)`}</span>
 			{#if status.hasRemote}<span class="mono">· {status.remoteUrl}</span>{/if}
 		{:else}
@@ -166,6 +243,37 @@
 			{#if busy === 'commit'}<Loader2 size={14} class="animate-spin" />{:else}<GitCommitVertical size={15} />{/if} Commit
 		</button>
 	</div>
+
+	<!-- branches -->
+	{#if status?.hasCommits}
+		<div class="mb-4 rounded-md border border-[var(--al-border)] p-2.5">
+			<div class="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">
+				<GitBranch size={13} /> Branches
+			</div>
+			<div class="flex flex-wrap items-center gap-1.5">
+				{#each branches as b (b.name)}
+					<div class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs {b.current ? 'border-[var(--al-accent)] bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'border-[var(--al-border)] text-[var(--al-muted)]'}">
+						<button
+							class="mono hover:text-[var(--al-text)] disabled:cursor-default"
+							onclick={() => switchBranch(b.name)}
+							disabled={b.current || busy !== ''}
+							title={b.current ? 'current branch' : `switch to ${b.name}`}
+						>{b.name}</button>
+						{#if !b.current}
+							<button class="text-[var(--al-muted)] hover:text-[var(--al-accent)]" onclick={() => mergeBranch(b.name)} disabled={busy !== ''} title="fast-forward merge into current"><GitMerge size={11} /></button>
+							<button class="text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteBranch(b.name)} disabled={busy !== ''} title="delete branch"><Trash2 size={11} /></button>
+						{/if}
+					</div>
+				{/each}
+				<div class="inline-flex items-center gap-1">
+					<input class="{inp} w-32 py-1 text-xs" placeholder="new-branch" bind:value={newBranch} onkeydown={(e) => { if (e.key === 'Enter') createBranch(); }} />
+					<button class={btnGhost} onclick={createBranch} disabled={busy === 'branch' || !newBranch.trim()}>
+						{#if busy === 'branch'}<Loader2 size={12} class="animate-spin" />{:else}<Plus size={12} />{/if} Create
+					</button>
+				</div>
+			</div>
+		</div>
+	{/if}
 
 	<div class="grid grid-cols-[240px_1fr] gap-3" style="min-height:300px;">
 		<!-- history -->

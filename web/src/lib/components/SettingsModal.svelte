@@ -1,12 +1,12 @@
 <script lang="ts">
 	import Modal from '$lib/components/Modal.svelte';
-	import { api, type AdminUser, type SSOSettings } from '$lib/api/client';
+	import { api, type AdminUser, type SSOSettings, type LicenseStatus } from '$lib/api/client';
 	import { auth } from '$lib/stores/auth.svelte';
-	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck } from 'lucide-svelte';
+	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck, Award } from 'lucide-svelte';
 
 	let { open = $bindable(false) }: { open: boolean } = $props();
 
-	type Tab = 'users' | 'sso';
+	type Tab = 'users' | 'sso' | 'license';
 	let tab = $state<Tab>('users');
 	let error = $state('');
 	let notice = $state('');
@@ -146,11 +146,48 @@
 		}
 	}
 
+	// --- License ---
+	const FEATURE_LABELS: Record<string, string> = {
+		sso: 'Single sign-on (OIDC)',
+		rbac: 'Per-project ACLs + audit',
+		drift: 'Scheduled drift detection',
+		multi_user: 'Unlimited users'
+	};
+	let license = $state<LicenseStatus | null>(null);
+	let licenseToken = $state('');
+	let savingLicense = $state(false);
+
+	async function loadLicense() {
+		error = '';
+		try {
+			license = await api.getLicense();
+		} catch (e) {
+			error = (e as Error).message;
+		}
+	}
+
+	async function saveLicense(clear = false) {
+		error = '';
+		notice = '';
+		savingLicense = true;
+		try {
+			license = await api.admin.setLicense(clear ? '' : licenseToken.trim());
+			licenseToken = '';
+			notice = clear ? 'License removed — reverted to community.' : `License installed: ${license.tier}.`;
+			await auth.refresh();
+		} catch (e) {
+			error = (e as Error).message;
+		} finally {
+			savingLicense = false;
+		}
+	}
+
 	// Load per-tab when the modal opens or the tab changes.
 	$effect(() => {
 		if (!open) return;
 		if (tab === 'users' && users.length === 0) loadUsers();
 		if (tab === 'sso' && sso === null) loadSSO();
+		if (tab === 'license' && license === null) loadLicense();
 	});
 
 	const field =
@@ -163,6 +200,7 @@
 	<div class="mb-3 flex items-center gap-1.5">
 		<button class={tabBtn(tab === 'users')} onclick={() => (tab = 'users')}>Users</button>
 		<button class={tabBtn(tab === 'sso')} onclick={() => (tab = 'sso')}>Single sign-on</button>
+		<button class={tabBtn(tab === 'license')} onclick={() => (tab = 'license')}>License</button>
 	</div>
 
 	{#if error}<p class="mb-2 text-sm text-[var(--al-danger)]">{error}</p>{/if}
@@ -300,6 +338,66 @@
 					</button>
 				</div>
 			</div>
+		{/if}
+	{:else if tab === 'license'}
+		{#if license === null}
+			<div class="flex items-center gap-2 py-6 text-sm text-[var(--al-muted)]"><Loader2 size={14} class="animate-spin" /> Loading…</div>
+		{:else}
+			<!-- Status -->
+			<div class="mb-4 rounded-lg border border-[var(--al-border)] bg-[var(--al-panel-2)] p-3">
+				<div class="mb-2 flex items-center gap-2">
+					<Award size={15} class={license.tier === 'enterprise' && !license.expired ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)]'} />
+					<span class="text-sm font-semibold text-[var(--al-text)]">
+						{license.tier === 'enterprise' ? 'ArcLoom Enterprise' : 'ArcLoom Community'}
+					</span>
+					{#if license.expired}
+						<span class="rounded bg-[var(--al-danger)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--al-danger)]">expired</span>
+					{/if}
+				</div>
+				<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
+					{#if license.licensee}
+						<dt class="text-[var(--al-muted)]">Licensed to</dt><dd class="text-[var(--al-text)]">{license.licensee}</dd>
+					{/if}
+					<dt class="text-[var(--al-muted)]">Users</dt>
+					<dd class="text-[var(--al-text)]">{license.seatsUsed}{license.seatLimit === 0 ? ' (unlimited)' : ` / ${license.seatLimit}`}</dd>
+					{#if license.expiresAt}
+						<dt class="text-[var(--al-muted)]">Expires</dt><dd class="text-[var(--al-text)]">{new Date(license.expiresAt).toLocaleDateString()}</dd>
+					{/if}
+				</dl>
+				<div class="mt-3">
+					<div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--al-muted)]">Enterprise features</div>
+					<div class="flex flex-wrap gap-1.5">
+						{#each Object.entries(FEATURE_LABELS) as [key, label] (key)}
+							{@const on = license.features.includes(key)}
+							<span class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] {on ? 'border-[var(--al-accent)] text-[var(--al-accent)]' : 'border-[var(--al-border)] text-[var(--al-muted)]'}">
+								{on ? '✓' : '○'} {label}
+							</span>
+						{/each}
+					</div>
+				</div>
+			</div>
+
+			<!-- Install key -->
+			{#if !license.keyConfigured}
+				<p class="mb-2 text-xs text-[var(--al-muted)]">This build has no vendor public key embedded, so no license can be verified. It runs as Community.</p>
+			{/if}
+			<label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]" for="lic">License key</label>
+			<textarea id="lic" class="{field} mono min-h-20 text-xs" placeholder="paste your ArcLoom Enterprise license key" bind:value={licenseToken}></textarea>
+			<div class="mt-2 flex items-center gap-2">
+				<button
+					class="inline-flex items-center gap-1.5 rounded-md bg-[var(--al-accent)] px-3 py-1.5 text-sm font-medium text-white hover:brightness-110 disabled:opacity-40"
+					onclick={() => saveLicense(false)}
+					disabled={savingLicense || !licenseToken.trim()}
+				>
+					{#if savingLicense}<Loader2 size={14} class="animate-spin" />{/if} Install license
+				</button>
+				{#if license.tier === 'enterprise' || license.expired}
+					<button class="rounded-md border border-[var(--al-border)] px-3 py-1.5 text-sm text-[var(--al-muted)] hover:text-[var(--al-danger)] disabled:opacity-40" onclick={() => saveLicense(true)} disabled={savingLicense}>
+						Remove license
+					</button>
+				{/if}
+			</div>
+			<p class="mt-2 text-[11px] text-[var(--al-muted)]">Keys are verified offline against an embedded vendor key. The homelab core works fully without a license.</p>
 		{/if}
 	{/if}
 </Modal>

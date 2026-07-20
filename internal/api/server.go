@@ -4,6 +4,7 @@ package api
 
 import (
 	"io/fs"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/cache"
 	"github.com/HellsCrimson/ArcLoom/internal/config"
+	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
 	"github.com/HellsCrimson/ArcLoom/internal/runs"
@@ -37,6 +39,7 @@ type Server struct {
 	sessions session.Store
 	users    user.Store
 	settings *settings.Store
+	license  *license.Manager
 	runs     runs.Store // may be nil (history disabled, e.g. in tests)
 
 	// Drift scheduler state: latest check outcome per project (in-memory) and
@@ -51,6 +54,14 @@ func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Sto
 	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist,
 		driftStates: map[string]driftStatus{}, driftKick: make(chan struct{}, 1)}
 	s.auth.Store(authn)
+	// License gate: verify the persisted token (if any) against the embedded
+	// vendor key. A bad/expired token just leaves the install at community tier.
+	s.license = license.NewManager(license.VendorKey())
+	if tok := set.License(); tok != "" {
+		if err := s.license.Set(tok); err != nil {
+			log.Printf("WARNING: stored license rejected (%v); running as community", err)
+		}
+	}
 	return s
 }
 
@@ -99,6 +110,7 @@ func (s *Server) Handler() http.Handler {
 
 			// Read-only / self-service (any authenticated user).
 			r.Post("/auth/password", s.handlePasswordChange)
+			r.Get("/license", s.handleGetLicense)
 			r.Get("/engines", s.handleEngines)
 			r.Get("/providers/{source}/schema", s.handleProviderSchema)
 			r.Get("/providers/{source}/resources/{type}/schema", s.handleResourceSchema)
@@ -111,6 +123,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/projects/{id}/git/status", s.handleGitStatus)
 			r.Get("/projects/{id}/git/log", s.handleGitLog)
 			r.Get("/projects/{id}/git/diff", s.handleGitDiff)
+			r.Get("/projects/{id}/git/branches", s.handleGitBranches)
 			r.Get("/projects/{id}/runs", s.handleListRuns)
 			r.Get("/projects/{id}/runs/{rid}", s.handleGetRun)
 			r.Get("/projects/{id}/state", s.handleStateList)
@@ -167,6 +180,10 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/projects/{id}/git/remote", s.handleGitRemote)
 				r.Post("/projects/{id}/git/push", s.handleGitPush)
 				r.Post("/projects/{id}/git/pull", s.handleGitPull)
+				r.Post("/projects/{id}/git/branch", s.handleGitCreateBranch)
+				r.Delete("/projects/{id}/git/branch", s.handleGitDeleteBranch)
+				r.Post("/projects/{id}/git/checkout", s.handleGitCheckout)
+				r.Post("/projects/{id}/git/merge", s.handleGitMerge)
 			})
 
 			// Administration: user management + settings (admin only).
@@ -179,6 +196,7 @@ func (s *Server) Handler() http.Handler {
 				r.Delete("/admin/users/{uid}", s.handleDeleteUser)
 				r.Get("/admin/settings/sso", s.handleGetSSO)
 				r.Put("/admin/settings/sso", s.handleSetSSO)
+				r.Put("/admin/settings/license", s.handleSetLicense)
 			})
 		})
 	})

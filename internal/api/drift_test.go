@@ -13,6 +13,7 @@ import (
 
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/config"
+	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
 	"github.com/HellsCrimson/ArcLoom/internal/runs"
@@ -84,6 +85,8 @@ func driftTestServer(t *testing.T, fake *fakeRunner) (*Server, runs.Store) {
 	authn := auth.New(auth.NewLocalProvider(user.NewMemory()))
 	srv := New(cfg, map[model.Engine]runner.Runner{model.EngineTofu: fake}, st, nil, nil, nil,
 		authn, session.NewMemory(), user.NewMemory(), testSettings(t), rh)
+	// Scheduled drift is enterprise-gated; run these tests as a licensed install.
+	srv.license.Install(&license.License{Tier: license.TierEnterprise})
 	return srv, rh
 }
 
