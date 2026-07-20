@@ -8,7 +8,7 @@
 		type Edge, type LayoutMode
 	} from './graph';
 	import HclView from './HclView.svelte';
-	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group, Folder, FolderOpen, ChevronRight, ChevronDown, Play, Package, Magnet } from 'lucide-svelte';
+	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group, Folder, FolderOpen, ChevronRight, ChevronDown, Play, Package, Magnet, MessageSquare, Trash2 } from 'lucide-svelte';
 
 	const LAYOUT_ICONS: Record<LayoutMode, typeof Network> = {
 		'layered-h': Network,
@@ -195,6 +195,37 @@
 	function savePos() {
 		localStorage.setItem(posKey, JSON.stringify(positions));
 	}
+
+	// Per-node annotations: a short free-text note attached to a node (resource /
+	// data source / interior card), keyed by node id. Documentation only — kept
+	// in localStorage per project (like positions), never written to HCL.
+	const noteKey = $derived(`arcloom.notes.${project.id}`);
+	let notes = $state<Record<string, string>>({});
+	$effect(() => {
+		noteKey; // track
+		try {
+			notes = JSON.parse(localStorage.getItem(noteKey) || '{}');
+		} catch {
+			notes = {};
+		}
+	});
+	// The open note editor: anchored at the click's screen coordinates.
+	let editingNote = $state<{ id: string; value: string; sx: number; sy: number } | null>(null);
+	function openNote(e: MouseEvent, id: string) {
+		e.stopPropagation();
+		editingNote = { id, value: notes[id] ?? '', sx: e.clientX, sy: e.clientY };
+	}
+	function commitNote() {
+		if (!editingNote) return;
+		const v = editingNote.value.trim();
+		const next = { ...notes };
+		if (v) next[editingNote.id] = v;
+		else delete next[editingNote.id];
+		notes = next;
+		localStorage.setItem(noteKey, JSON.stringify(notes));
+		editingNote = null;
+	}
+
 	function toggleExpand(name: string) {
 		expanded = { ...expanded, [name]: !expanded[name] };
 		localStorage.setItem(expandKey, JSON.stringify(expanded));
@@ -655,6 +686,7 @@
 	<div
 		role="button"
 		tabindex="-1"
+		class="group"
 		style="position:absolute;left:{x}px;top:{y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:{isData ? '18px' : '12px'};padding:10px 12px;background:{isData ? '#0e1917' : '#10151f'};border:{selected ? '1px solid ' + accent : change ? '1px solid ' + ACTION_COLOR[change] : isData ? '1.5px dashed rgba(86,212,188,0.45)' : '1px solid rgba(255,255,255,0.10)'};box-shadow:{selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : change ? '0 0 0 1.5px ' + ACTION_COLOR[change] + '55, 0 6px 16px rgba(0,0,0,0.35)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:{draggable ? 'grab' : 'pointer'};z-index:2;"
 		onmousedown={(e) => { if (draggable) { onBoxDown(e, id); } else { e.stopPropagation(); } }}
 		onclick={(e) => cardClick(e, id, type, name, scope)}
@@ -705,6 +737,15 @@
 		{/if}
 		<div title="Drag to connect (depends_on{scope ? ', within this module' : ''})" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'out', scope)} onmouseup={(e) => onDotUp(e, id, 'out', scope)}></div>
 		<div title="Drop a connection here" role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'in', scope)} onmouseup={(e) => onDotUp(e, id, 'in', scope)}></div>
+		<!-- annotation badge: solid when a note exists, otherwise revealed on card hover -->
+		<button
+			class="absolute -bottom-2 -left-2 flex h-[18px] w-[18px] items-center justify-center rounded-full transition-opacity {notes[id] ? 'opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100'}"
+			style="background:#0d1117;border:1px solid {notes[id] ? accent : 'rgba(255,255,255,0.22)'};color:{notes[id] ? accent : '#8891a0'};z-index:4;"
+			title={notes[id] ?? 'Add a note'}
+			aria-label={notes[id] ? 'Edit note' : 'Add note'}
+			onmousedown={(e) => e.stopPropagation()}
+			onclick={(e) => openNote(e, id)}
+		><MessageSquare size={10} /></button>
 	</div>
 {/snippet}
 
@@ -1003,6 +1044,47 @@
 			</div>
 		{/if}
 	</div>
+
+	<!-- Per-node annotation editor (fixed overlay, anchored at the click) -->
+	{#if editingNote}
+		<!-- backdrop: click outside saves & closes -->
+		<button
+			class="fixed inset-0 z-[60] cursor-default"
+			aria-label="Close note editor"
+			onclick={commitNote}
+		></button>
+		<div
+			class="fixed z-[61] w-[260px] rounded-lg border border-white/10 p-2.5 shadow-2xl"
+			style="left:{Math.min(editingNote.sx, (typeof window !== 'undefined' ? window.innerWidth : 1200) - 276)}px;top:{Math.min(editingNote.sy, (typeof window !== 'undefined' ? window.innerHeight : 800) - 170)}px;background:#0d1117;"
+		>
+			<div class="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-white/40">
+				<MessageSquare size={12} /> Note
+			</div>
+			<!-- svelte-ignore a11y_autofocus -->
+			<textarea
+				autofocus
+				class="min-h-[68px] w-full resize-y rounded-md border border-white/10 bg-black/40 px-2 py-1.5 text-[13px] text-[#e6e9ef] outline-none focus:border-[color:var(--al-accent,#7aa2f7)]"
+				placeholder="e.g. legacy, migrate soon"
+				bind:value={editingNote.value}
+				onkeydown={(e) => { e.stopPropagation(); if (e.key === 'Escape') editingNote = null; else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) commitNote(); }}
+			></textarea>
+			<div class="mt-2 flex items-center justify-between">
+				{#if notes[editingNote.id]}
+					<button
+						class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-white/40 hover:text-[#f85149]"
+						onclick={() => { if (editingNote) { editingNote.value = ''; commitNote(); } }}
+					><Trash2 size={12} /> Delete</button>
+				{:else}
+					<span></span>
+				{/if}
+				<div class="flex items-center gap-1.5">
+					<button class="rounded-md px-2 py-1 text-[11px] text-white/50 hover:text-white/90" onclick={() => (editingNote = null)}>Cancel</button>
+					<button class="rounded-md px-2.5 py-1 text-[11px] font-semibold" style="background:{accent}22;border:1px solid {accent}55;color:{accent};" onclick={commitNote}>Save</button>
+				</div>
+			</div>
+			<p class="mt-1.5 text-[10px] text-white/25">Notes are local documentation — they never appear in the generated HCL.</p>
+		</div>
+	{/if}
 
 	<!-- Live HCL panel -->
 	<div class="w-[440px] flex-none" style="border-left:1px solid rgba(255,255,255,0.08);min-height:0;">
