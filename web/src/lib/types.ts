@@ -100,6 +100,18 @@ export interface ProviderInstance {
 	config?: Record<string, AttrValue>;
 }
 
+// ProviderUpdate reports whether a newer version of a provider source is
+// available (best-effort registry check; keyed by source).
+export interface ProviderUpdate {
+	key: string;
+	source: string;
+	pinned?: string; // the version constraint on the instance
+	current?: string; // installed (lock) or exact pin
+	latest?: string; // highest stable available
+	update: boolean;
+	error?: string; // registry unreachable, etc.
+}
+
 export interface Variable {
 	name: string;
 	type?: string;

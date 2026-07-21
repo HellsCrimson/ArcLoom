@@ -18,6 +18,7 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/config"
 	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
+	"github.com/HellsCrimson/ArcLoom/internal/registry"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
 	"github.com/HellsCrimson/ArcLoom/internal/runs"
 	"github.com/HellsCrimson/ArcLoom/internal/secrets"
@@ -41,6 +42,7 @@ type Server struct {
 	settings *settings.Store
 	license  *license.Manager
 	runs     runs.Store // may be nil (history disabled, e.g. in tests)
+	registry *registry.Client
 
 	// Drift scheduler state: latest check outcome per project (in-memory) and
 	// a nudge channel so config changes take effect without waiting a tick.
@@ -52,6 +54,7 @@ type Server struct {
 // New builds a Server. runners maps each available engine to its runner.
 func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store) *Server {
 	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist,
+		registry:    registry.NewClient(),
 		driftStates: map[string]driftStatus{}, driftKick: make(chan struct{}, 1)}
 	s.auth.Store(authn)
 	// License gate: verify the persisted token (if any) against the embedded
@@ -128,6 +131,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/projects/{id}/runs/{rid}", s.handleGetRun)
 			r.Get("/projects/{id}/state", s.handleStateList)
 			r.Get("/projects/{id}/drift", s.handleGetDrift)
+			r.Get("/projects/{id}/provider-updates", s.handleProviderUpdates)
 
 			// Resource editing (PermResources).
 			r.Group(func(r chi.Router) {

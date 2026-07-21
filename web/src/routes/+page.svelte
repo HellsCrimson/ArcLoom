@@ -3,7 +3,7 @@
 	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type PlanChange, type RunOutput, type StateEntry } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
 	import StatePanel from '$lib/components/StatePanel.svelte';
-	import type { AttrValue, DriftConfig, Engine, Module, NormalizedSchema, Project, ProjectSummary, ProviderInstance, Resource, ResourceKind } from '$lib/types';
+	import type { AttrValue, DriftConfig, Engine, Module, NormalizedSchema, Project, ProjectSummary, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import ProjectConfig from '$lib/components/ProjectConfig.svelte';
@@ -19,7 +19,7 @@
 	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck, AlertTriangle, Search
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck, AlertTriangle, Search, ArrowUp
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -72,6 +72,9 @@
 	let stateEntries = $state<StateEntry[]>([]);
 	let stateLoading = $state(false);
 	let driftInfo = $state<DriftInfo | null>(null);
+	// Provider upgrade suggestions, keyed by source (best-effort registry check).
+	let providerUpdates = $state<Record<string, ProviderUpdate>>({});
+	let bumping = $state('');
 	let showImportResource = $state(false);
 	let importId = $state('');
 	// Backend (remote state) modal
@@ -174,6 +177,13 @@
 	const savedResources = $derived(activeMod ? (activeMod.resources ?? []) : (project?.resources ?? []));
 	const savedDataSources = $derived(activeMod ? (activeMod.dataSources ?? []) : (project?.dataSources ?? []));
 	const providers = $derived(project?.providers ?? []);
+	// A stable fingerprint of provider sources+pins; when it changes (project
+	// switch, add/edit/import/undo, version bump) we re-run the registry check.
+	const providerSig = $derived(providers.map((p) => `${p.source}@${p.version ?? ''}`).sort().join(','));
+	$effect(() => {
+		providerSig; // track
+		if (project) void loadProviderUpdates();
+	});
 	// Instances of the provider the form's resource type belongs to; a provider
 	// picker is shown when the source has more than one instance (aliases).
 	const formProviderInstances = $derived(
@@ -380,6 +390,43 @@
 			if (project.providers?.length) providerSource = project.providers[0].source;
 		} catch (err) {
 			error = (err as Error).message;
+		}
+	}
+
+	// loadProviderUpdates checks each provider source against the registry and
+	// keys the result by source for the sidebar badge. Best-effort: any failure
+	// just leaves the map empty (offline servers show no upgrade hints).
+	async function loadProviderUpdates() {
+		if (!project) return;
+		try {
+			const ups = await api.providerUpdates(project.id);
+			const map: Record<string, ProviderUpdate> = {};
+			for (const u of ups) map[u.source] = u;
+			providerUpdates = map;
+		} catch {
+			providerUpdates = {};
+		}
+	}
+
+	// bumpProvider pins a provider instance to the latest available version and
+	// re-checks so the badge clears once the pin catches up.
+	async function bumpProvider(prov: ProviderInstance, latest: string) {
+		if (!project) return;
+		error = '';
+		bumping = prov.source;
+		try {
+			project = await api.setProviderConfig(project.id, prov.key, {
+				alias: prov.alias || undefined,
+				source: prov.source,
+				version: latest,
+				config: prov.config ?? {}
+			});
+			await refreshHcl();
+			// The provider-signature $effect re-checks once the new pin lands.
+		} catch (err) {
+			error = (err as Error).message;
+		} finally {
+			bumping = '';
 		}
 	}
 
@@ -1403,10 +1450,28 @@
 						<ul class="space-y-0.5">
 							{#each providers as prov (prov.key + '.' + (prov.alias ?? ''))}
 								{@const addr = prov.alias ? `${prov.key}.${prov.alias}` : prov.key}
+								{@const up = providerUpdates[prov.source]}
 								<li class="group flex items-center gap-1">
 									<span class="mono flex-1 truncate text-[11px] text-[var(--al-muted)]" title={prov.source}>
 										{prov.key}{#if prov.alias}<span class="text-[var(--al-accent)]">.{prov.alias}</span>{/if}
 									</span>
+									{#if up?.update && up.latest}
+										{#if auth.can('resources')}
+											<button
+												class="flex items-center gap-0.5 rounded-full border px-1.5 py-px text-[10px] font-semibold transition-colors hover:text-black disabled:opacity-50"
+												style="border-color:#e3b34166;color:#e3b341;background:#e3b34114;"
+												onmouseenter={(e) => (e.currentTarget.style.background = '#e3b341')}
+												onmouseleave={(e) => (e.currentTarget.style.background = '#e3b34114')}
+												title="Update available: {up.current ?? up.pinned ?? '?'} → {up.latest}. Click to pin {addr} to {up.latest}."
+												disabled={bumping === prov.source}
+												onclick={() => bumpProvider(prov, up.latest!)}
+											>
+												{#if bumping === prov.source}<Loader2 size={10} class="animate-spin" />{:else}<ArrowUp size={10} />{/if}{up.latest}
+											</button>
+										{:else}
+											<span class="mono text-[10px]" style="color:#e3b341;" title="Update available: {up.current ?? up.pinned ?? '?'} → {up.latest}">↑{up.latest}</span>
+										{/if}
+									{/if}
 									{#if auth.can('resources')}
 										{#if !prov.alias}
 											<button class="{iconBtn} opacity-0 group-hover:opacity-100" title="Add aliased instance of {prov.key}" aria-label="Add provider alias" onclick={() => addProviderAlias(prov)}><Plus size={13} /></button>

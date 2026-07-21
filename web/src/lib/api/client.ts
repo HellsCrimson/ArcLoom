@@ -12,7 +12,8 @@ import type {
 	GitBranch,
 	AttrValue,
 	DriftConfig,
-	DriftStatus
+	DriftStatus,
+	ProviderUpdate
 } from '$lib/types';
 import { auth } from '$lib/stores/auth.svelte';
 
@@ -72,6 +73,9 @@ export const api = {
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(body)
 		}).then((r) => json<Project>(r)),
+
+	providerUpdates: (projectId: string) =>
+		fetch(`/api/projects/${projectId}/provider-updates`).then((r) => json<ProviderUpdate[]>(r)),
 
 	deleteProviderInstance: (projectId: string, key: string, alias?: string) =>
 		fetch(
