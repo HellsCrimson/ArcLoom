@@ -70,6 +70,12 @@ func (f *fakeRunner) Validate(context.Context, string, map[string][]byte, map[st
 	return nil, nil
 }
 func (f *fakeRunner) Graph(context.Context, map[string][]byte) (string, error) { return "", nil }
+func (f *fakeRunner) Lint(context.Context, map[string][]byte, io.Writer) (runner.LintResult, error) {
+	return runner.LintResult{}, nil
+}
+func (f *fakeRunner) Infracost(context.Context, string) (map[string]float64, error) {
+	return nil, nil
+}
 
 func driftTestServer(t *testing.T, fake *fakeRunner) (*Server, runs.Store) {
 	t.Helper()

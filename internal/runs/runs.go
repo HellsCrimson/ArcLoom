@@ -27,8 +27,11 @@ type Run struct {
 	FinishedAt time.Time `json:"finishedAt"`
 	Status     string    `json:"status"` // "success" | "error"
 	Error      string    `json:"error,omitempty"`
-	// Plan carries the structured summary for plan runs.
+	// Plan carries the structured summary for plan runs (its Cost field holds
+	// the cost breakdown when cost estimation is enabled).
 	Plan *runner.PlanResult `json:"plan,omitempty"`
+	// Lint carries tflint findings for lint runs.
+	Lint *runner.LintResult `json:"lint,omitempty"`
 	// Outputs carries the root outputs for successful applies.
 	Outputs []Output `json:"outputs,omitempty"`
 	// Log is the full streamed CLI output.

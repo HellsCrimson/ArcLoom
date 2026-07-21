@@ -341,6 +341,7 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		_ = s.settings.DeleteDrift(id)
 		_ = s.settings.DeleteGitCreds(id)
 		_ = s.settings.DeleteProjectACL(id)
+		_ = s.settings.DeleteCost(id)
 	}
 	if s.audit != nil {
 		_ = s.audit.DeleteProject(id)

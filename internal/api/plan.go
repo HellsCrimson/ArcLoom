@@ -41,6 +41,10 @@ func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) { s.strea
 // plan it is a read-only GET SSE consumed via EventSource.
 func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) { s.streamOp(w, r, "validate") }
 
+// handleLint streams a tflint run over the generated HCL. Read-only GET SSE like
+// validate; not license-gated (tflint is a community feature).
+func (s *Server) handleLint(w http.ResponseWriter, r *http.Request) { s.streamOp(w, r, "lint") }
+
 // State surgery ops stream like plan/apply (import runs init and talks to the
 // provider). Parameters arrive as query values; they are validated here so a
 // bad request fails with a 400 before the SSE stream starts.
@@ -145,6 +149,10 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		res, err = run.Plan(r.Context(), dir, files, tfVars, logW)
 		logW.flush()
 		if err == nil {
+			// Best-effort cost annotation (enterprise + enabled). Runs while the
+			// saved plan file still exists so Infracost can read it.
+			s.attachCost(r.Context(), run, dir, p, &res, logW)
+			logW.flush()
 			rec.Plan = &res
 			sse.event("result", res)
 		}
@@ -194,6 +202,32 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 				"valid":        res.Valid,
 				"errorCount":   res.ErrorCount,
 				"warningCount": res.WarningCount,
+			})
+		}
+	case "lint":
+		var res runner.LintResult
+		res, err = run.Lint(r.Context(), files, logW)
+		logW.flush()
+		if err == nil {
+			if !res.Available {
+				fmt.Fprintln(logW, "tflint is not installed on the server (PATH); no lint issues reported")
+			}
+			// Issues go through logW so they land in both the stream and the run
+			// record's log (mirrors validate's diagnostics printing).
+			for _, iss := range res.Issues {
+				loc := ""
+				if iss.Filename != "" {
+					loc = fmt.Sprintf(" (%s:%d)", iss.Filename, iss.Line)
+				}
+				fmt.Fprintf(logW, "%s: %s [%s]%s\n", iss.Severity, iss.Message, iss.Rule, loc)
+			}
+			logW.flush()
+			rec.Lint = &res
+			sse.event("result", map[string]any{
+				"available":    res.Available,
+				"errorCount":   res.ErrorCount,
+				"warningCount": res.WarningCount,
+				"lint":         res,
 			})
 		}
 	}

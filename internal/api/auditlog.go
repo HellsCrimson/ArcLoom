@@ -34,6 +34,7 @@ var auditActions = map[string]string{
 	"DELETE /projects/{id}/resources/{rid}":          "resource.delete",
 	"POST /projects/{id}/import/hcl":                 "import.hcl",
 	"POST /projects/{id}/import/state":               "import.state",
+	"PUT /projects/{id}/cost":                        "cost.set",
 	"POST /projects/{id}/git/commit":                 "git.commit",
 	"POST /projects/{id}/git/restore":                "git.restore",
 	"POST /projects/{id}/git/remote":                 "git.remote",

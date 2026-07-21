@@ -141,6 +141,16 @@ export const api = {
 			body: JSON.stringify(config)
 		}).then((r) => json<{ config: DriftConfig }>(r)),
 
+	getCost: (id: string) =>
+		fetch(`/api/projects/${id}/cost`).then((r) => json<{ config: CostConfig }>(r)),
+
+	setCost: (id: string, config: CostConfig) =>
+		fetch(`/api/projects/${id}/cost`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(config)
+		}).then((r) => json<{ config: CostConfig }>(r)),
+
 	deleteProject: async (id: string, force = false) => {
 		const res = await fetch(`/api/projects/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' });
 		if (res.status === 409) {
@@ -495,6 +505,55 @@ export interface PlanSummary {
 	change: number;
 	destroy: number;
 	replace: number;
+	cost?: CostSummary;
+}
+
+// CostLine is one resource's estimated monthly cost.
+export interface CostLine {
+	address: string;
+	type: string;
+	monthly: number;
+	source: 'override' | 'infracost';
+}
+
+// CostSummary is a plan's estimated monthly cost, merged from price overrides
+// and (optionally) Infracost.
+export interface CostSummary {
+	currency: string;
+	totalMonthly: number;
+	lines: CostLine[];
+	infracostUsed: boolean;
+	error?: string;
+}
+
+// LintIssue is one tflint finding.
+export interface LintIssue {
+	rule: string;
+	severity: 'error' | 'warning' | 'notice';
+	message: string;
+	filename?: string;
+	line?: number;
+}
+
+// LintSummary is a tflint run's findings.
+export interface LintSummary {
+	available: boolean;
+	issues: LintIssue[];
+	errorCount: number;
+	warningCount: number;
+}
+
+// CostOverride assigns a flat monthly price to a resource type or address.
+export interface CostOverride {
+	target: string;
+	monthly: number;
+	note?: string;
+}
+
+// CostConfig is a project's cost-estimation config.
+export interface CostConfig {
+	enabled: boolean;
+	overrides: CostOverride[];
 }
 
 // RunOutput is one root output value captured after an apply.
@@ -525,13 +584,14 @@ export interface DriftInfo {
 export interface RunRecord {
 	id: string;
 	projectId: string;
-	op: 'plan' | 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv' | 'init-backend' | 'validate' | 'drift';
+	op: 'plan' | 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv' | 'init-backend' | 'validate' | 'lint' | 'drift';
 	user: string;
 	startedAt: string;
 	finishedAt: string;
 	status: 'success' | 'error';
 	error?: string;
 	plan?: PlanSummary;
+	lint?: LintSummary;
 	outputs?: RunOutput[];
 	log?: string;
 }
@@ -548,17 +608,19 @@ export type PlanEvent =
 			valid?: boolean;
 			errorCount?: number;
 			warningCount?: number;
+			available?: boolean;
+			lint?: LintSummary;
 	  } & Partial<PlanSummary>)
 	| { kind: 'error'; error: string }
 	| { kind: 'done' };
 
-// streamPlan opens an SSE connection for a read-only streamed op (plan or
-// validate — both GETs consumed via EventSource) and invokes onEvent for each
+// streamPlan opens an SSE connection for a read-only streamed op (plan, validate
+// or lint — all GETs consumed via EventSource) and invokes onEvent for each
 // event. Returns a function that closes the stream.
 export function streamPlan(
 	projectId: string,
 	onEvent: (e: PlanEvent) => void,
-	op: 'plan' | 'validate' = 'plan'
+	op: 'plan' | 'validate' | 'lint' = 'plan'
 ): () => void {
 	const es = new EventSource(`/api/projects/${projectId}/${op}`);
 
@@ -576,9 +638,12 @@ export function streamPlan(
 			change: d.change ?? 0,
 			destroy: d.destroy ?? 0,
 			replace: d.replace ?? 0,
+			cost: d.cost,
 			valid: d.valid,
 			errorCount: d.errorCount ?? 0,
-			warningCount: d.warningCount ?? 0
+			warningCount: d.warningCount ?? 0,
+			available: d.available,
+			lint: d.lint
 		});
 	});
 	es.addEventListener('error', (ev) => {

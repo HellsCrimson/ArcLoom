@@ -204,3 +204,48 @@ func TestProjectACL_RoundTrip(t *testing.T) {
 		t.Fatal("empty list should clear the ACL")
 	}
 }
+
+func TestCost_RoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.yaml")
+	s, err := NewStore(path, "master-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := Cost{
+		Enabled: true,
+		Overrides: []CostOverride{
+			{Target: "proxmox_vm", Monthly: 12.5, Note: "homelab node"},
+			{Target: "aws_instance.web", Monthly: 5},
+		},
+	}
+	if err := s.SetCost("p1", in); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh store reloads the same config from disk.
+	s2, err := NewStore(path, "master-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s2.Cost("p1")
+	if !got.Enabled || len(got.Overrides) != 2 {
+		t.Fatalf("round-trip lost data: %+v", got)
+	}
+	if got.Overrides[0].Target != "proxmox_vm" || got.Overrides[0].Monthly != 12.5 || got.Overrides[0].Note != "homelab node" {
+		t.Fatalf("override 0 wrong: %+v", got.Overrides[0])
+	}
+
+	// The returned slice is a copy — mutating it must not affect the store.
+	got.Overrides[0].Monthly = 999
+	if again := s2.Cost("p1"); again.Overrides[0].Monthly != 12.5 {
+		t.Fatal("Cost() returned a mutable reference into the store")
+	}
+
+	// Delete removes it.
+	if err := s2.DeleteCost("p1"); err != nil {
+		t.Fatal(err)
+	}
+	if c := s2.Cost("p1"); c.Enabled || len(c.Overrides) != 0 {
+		t.Fatalf("expected empty config after delete, got %+v", c)
+	}
+}

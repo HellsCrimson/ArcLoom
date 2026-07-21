@@ -1,11 +1,16 @@
 package runner
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/hashicorp/terraform-exec/tfexec"
@@ -408,4 +413,191 @@ func (t *TfExec) Graph(ctx context.Context, files map[string][]byte) (string, er
 		return "", fmt.Errorf("graph: %w", err)
 	}
 	return dot, nil
+}
+
+// Lint runs tflint against the generated files in a throwaway workspace. tflint
+// analyzes the HCL directly, so no engine init, state or providers are needed.
+// A missing tflint binary yields Available=false rather than an error, so a
+// homelab without tflint installed still gets a clean (empty) result.
+func (t *TfExec) Lint(ctx context.Context, files map[string][]byte, out io.Writer) (LintResult, error) {
+	binPath, err := exec.LookPath("tflint")
+	if err != nil {
+		return LintResult{Available: false}, nil
+	}
+	ws, err := newWorkspace(t.workBase, t.execPath, files)
+	if err != nil {
+		return LintResult{}, err
+	}
+	defer ws.close()
+
+	// Best-effort ruleset install (only does anything when a .tflint.hcl config
+	// is present); failure is non-fatal — the bundled rules still run.
+	initCmd := exec.CommandContext(ctx, binPath, "--init")
+	initCmd.Dir = ws.dir
+	if out != nil {
+		initCmd.Stdout = out
+		initCmd.Stderr = out
+	}
+	_ = initCmd.Run()
+
+	// tflint exits non-zero (2) when it finds issues; the JSON on stdout is
+	// still valid, so parse regardless of exit status. stderr streams to the log.
+	var stdout bytes.Buffer
+	cmd := exec.CommandContext(ctx, binPath, "--format=json")
+	cmd.Dir = ws.dir
+	cmd.Stdout = &stdout
+	if out != nil {
+		cmd.Stderr = out
+	}
+	_ = cmd.Run()
+
+	res, err := parseTflint(stdout.Bytes())
+	if err != nil {
+		return LintResult{Available: true}, fmt.Errorf("parse tflint output: %w", err)
+	}
+	res.Available = true
+	return res, nil
+}
+
+// tflintOutput is the subset of `tflint --format json` we consume.
+type tflintOutput struct {
+	Issues []struct {
+		Rule struct {
+			Name     string `json:"name"`
+			Severity string `json:"severity"`
+		} `json:"rule"`
+		Message string `json:"message"`
+		Range   struct {
+			Filename string `json:"filename"`
+			Start    struct {
+				Line int `json:"line"`
+			} `json:"start"`
+		} `json:"range"`
+	} `json:"issues"`
+	Errors []struct {
+		Message  string `json:"message"`
+		Severity string `json:"severity"`
+	} `json:"errors"`
+}
+
+func parseTflint(data []byte) (LintResult, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return LintResult{Issues: []LintIssue{}}, nil
+	}
+	var out tflintOutput
+	if err := json.Unmarshal(data, &out); err != nil {
+		return LintResult{}, err
+	}
+	res := LintResult{Issues: make([]LintIssue, 0, len(out.Issues)+len(out.Errors))}
+	add := func(iss LintIssue) {
+		switch iss.Severity {
+		case "error":
+			res.ErrorCount++
+		case "warning":
+			res.WarningCount++
+		}
+		res.Issues = append(res.Issues, iss)
+	}
+	for _, i := range out.Issues {
+		add(LintIssue{
+			Rule:     i.Rule.Name,
+			Severity: strings.ToLower(i.Rule.Severity),
+			Message:  i.Message,
+			Filename: i.Range.Filename,
+			Line:     i.Range.Start.Line,
+		})
+	}
+	// tflint reports config/parse problems in a separate "errors" array.
+	for _, e := range out.Errors {
+		sev := strings.ToLower(e.Severity)
+		if sev == "" {
+			sev = "error"
+		}
+		add(LintIssue{Rule: "tflint", Severity: sev, Message: e.Message})
+	}
+	return res, nil
+}
+
+// Infracost estimates monthly costs from the binary plan file left by the
+// preceding Plan. It converts <dir>/tfplan to JSON via the engine's `show
+// -json`, then runs `infracost breakdown` against that JSON (so Infracost needs
+// neither provider access nor the secret TF_VARs — the plan is already
+// resolved). Returns address -> monthly USD.
+func (t *TfExec) Infracost(ctx context.Context, dir string) (map[string]float64, error) {
+	binPath, err := exec.LookPath("infracost")
+	if err != nil {
+		return nil, fmt.Errorf("infracost not installed")
+	}
+	unlock := lockDir(dir)
+	defer unlock()
+
+	planJSON := filepath.Join(dir, "plan.json")
+	f, err := os.Create(planJSON)
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(planJSON)
+	var showErr bytes.Buffer
+	show := exec.CommandContext(ctx, t.execPath, "show", "-json", planFileName)
+	show.Dir = dir
+	show.Stdout = f
+	show.Stderr = &showErr
+	runErr := show.Run()
+	f.Close()
+	if runErr != nil {
+		return nil, fmt.Errorf("read saved plan: %w: %s", runErr, strings.TrimSpace(showErr.String()))
+	}
+
+	var stdout, stderr bytes.Buffer
+	ic := exec.CommandContext(ctx, binPath, "breakdown", "--path", planJSON, "--format", "json", "--no-color")
+	ic.Dir = dir
+	ic.Stdout = &stdout
+	ic.Stderr = &stderr
+	if err := ic.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("infracost: %s", firstLine(msg))
+	}
+	return parseInfracost(stdout.Bytes())
+}
+
+// infracostOutput is the subset of `infracost breakdown --format json` we use.
+type infracostOutput struct {
+	Projects []struct {
+		Breakdown struct {
+			Resources []struct {
+				Name        string `json:"name"`
+				MonthlyCost string `json:"monthlyCost"`
+			} `json:"resources"`
+		} `json:"breakdown"`
+	} `json:"projects"`
+}
+
+func parseInfracost(data []byte) (map[string]float64, error) {
+	var out infracostOutput
+	if err := json.Unmarshal(bytes.TrimSpace(data), &out); err != nil {
+		return nil, fmt.Errorf("parse infracost output: %w", err)
+	}
+	prices := map[string]float64{}
+	for _, p := range out.Projects {
+		for _, r := range p.Breakdown.Resources {
+			if r.MonthlyCost == "" {
+				continue // Infracost couldn't price this resource
+			}
+			v, err := strconv.ParseFloat(r.MonthlyCost, 64)
+			if err != nil {
+				continue
+			}
+			prices[r.Name] = v
+		}
+	}
+	return prices, nil
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
 }

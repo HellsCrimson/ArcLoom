@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type PlanChange, type RunOutput, type StateEntry } from '$lib/api/client';
+	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type PlanChange, type RunOutput, type StateEntry, type CostSummary, type LintSummary } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
 	import StatePanel from '$lib/components/StatePanel.svelte';
 	import type { AttrValue, DriftConfig, Engine, Module, NormalizedSchema, Project, ProjectSummary, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
@@ -10,6 +10,7 @@
 	import SecretsModal from '$lib/components/SecretsModal.svelte';
 	import GitPanel from '$lib/components/GitPanel.svelte';
 	import AclModal from '$lib/components/AclModal.svelte';
+	import CostPanel from '$lib/components/CostPanel.svelte';
 	import UserMenu from '$lib/components/UserMenu.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
 	import CommandPalette, { type PaletteItem } from '$lib/components/CommandPalette.svelte';
@@ -20,7 +21,7 @@
 	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck, AlertTriangle, Search, ArrowUp
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck, AlertTriangle, Search, ArrowUp, Ruler, DollarSign
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -63,6 +64,8 @@
 	let planResult = $state<string>('');
 	let planChanges = $state<PlanChange[]>([]);
 	let planCounts = $state<{ add: number; change: number; destroy: number; replace: number } | null>(null);
+	let planCost = $state<CostSummary | null>(null);
+	let planLint = $state<LintSummary | null>(null);
 	let applyOutputs = $state<RunOutput[]>([]);
 	let showApplyConfirm = $state(false);
 	let showDestroyConfirm = $state(false);
@@ -115,6 +118,7 @@
 	let showGit = $state(false);
 	// Per-project access list (admin)
 	let showAcl = $state(false);
+	let showCost = $state(false);
 
 	// Secrets
 	let showSecrets = $state(false);
@@ -228,6 +232,8 @@
 		if (history.observe(project.id, JSON.stringify(project)) === 'recorded') {
 			planChanges = [];
 			planCounts = null;
+			planCost = null;
+			planLint = null;
 		}
 	});
 
@@ -257,6 +263,8 @@
 			}
 			planChanges = [];
 			planCounts = null;
+			planCost = null;
+			planLint = null;
 			await refreshProjects();
 			await refreshHcl();
 			restored = true;
@@ -330,10 +338,12 @@
 			if (auth.can('deploy')) {
 				items.push({ id: 'cmd:plan', label: 'Plan', hint: 'Ctrl+Enter', group: 'commands', run: runPlan });
 				items.push({ id: 'cmd:validate', label: 'Validate', group: 'commands', run: runValidate });
+				items.push({ id: 'cmd:lint', label: 'Lint (tflint)', group: 'commands', run: runLint });
 				items.push({ id: 'cmd:apply', label: 'Apply…', group: 'commands', run: () => (showApplyConfirm = true) });
 				items.push({ id: 'cmd:destroy', label: 'Destroy…', group: 'commands', run: () => { destroyName = ''; showDestroyConfirm = true; } });
 			}
 			if (auth.can('resources')) {
+				items.push({ id: 'cmd:cost', label: 'Cost estimation', group: 'commands', run: () => (showCost = true) });
 				items.push({ id: 'cmd:import-hcl', label: 'Import HCL', group: 'commands', run: () => { importMsg = ''; showImportHcl = true; } });
 				items.push({ id: 'cmd:import-state', label: 'Import state', group: 'commands', run: () => { importMsg = ''; showImportState = true; } });
 			}
@@ -508,6 +518,8 @@
 		planResult = '';
 		planChanges = [];
 		planCounts = null;
+		planCost = null;
+		planLint = null;
 		applyOutputs = [];
 		resourceTypes = [];
 		dataSourceTypes = [];
@@ -1122,6 +1134,8 @@
 		planResult = '';
 		planChanges = [];
 		planCounts = null;
+		planCost = null;
+		planLint = null;
 		applyOutputs = [];
 		busy = 'plan';
 		streamPlan(project.id, (ev) => {
@@ -1132,6 +1146,7 @@
 				planCounts = ev.hasChanges
 					? { add: ev.add ?? 0, change: ev.change ?? 0, destroy: ev.destroy ?? 0, replace: ev.replace ?? 0 }
 					: null;
+				planCost = ev.cost ?? null;
 			} else if (ev.kind === 'error') {
 				error = ev.error;
 				busy = '';
@@ -1148,6 +1163,8 @@
 		planResult = '';
 		planChanges = [];
 		planCounts = null;
+		planCost = null;
+		planLint = null;
 		applyOutputs = [];
 		busy = 'validate';
 		streamPlan(project.id, (ev) => {
@@ -1161,6 +1178,34 @@
 				busy = '';
 			} else if (ev.kind === 'done') busy = '';
 		}, 'validate');
+	}
+
+	// runLint streams a tflint run into the run pane (issues arrive as log lines;
+	// the result carries the structured findings + counts).
+	function runLint() {
+		if (!project) return;
+		error = '';
+		planLog = [];
+		planResult = '';
+		planChanges = [];
+		planCounts = null;
+		planCost = null;
+		planLint = null;
+		applyOutputs = [];
+		busy = 'lint';
+		streamPlan(project.id, (ev) => {
+			if (ev.kind === 'log') planLog = [...planLog, ev.line];
+			else if (ev.kind === 'result') {
+				planLint = ev.lint ?? null;
+				if (ev.available === false) planResult = 'tflint not installed';
+				else if ((ev.errorCount ?? 0) > 0) planResult = `${ev.errorCount} lint error(s)`;
+				else if ((ev.warningCount ?? 0) > 0) planResult = `${ev.warningCount} lint warning(s)`;
+				else planResult = 'No lint issues';
+			} else if (ev.kind === 'error') {
+				error = ev.error;
+				busy = '';
+			} else if (ev.kind === 'done') busy = '';
+		}, 'lint');
 	}
 
 	async function loadState() {
@@ -1210,6 +1255,8 @@
 		planResult = '';
 		planChanges = [];
 		planCounts = null;
+		planCost = null;
+		planLint = null;
 		applyOutputs = [];
 		busy = op;
 		streamOp(project.id, op, (ev) => {
@@ -1287,6 +1334,8 @@
 		planResult = '';
 		planChanges = [];
 		planCounts = null;
+		planCost = null;
+		planLint = null;
 		applyOutputs = [];
 		busy = op;
 		streamOp(project.id, op, (ev) => {
@@ -1379,6 +1428,11 @@
 				<button class={hdrBtn} onclick={() => { loadState(); loadDrift(); showState = true; }}>
 					<Layers size={14} /> State
 				</button>
+				{#if auth.can('resources')}
+					<button class={hdrBtn} onclick={() => (showCost = true)} title="Cost estimation settings">
+						<DollarSign size={14} /> Cost
+					</button>
+				{/if}
 				{#if auth.isAdmin}
 					<button class={hdrBtn} onclick={() => (showAcl = true)} title="Manage who can access this project">
 						<ShieldCheck size={14} /> Access
@@ -1668,9 +1722,12 @@
 				<HclView {hcl}>
 					{#snippet right()}
 						{#if auth.can('deploy')}
-						{@const running = busy === 'plan' || busy === 'validate' || busy === 'apply' || busy === 'destroy' || busy === 'import' || busy === 'state-rm' || busy === 'state-mv'}
+						{@const running = busy === 'plan' || busy === 'validate' || busy === 'lint' || busy === 'apply' || busy === 'destroy' || busy === 'import' || busy === 'state-rm' || busy === 'state-mv'}
 						<button class={btnGhost} title="Validate the generated configuration" onclick={runValidate} disabled={!project || running}>
 							{#if busy === 'validate'}<Loader2 size={14} class="animate-spin" />{:else}<ShieldCheck size={14} />{/if} Validate
+						</button>
+						<button class={btnGhost} title="Lint the generated configuration with tflint" onclick={runLint} disabled={!project || running}>
+							{#if busy === 'lint'}<Loader2 size={14} class="animate-spin" />{:else}<Ruler size={14} />{/if} Lint
 						</button>
 						<button class={btnGhost} onclick={runPlan} disabled={!project || running}>
 							{#if busy === 'plan'}<Loader2 size={14} class="animate-spin" />{:else}<Play size={14} />{/if} Plan
@@ -1695,6 +1752,7 @@
 				<div class="flex h-11 flex-none items-center border-b px-4" style="border-color:var(--al-code-border);">
 					<div class="font-mono" style="font-size:12.5px;font-weight:600;color:var(--al-code-text);">run output</div>
 					{#if planResult}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:{accentWeak};color:{accentHex};">{planResult}</span>{/if}
+					{#if planCost}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:rgba(16,185,129,0.15);color:#10b981;" title="Estimated monthly cost">${planCost.totalMonthly.toFixed(2)}/mo</span>{/if}
 					{#if planCounts}
 						<span class="ml-auto flex items-center gap-2 font-mono text-[11px] font-semibold">
 							<span style="color:{ACTION_COLOR.create}">+{planCounts.add}</span>
@@ -1718,6 +1776,44 @@
 								<span class="ml-auto flex-none text-[10px]" style="color:{ACTION_COLOR[c.action]}">{c.action}</span>
 							</button>
 						{/each}
+					</div>
+				{/if}
+				{#if planCost}
+					<div class="max-h-[40%] flex-none overflow-auto border-b py-1" style="border-color:var(--al-code-border);">
+						<div class="flex items-center gap-2 px-[18px] py-0.5">
+							<span class="text-[10px] font-semibold uppercase tracking-wide" style="color:var(--al-code-comment);">estimated cost</span>
+							<span class="ml-auto font-mono text-[11px] font-semibold" style="color:var(--al-code-text);">${planCost.totalMonthly.toFixed(2)}/mo</span>
+						</div>
+						{#if planCost.error}
+							<div class="px-[18px] py-0.5 text-[10px]" style="color:var(--al-code-comment);">Infracost unavailable ({planCost.error}) — using price overrides only</div>
+						{/if}
+						{#each planCost.lines as l (l.address)}
+							<div class="flex items-center gap-3 px-[18px] py-0.5 font-mono" style="font-size:11.5px;line-height:1.6;">
+								<span class="truncate" style="color:var(--al-code-text);" title={l.address}>{l.address}</span>
+								<span class="flex-none text-[9px] uppercase tracking-wide" style="color:var(--al-code-comment);">{l.source}</span>
+								<span class="ml-auto flex-none" style="color:var(--al-code-muted);">${l.monthly.toFixed(2)}/mo</span>
+							</div>
+						{/each}
+						{#if planCost.lines.length === 0}
+							<div class="px-[18px] py-0.5 text-[11px]" style="color:var(--al-code-muted);">No priced resources — add price overrides or configure Infracost.</div>
+						{/if}
+					</div>
+				{/if}
+				{#if planLint}
+					<div class="max-h-[40%] flex-none overflow-auto border-b py-1" style="border-color:var(--al-code-border);">
+						<div class="px-[18px] py-0.5 text-[10px] font-semibold uppercase tracking-wide" style="color:var(--al-code-comment);">
+							lint{#if !planLint.available} — tflint not installed{:else} · {planLint.issues.length} issue{planLint.issues.length === 1 ? '' : 's'}{/if}
+						</div>
+						{#each planLint.issues as iss, i (i)}
+							<div class="flex items-start gap-2 px-[18px] py-0.5 font-mono" style="font-size:11.5px;line-height:1.6;">
+								<span class="w-14 flex-none text-[10px] uppercase" style="color:{iss.severity === 'error' ? ACTION_COLOR.delete : ACTION_COLOR.update};">{iss.severity}</span>
+								<span class="truncate" style="color:var(--al-code-text);" title={iss.message}>{iss.message}</span>
+								{#if iss.filename}<span class="ml-auto flex-none text-[10px]" style="color:var(--al-code-comment);">{iss.filename}:{iss.line}</span>{/if}
+							</div>
+						{/each}
+						{#if planLint.available && planLint.issues.length === 0}
+							<div class="px-[18px] py-0.5 text-[11px]" style="color:var(--al-code-muted);">No issues found.</div>
+						{/if}
 					</div>
 				{/if}
 				{#if applyOutputs.length > 0}
@@ -1797,6 +1893,8 @@
 	<RunsPanel bind:open={showRuns} projectId={project.id} />
 
 	<AclModal bind:open={showAcl} projectId={project.id} projectName={project.name} />
+
+	<CostPanel bind:open={showCost} projectId={project.id} />
 
 	<StatePanel
 		bind:open={showState}

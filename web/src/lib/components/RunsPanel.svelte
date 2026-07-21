@@ -20,6 +20,7 @@
 		'state-mv': ACTION_COLOR.update,
 		'init-backend': '#c297ff',
 		validate: '#79c0ff',
+		lint: '#d2a8ff',
 		drift: '#e3b341'
 	};
 
@@ -96,6 +97,40 @@
 				{/each}
 			</div>
 		{/if}
+		{#if detail.plan?.cost}
+			<div class="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">
+				<span>Estimated cost</span>
+				<span class="ml-auto normal-case text-[var(--al-text)]">${detail.plan.cost.totalMonthly.toFixed(2)}/mo</span>
+			</div>
+			<div class="mb-2 rounded-md border border-[var(--al-border)] py-1">
+				{#each detail.plan.cost.lines as l (l.address)}
+					<div class="flex items-center gap-3 px-3 py-0.5 font-mono text-[11.5px]">
+						<span class="truncate text-[var(--al-text)]" title={l.address}>{l.address}</span>
+						<span class="flex-none text-[9px] uppercase text-[var(--al-muted)]">{l.source}</span>
+						<span class="ml-auto flex-none text-[var(--al-muted)]">${l.monthly.toFixed(2)}/mo</span>
+					</div>
+				{/each}
+				{#if detail.plan.cost.lines.length === 0}
+					<div class="px-3 py-0.5 text-[11.5px] text-[var(--al-muted)]">No priced resources.</div>
+				{/if}
+			</div>
+		{/if}
+		{#if detail.lint}
+			<div class="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">
+				Lint{#if !detail.lint.available} — tflint not installed{:else} · {detail.lint.issues.length} issue{detail.lint.issues.length === 1 ? '' : 's'}{/if}
+			</div>
+			{#if detail.lint.issues.length}
+				<div class="mb-2 rounded-md border border-[var(--al-border)] py-1">
+					{#each detail.lint.issues as iss, i (i)}
+						<div class="flex items-start gap-2 px-3 py-0.5 font-mono text-[11.5px]">
+							<span class="w-14 flex-none text-[10px] uppercase" style="color:{iss.severity === 'error' ? ACTION_COLOR.delete : ACTION_COLOR.update};">{iss.severity}</span>
+							<span class="truncate text-[var(--al-text)]" title={iss.message}>{iss.message}</span>
+							{#if iss.filename}<span class="ml-auto flex-none text-[10px] text-[var(--al-muted)]">{iss.filename}:{iss.line}</span>{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
+		{/if}
 		{#if detail.outputs?.length}
 			<div class="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Outputs</div>
 			<div class="mb-2 rounded-md border border-[var(--al-border)] py-1">
@@ -138,6 +173,16 @@
 									<span style="color:{ACTION_COLOR.delete}">−{r.plan.destroy}</span>
 								{:else}
 									<span class="text-[var(--al-muted)]">no changes</span>
+								{/if}
+								{#if r.plan.cost}<span style="color:#10b981;">${r.plan.cost.totalMonthly.toFixed(0)}/mo</span>{/if}
+							{:else if r.op === 'lint' && r.lint}
+								{#if !r.lint.available}
+									<span class="text-[var(--al-muted)]">tflint n/a</span>
+								{:else if r.lint.issues.length === 0}
+									<span class="text-[var(--al-muted)]">clean</span>
+								{:else}
+									<span style="color:{ACTION_COLOR.delete}">{r.lint.errorCount} err</span>
+									<span style="color:{ACTION_COLOR.update}">{r.lint.warningCount} warn</span>
 								{/if}
 							{:else if r.op === 'apply' && r.outputs?.length}
 								<span class="text-[var(--al-muted)]">{r.outputs.length} output{r.outputs.length === 1 ? '' : 's'}</span>

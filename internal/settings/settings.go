@@ -71,6 +71,25 @@ type GitCredMeta struct {
 	HasPassphrase bool   `json:"hasPassphrase"`
 }
 
+// CostOverride assigns a flat monthly price (USD) to a resource, keyed by
+// Target which is either a resource type ("proxmox_vm") or a full resource
+// address ("proxmox_vm.web"). An address match takes precedence over a type
+// match. Overrides let ArcLoom price providers Infracost cannot (homelab), and
+// win over Infracost's estimate where both exist.
+type CostOverride struct {
+	Target  string  `yaml:"target" json:"target"`
+	Monthly float64 `yaml:"monthly" json:"monthly"`
+	Note    string  `yaml:"note,omitempty" json:"note,omitempty"`
+}
+
+// Cost is one project's cost-estimation config: whether plans compute a cost
+// breakdown, and the user-defined flat-price overrides applied on top of any
+// Infracost pricing.
+type Cost struct {
+	Enabled   bool           `yaml:"enabled" json:"enabled"`
+	Overrides []CostOverride `yaml:"overrides,omitempty" json:"overrides"`
+}
+
 // ACLEntry grants one user a set of project-scoped permissions. An entry with
 // no perms still grants read access (the user can open the project). Perms are a
 // subset of the global Perm* capabilities and act as a *restriction* on top of
@@ -92,6 +111,9 @@ type document struct {
 	// restricted to admins + the listed users. Kept here so it stays out of
 	// HCL/Git/undo, like drift and git creds.
 	ACL map[string][]ACLEntry `yaml:"acl,omitempty"`
+	// Cost maps project ID -> cost-estimation config (enable + price overrides).
+	// Kept here so it stays out of HCL/Git/undo, like drift and ACLs.
+	Cost map[string]Cost `yaml:"cost,omitempty"`
 	// License is the ArcLoom Enterprise license token (vendor-signed, verified
 	// offline). Stored in plaintext — it is signed, not secret.
 	License string `yaml:"license,omitempty"`
@@ -221,6 +243,42 @@ func (s *Store) DeleteDrift(projectID string) error {
 		return nil
 	}
 	delete(s.doc.Drift, projectID)
+	return s.persist()
+}
+
+// Cost returns a project's cost-estimation config (zero value when none is
+// stored). The Overrides slice is copied so callers cannot mutate the store.
+func (s *Store) Cost(projectID string) Cost {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.doc.Cost[projectID]
+	if c.Overrides != nil {
+		out := make([]CostOverride, len(c.Overrides))
+		copy(out, c.Overrides)
+		c.Overrides = out
+	}
+	return c
+}
+
+// SetCost persists a project's cost-estimation config.
+func (s *Store) SetCost(projectID string, c Cost) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.doc.Cost == nil {
+		s.doc.Cost = map[string]Cost{}
+	}
+	s.doc.Cost[projectID] = c
+	return s.persist()
+}
+
+// DeleteCost removes a project's cost config (used when the project is deleted).
+func (s *Store) DeleteCost(projectID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.doc.Cost[projectID]; !ok {
+		return nil
+	}
+	delete(s.doc.Cost, projectID)
 	return s.persist()
 }
 

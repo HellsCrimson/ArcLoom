@@ -137,6 +137,7 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/projects/{id}/runs/{rid}", s.handleGetRun)
 				r.Get("/projects/{id}/state", s.handleStateList)
 				r.Get("/projects/{id}/drift", s.handleGetDrift)
+				r.Get("/projects/{id}/cost", s.handleGetCost)
 				r.Get("/projects/{id}/provider-updates", s.handleProviderUpdates)
 				r.Get("/projects/{id}/acl", s.handleGetACL)
 			})
@@ -164,6 +165,7 @@ func (s *Server) Handler() http.Handler {
 				r.Delete("/projects/{id}/resources/{rid}", s.handleDeleteResource)
 				r.Post("/projects/{id}/import/hcl", s.handleImportHCL)
 				r.Post("/projects/{id}/import/state", s.handleImportState)
+				r.Put("/projects/{id}/cost", s.handleSetCost)
 			})
 
 			// Deploy: plan / apply / destroy (PermDeploy). Plan is a GET so the
@@ -174,6 +176,7 @@ func (s *Server) Handler() http.Handler {
 				r.Use(s.requireProjectPerm(user.PermDeploy))
 				r.Get("/projects/{id}/plan", s.handlePlan)
 				r.Get("/projects/{id}/validate", s.handleValidate)
+				r.Get("/projects/{id}/lint", s.handleLint)
 				r.Post("/projects/{id}/apply", s.handleApply)
 				r.Post("/projects/{id}/destroy", s.handleDestroy)
 				// State surgery: adopt a live resource / fix drifted addresses.

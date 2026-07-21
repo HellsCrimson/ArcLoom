@@ -24,7 +24,7 @@ type licenseDTO struct {
 }
 
 // allFeatures is the catalog reported as "unlocked" for the current license.
-var allFeatures = []string{license.FeatureSSO, license.FeatureRBAC, license.FeatureDrift, license.FeatureMultiUser}
+var allFeatures = []string{license.FeatureSSO, license.FeatureRBAC, license.FeatureDrift, license.FeatureMultiUser, license.FeatureCost}
 
 func (s *Server) licenseResponse() licenseDTO {
 	m := s.license

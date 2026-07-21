@@ -37,6 +37,7 @@ const (
 	FeatureRBAC      = "rbac"       // per-project ACLs + audit log (PLAN item 14)
 	FeatureDrift     = "drift"      // scheduled drift detection
 	FeatureMultiUser = "multi_user" // more users than the community seat limit
+	FeatureCost      = "cost"       // plan-time cost estimation (overrides + Infracost)
 )
 
 // CommunitySeatLimit is how many users an unlicensed (community) install may

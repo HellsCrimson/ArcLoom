@@ -152,7 +152,8 @@
 		sso: 'Single sign-on (OIDC)',
 		rbac: 'Per-project ACLs + audit',
 		drift: 'Scheduled drift detection',
-		multi_user: 'Unlimited users'
+		multi_user: 'Unlimited users',
+		cost: 'Cost estimation (Infracost)'
 	};
 	let license = $state<LicenseStatus | null>(null);
 	let licenseToken = $state('');
