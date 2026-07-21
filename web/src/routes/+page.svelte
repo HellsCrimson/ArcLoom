@@ -1662,7 +1662,7 @@
 			{/if}
 		</main>
 
-		<aside class="flex w-[26rem] shrink-0 flex-col border-l" style="border-color:rgba(255,255,255,0.08);">
+		<aside class="flex w-[26rem] shrink-0 flex-col border-l" style="border-color:var(--al-border);">
 			<!-- Generated HCL — shares the graph editor's viewer for a consistent look -->
 			<div class="min-h-0 flex-[3]">
 				<HclView {hcl}>
@@ -1691,9 +1691,9 @@
 				</HclView>
 			</div>
 			<!-- Plan output -->
-			<div class="flex min-h-0 flex-[2] flex-col border-t" style="border-color:rgba(255,255,255,0.07);background:#0b0f18;">
-				<div class="flex h-11 flex-none items-center border-b px-4" style="border-color:rgba(255,255,255,0.07);">
-					<div class="font-mono" style="font-size:12.5px;font-weight:600;color:#c9d3dc;">run output</div>
+			<div class="flex min-h-0 flex-[2] flex-col border-t" style="border-color:var(--al-code-border);background:var(--al-code-bg);">
+				<div class="flex h-11 flex-none items-center border-b px-4" style="border-color:var(--al-code-border);">
+					<div class="font-mono" style="font-size:12.5px;font-weight:600;color:var(--al-code-text);">run output</div>
 					{#if planResult}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:{accentWeak};color:{accentHex};">{planResult}</span>{/if}
 					{#if planCounts}
 						<span class="ml-auto flex items-center gap-2 font-mono text-[11px] font-semibold">
@@ -1705,33 +1705,33 @@
 					{/if}
 				</div>
 				{#if planChanges.length > 0}
-					<div class="max-h-[45%] flex-none overflow-auto border-b py-1" style="border-color:rgba(255,255,255,0.07);">
+					<div class="max-h-[45%] flex-none overflow-auto border-b py-1" style="border-color:var(--al-code-border);">
 						{#each planChanges as c (c.address)}
 							<button
-								class="flex w-full items-center gap-2 px-[18px] py-0.5 text-left font-mono hover:bg-white/5"
+								class="flex w-full items-center gap-2 px-[18px] py-0.5 text-left font-mono hover:bg-[var(--al-panel-2)]"
 								style="font-size:11.5px;line-height:1.6;"
 								title="{c.address} — click to open"
 								onclick={() => jumpToAddress(c.address)}
 							>
 								<span class="w-3 flex-none text-center font-bold" style="color:{ACTION_COLOR[c.action]}">{ACTION_SYMBOL[c.action]}</span>
-								<span class="truncate" style="color:#c9d3dc;">{c.address}</span>
+								<span class="truncate" style="color:var(--al-code-text);">{c.address}</span>
 								<span class="ml-auto flex-none text-[10px]" style="color:{ACTION_COLOR[c.action]}">{c.action}</span>
 							</button>
 						{/each}
 					</div>
 				{/if}
 				{#if applyOutputs.length > 0}
-					<div class="max-h-[40%] flex-none overflow-auto border-b py-1" style="border-color:rgba(255,255,255,0.07);">
-						<div class="px-[18px] py-0.5 text-[10px] font-semibold uppercase tracking-wide" style="color:#6b7480;">outputs</div>
+					<div class="max-h-[40%] flex-none overflow-auto border-b py-1" style="border-color:var(--al-code-border);">
+						<div class="px-[18px] py-0.5 text-[10px] font-semibold uppercase tracking-wide" style="color:var(--al-code-comment);">outputs</div>
 						{#each applyOutputs as o (o.name)}
 							<div class="flex items-center gap-3 px-[18px] py-0.5 font-mono" style="font-size:11.5px;line-height:1.6;">
-								<span class="flex-none" style="color:#c9d3dc;">{o.name}</span>
-								<span class="ml-auto truncate" style="color:#8b95a5;" title={o.sensitive ? '' : o.value}>{o.sensitive ? '(sensitive)' : o.value}</span>
+								<span class="flex-none" style="color:var(--al-code-text);">{o.name}</span>
+								<span class="ml-auto truncate" style="color:var(--al-code-muted);" title={o.sensitive ? '' : o.value}>{o.sensitive ? '(sensitive)' : o.value}</span>
 							</div>
 						{/each}
 					</div>
 				{/if}
-				<pre class="flex-1 overflow-auto whitespace-pre-wrap px-[18px] py-3 font-mono" style="font-size:11.5px;line-height:1.6;color:#8b95a5;">{planLog.join('\n') || '// run plan or apply to see output'}</pre>
+				<pre class="flex-1 overflow-auto whitespace-pre-wrap px-[18px] py-3 font-mono" style="font-size:11.5px;line-height:1.6;color:var(--al-code-muted);">{planLog.join('\n') || '// run plan or apply to see output'}</pre>
 			</div>
 		</aside>
 		{/if}

@@ -5,14 +5,16 @@ export interface Tok {
 	c: string;
 }
 
+// Token colors are CSS-var references so the palette follows the active theme
+// (defined per theme in app.css as --al-code-*).
 const COL = {
-	text: '#c9d3dc',
-	comment: '#6b7480',
-	keyword: '#7aa2f7',
-	typ: '#7ee787',
-	ref: '#ffa657',
-	str: '#79c0ff',
-	punct: '#8b949e'
+	text: 'var(--al-code-text)',
+	comment: 'var(--al-code-comment)',
+	keyword: 'var(--al-code-keyword)',
+	typ: 'var(--al-code-type)',
+	ref: 'var(--al-code-ref)',
+	str: 'var(--al-code-str)',
+	punct: 'var(--al-code-punct)'
 };
 
 const KEYWORDS = new Set([

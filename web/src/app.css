@@ -1,8 +1,15 @@
 @import 'tailwindcss';
 
-/* ArcLoom theme — an IDE-leaning dark surface with a light fallback. */
-:root {
-	color-scheme: light dark;
+/* ArcLoom theme — an IDE-leaning dark surface with a first-class light theme.
+   The palette (incl. the code-editor "stage" colors) is a set of CSS variables;
+   components reference only these, so a theme is just a different variable set.
+   Dark is the default (:root). The theme store + the FOUC-guard script in
+   app.html resolve the choice ("system" → the OS preference) and stamp a
+   concrete data-theme="light|dark" on <html> before first paint, so the light
+   palette needs to be declared only once, under [data-theme='light']. */
+:root,
+:root[data-theme='dark'] {
+	color-scheme: dark;
 	--al-bg: #0d1117;
 	--al-panel: #161b22;
 	--al-panel-2: #1c2430;
@@ -13,6 +20,46 @@
 	--al-accent-weak: #1f3a5f;
 	--al-danger: #f85149;
 	--al-ok: #3fb950;
+	--al-warn: #d29922;
+
+	/* Code / editor "stage" surfaces (HCL preview, run output). */
+	--al-code-bg: #0b0f18;
+	--al-code-border: #1b2230;
+	--al-code-text: #c9d3dc;
+	--al-code-muted: #8b95a5;
+	--al-code-comment: #6b7480;
+	--al-code-keyword: #7aa2f7;
+	--al-code-type: #7ee787;
+	--al-code-ref: #ffa657;
+	--al-code-str: #79c0ff;
+	--al-code-punct: #8b949e;
+}
+
+:root[data-theme='light'] {
+	color-scheme: light;
+	--al-bg: #ffffff;
+	--al-panel: #f6f8fa;
+	--al-panel-2: #eaeef2;
+	--al-border: #d0d7de;
+	--al-text: #1f2328;
+	--al-muted: #656d76;
+	--al-accent: #0969da;
+	--al-accent-weak: #ddf4ff;
+	--al-danger: #cf222e;
+	--al-ok: #1a7f37;
+	--al-warn: #9a6700;
+
+	/* Code / editor "stage" surfaces — GitHub-light syntax tuned for a pale bg. */
+	--al-code-bg: #f6f8fa;
+	--al-code-border: #d0d7de;
+	--al-code-text: #1f2328;
+	--al-code-muted: #57606a;
+	--al-code-comment: #6e7781;
+	--al-code-keyword: #cf222e;
+	--al-code-type: #0550ae;
+	--al-code-ref: #953800;
+	--al-code-str: #0a3069;
+	--al-code-punct: #57606a;
 }
 
 html,

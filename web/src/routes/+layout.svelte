@@ -2,10 +2,16 @@
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
 	import { auth } from '$lib/stores/auth.svelte';
+	import { theme } from '$lib/stores/theme.svelte';
 	import Login from '$lib/components/Login.svelte';
 	import { Loader2 } from 'lucide-svelte';
 
 	let { children } = $props();
+
+	// Sync the theme with the DOM and watch the OS preference (runs once).
+	$effect(() => {
+		theme.init();
+	});
 
 	// Resolve the current session once on mount. The heavy app (+page.svelte)
 	// only mounts when authenticated. Pass showLoading so the gate shows the

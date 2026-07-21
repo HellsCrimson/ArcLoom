@@ -1,7 +1,11 @@
 <script lang="ts">
 	import { auth } from '$lib/stores/auth.svelte';
+	import { theme } from '$lib/stores/theme.svelte';
 	import Modal from '$lib/components/Modal.svelte';
-	import { UserRound, ChevronDown, LogOut, KeyRound } from 'lucide-svelte';
+	import { UserRound, ChevronDown, LogOut, KeyRound, Monitor, Sun, Moon } from 'lucide-svelte';
+
+	const themeBtn = (active: boolean) =>
+		`flex-1 inline-flex items-center justify-center rounded p-1 ${active ? 'bg-[var(--al-accent-weak)] text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}`;
 
 	let open = $state(false);
 	let showChange = $state(false);
@@ -66,6 +70,20 @@
 		<div
 			class="absolute right-0 top-full z-20 mt-1 w-44 overflow-hidden rounded-md border border-[var(--al-border)] bg-[var(--al-panel)] shadow-xl"
 		>
+			<div class="border-b border-[var(--al-border)] px-2 py-1.5">
+				<div class="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--al-muted)]">Theme</div>
+				<div class="flex items-center gap-1">
+					<button class={themeBtn(theme.pref === 'system')} onclick={() => theme.set('system')} title="Match system">
+						<Monitor size={14} />
+					</button>
+					<button class={themeBtn(theme.pref === 'light')} onclick={() => theme.set('light')} title="Light">
+						<Sun size={14} />
+					</button>
+					<button class={themeBtn(theme.pref === 'dark')} onclick={() => theme.set('dark')} title="Dark">
+						<Moon size={14} />
+					</button>
+				</div>
+			</div>
 			<button
 				class="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]"
 				onclick={openChange}
