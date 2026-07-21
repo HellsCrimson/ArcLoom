@@ -26,7 +26,7 @@ func TestDeleteProjectGuardsDeployedState(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := config.Config{AuthEnabled: false, CookieName: "arcloom_session", DataDir: dataDir}
 	authn := auth.New(auth.NewLocalProvider(user.NewMemory()))
-	h := New(cfg, nil, st, nil, nil, nil, authn, session.NewMemory(), user.NewMemory(), testSettings(t), nil).Handler()
+	h := New(cfg, nil, st, nil, nil, nil, authn, session.NewMemory(), user.NewMemory(), testSettings(t), nil, nil).Handler()
 
 	// State with one managed and one data resource → one deployed resource.
 	runDir := filepath.Join(dataDir, "p1", "run")

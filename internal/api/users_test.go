@@ -33,7 +33,7 @@ func newRBACServer(t *testing.T) (http.Handler, user.Store, session.Store) {
 	cfg := config.Config{AuthEnabled: true, CookieName: "arcloom_session", SessionTTL: time.Hour, DefaultEngine: "tofu"}
 	sessions := session.NewMemory()
 	authn := auth.New(auth.NewLocalProvider(users))
-	srv := New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, sessions, users, testSettings(t), nil)
+	srv := New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, sessions, users, testSettings(t), nil, nil)
 	// Run RBAC tests as an enterprise install so the community seat limit doesn't
 	// block creating additional users.
 	srv.license.Install(&license.License{Tier: license.TierEnterprise})

@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/HellsCrimson/ArcLoom/internal/audit"
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/cache"
 	"github.com/HellsCrimson/ArcLoom/internal/config"
@@ -41,7 +42,8 @@ type Server struct {
 	users    user.Store
 	settings *settings.Store
 	license  *license.Manager
-	runs     runs.Store // may be nil (history disabled, e.g. in tests)
+	runs     runs.Store  // may be nil (history disabled, e.g. in tests)
+	audit    audit.Store // may be nil (audit disabled, e.g. in tests)
 	registry *registry.Client
 
 	// Drift scheduler state: latest check outcome per project (in-memory) and
@@ -52,8 +54,8 @@ type Server struct {
 }
 
 // New builds a Server. runners maps each available engine to its runner.
-func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store) *Server {
-	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist,
+func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store, auditLog audit.Store) *Server {
+	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist, audit: auditLog,
 		registry:    registry.NewClient(),
 		driftStates: map[string]driftStatus{}, driftKick: make(chan struct{}, 1)}
 	s.auth.Store(authn)
@@ -111,31 +113,38 @@ func (s *Server) Handler() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
 
-			// Read-only / self-service (any authenticated user).
+			// Read-only / self-service (any authenticated user, project-agnostic).
 			r.Post("/auth/password", s.handlePasswordChange)
 			r.Get("/license", s.handleGetLicense)
 			r.Get("/engines", s.handleEngines)
 			r.Get("/providers/{source}/schema", s.handleProviderSchema)
 			r.Get("/providers/{source}/resources/{type}/schema", s.handleResourceSchema)
 			r.Get("/providers/{source}/datasources/{type}/schema", s.handleDataSourceSchema)
-			r.Get("/projects", s.handleListProjects)
-			r.Get("/projects/{id}", s.handleGetProject)
-			r.Get("/projects/{id}/secrets", s.handleListSecrets)
-			r.Get("/projects/{id}/hcl", s.handleProjectHCL)
-			r.Get("/projects/{id}/graph", s.handleGraph)
-			r.Get("/projects/{id}/git/status", s.handleGitStatus)
-			r.Get("/projects/{id}/git/log", s.handleGitLog)
-			r.Get("/projects/{id}/git/diff", s.handleGitDiff)
-			r.Get("/projects/{id}/git/branches", s.handleGitBranches)
-			r.Get("/projects/{id}/runs", s.handleListRuns)
-			r.Get("/projects/{id}/runs/{rid}", s.handleGetRun)
-			r.Get("/projects/{id}/state", s.handleStateList)
-			r.Get("/projects/{id}/drift", s.handleGetDrift)
-			r.Get("/projects/{id}/provider-updates", s.handleProviderUpdates)
+			r.Get("/projects", s.handleListProjects) // filtered by per-project ACL
 
-			// Resource editing (PermResources).
+			// Project reads gated by the per-project access list.
 			r.Group(func(r chi.Router) {
-				r.Use(s.requirePerm(user.PermResources))
+				r.Use(s.requireProjectRead)
+				r.Get("/projects/{id}", s.handleGetProject)
+				r.Get("/projects/{id}/secrets", s.handleListSecrets)
+				r.Get("/projects/{id}/hcl", s.handleProjectHCL)
+				r.Get("/projects/{id}/graph", s.handleGraph)
+				r.Get("/projects/{id}/git/status", s.handleGitStatus)
+				r.Get("/projects/{id}/git/log", s.handleGitLog)
+				r.Get("/projects/{id}/git/diff", s.handleGitDiff)
+				r.Get("/projects/{id}/git/branches", s.handleGitBranches)
+				r.Get("/projects/{id}/runs", s.handleListRuns)
+				r.Get("/projects/{id}/runs/{rid}", s.handleGetRun)
+				r.Get("/projects/{id}/state", s.handleStateList)
+				r.Get("/projects/{id}/drift", s.handleGetDrift)
+				r.Get("/projects/{id}/provider-updates", s.handleProviderUpdates)
+				r.Get("/projects/{id}/acl", s.handleGetACL)
+			})
+
+			// Resource editing (PermResources + per-project ACL, audited).
+			r.Group(func(r chi.Router) {
+				r.Use(s.requireProjectPerm(user.PermResources))
+				r.Use(s.auditMiddleware)
 				r.Post("/providers", s.handleAddProvider)
 				r.Post("/projects", s.handleCreateProject)
 				r.Put("/projects/{id}", s.handleReplaceProject)
@@ -162,7 +171,7 @@ func (s *Server) Handler() http.Handler {
 			// and are POSTs (fetch-streamed) so a bare link can never trigger
 			// them.
 			r.Group(func(r chi.Router) {
-				r.Use(s.requirePerm(user.PermDeploy))
+				r.Use(s.requireProjectPerm(user.PermDeploy))
 				r.Get("/projects/{id}/plan", s.handlePlan)
 				r.Get("/projects/{id}/validate", s.handleValidate)
 				r.Post("/projects/{id}/apply", s.handleApply)
@@ -176,9 +185,10 @@ func (s *Server) Handler() http.Handler {
 				r.Put("/projects/{id}/drift", s.handleSetDrift)
 			})
 
-			// Git operations (PermGit).
+			// Git operations (PermGit + per-project ACL, audited).
 			r.Group(func(r chi.Router) {
-				r.Use(s.requirePerm(user.PermGit))
+				r.Use(s.requireProjectPerm(user.PermGit))
+				r.Use(s.auditMiddleware)
 				r.Post("/projects/{id}/git/commit", s.handleGitCommit)
 				r.Post("/projects/{id}/git/restore", s.handleGitRestore)
 				r.Post("/projects/{id}/git/remote", s.handleGitRemote)
@@ -193,9 +203,11 @@ func (s *Server) Handler() http.Handler {
 				r.Delete("/projects/{id}/git/credentials", s.handleDeleteGitCredentials)
 			})
 
-			// Administration: user management + settings (admin only).
+			// Administration: user management + settings + audit (admin only,
+			// mutations audited).
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireAdmin)
+				r.Use(s.auditMiddleware)
 				r.Get("/admin/users", s.handleListUsers)
 				r.Post("/admin/users", s.handleCreateUser)
 				r.Put("/admin/users/{uid}", s.handleUpdateUser)
@@ -204,6 +216,10 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/admin/settings/sso", s.handleGetSSO)
 				r.Put("/admin/settings/sso", s.handleSetSSO)
 				r.Put("/admin/settings/license", s.handleSetLicense)
+				r.Get("/admin/audit", s.handleListAudit)
+				// ACL editing is admin-only and enforced in the handler (also
+				// gated behind the rbac license feature there).
+				r.Put("/projects/{id}/acl", s.handleSetACL)
 			})
 		})
 	})

@@ -9,6 +9,7 @@
 	import ProjectConfig from '$lib/components/ProjectConfig.svelte';
 	import SecretsModal from '$lib/components/SecretsModal.svelte';
 	import GitPanel from '$lib/components/GitPanel.svelte';
+	import AclModal from '$lib/components/AclModal.svelte';
 	import UserMenu from '$lib/components/UserMenu.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
 	import CommandPalette, { type PaletteItem } from '$lib/components/CommandPalette.svelte';
@@ -112,6 +113,8 @@
 
 	// Git
 	let showGit = $state(false);
+	// Per-project access list (admin)
+	let showAcl = $state(false);
 
 	// Secrets
 	let showSecrets = $state(false);
@@ -337,6 +340,7 @@
 		}
 		if (auth.can('resources')) items.push({ id: 'cmd:new-project', label: 'New project', group: 'commands', run: newProject });
 		if (auth.isAdmin) items.push({ id: 'cmd:settings', label: 'Settings', group: 'commands', run: () => (showSettings = true) });
+		if (auth.isAdmin && project) items.push({ id: 'cmd:access', label: 'Project access', group: 'commands', run: () => (showAcl = true) });
 		if (project) {
 			for (const r of project.resources) items.push(resItem(`${r.type}.${r.name}`));
 			for (const d of project.dataSources ?? []) items.push(resItem(`data.${d.type}.${d.name}`));
@@ -1375,6 +1379,11 @@
 				<button class={hdrBtn} onclick={() => { loadState(); loadDrift(); showState = true; }}>
 					<Layers size={14} /> State
 				</button>
+				{#if auth.isAdmin}
+					<button class={hdrBtn} onclick={() => (showAcl = true)} title="Manage who can access this project">
+						<ShieldCheck size={14} /> Access
+					</button>
+				{/if}
 				{#if auth.can('resources')}
 				<div class="relative">
 					<button class={hdrBtn} onclick={(e) => { e.stopPropagation(); importMsg = ''; showImportMenu = !showImportMenu; }}>
@@ -1786,6 +1795,8 @@
 	/>
 
 	<RunsPanel bind:open={showRuns} projectId={project.id} />
+
+	<AclModal bind:open={showAcl} projectId={project.id} projectName={project.name} />
 
 	<StatePanel
 		bind:open={showState}

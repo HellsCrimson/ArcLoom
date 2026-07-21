@@ -23,7 +23,7 @@ func licenseTestServer(t *testing.T) *Server {
 	t.Helper()
 	cfg := config.Config{AuthEnabled: false, CookieName: "arcloom_session", DefaultEngine: "tofu", DataDir: t.TempDir()}
 	authn := auth.New(auth.NewLocalProvider(user.NewMemory()))
-	return New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, session.NewMemory(), user.NewMemory(), testSettings(t), nil)
+	return New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, session.NewMemory(), user.NewMemory(), testSettings(t), nil, nil)
 }
 
 func TestLicenseStatusEndpoint(t *testing.T) {

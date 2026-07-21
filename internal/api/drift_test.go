@@ -84,7 +84,7 @@ func driftTestServer(t *testing.T, fake *fakeRunner) (*Server, runs.Store) {
 	cfg := config.Config{AuthEnabled: false, CookieName: "arcloom_session", DataDir: t.TempDir(), DefaultEngine: "tofu"}
 	authn := auth.New(auth.NewLocalProvider(user.NewMemory()))
 	srv := New(cfg, map[model.Engine]runner.Runner{model.EngineTofu: fake}, st, nil, nil, nil,
-		authn, session.NewMemory(), user.NewMemory(), testSettings(t), rh)
+		authn, session.NewMemory(), user.NewMemory(), testSettings(t), rh, nil)
 	// Scheduled drift is enterprise-gated; run these tests as a licensed install.
 	srv.license.Install(&license.License{Tier: license.TierEnterprise})
 	return srv, rh

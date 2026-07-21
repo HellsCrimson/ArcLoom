@@ -30,6 +30,9 @@ type Config struct {
 	// RunsDir holds recorded run history (plan/apply/destroy), one folder per
 	// project (never in Git).
 	RunsDir string
+	// AuditDir holds the append-only audit log (model edits, git ops, admin
+	// actions), never in Git.
+	AuditDir string
 	// SecretKey is the master passphrase for the local encrypted secrets
 	// backend (from ARCLOOM_SECRET_KEY); empty disables local storage.
 	SecretKey string
@@ -98,6 +101,7 @@ func Load() Config {
 		DataDir:        dataDir,
 		SecretsDir:     env("ARCLOOM_SECRETS_DIR", filepath.Join(filepath.Dir(dataDir), "secrets")),
 		RunsDir:        env("ARCLOOM_RUNS_DIR", filepath.Join(filepath.Dir(dataDir), "runs")),
+		AuditDir:       env("ARCLOOM_AUDIT_DIR", filepath.Join(filepath.Dir(dataDir), "audit")),
 		SecretKey:      os.Getenv("ARCLOOM_SECRET_KEY"),
 
 		AuthEnabled:   boolEnv("ARCLOOM_AUTH", true),

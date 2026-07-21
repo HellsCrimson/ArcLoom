@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/HellsCrimson/ArcLoom/internal/api"
+	"github.com/HellsCrimson/ArcLoom/internal/audit"
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/cache"
 	"github.com/HellsCrimson/ArcLoom/internal/config"
@@ -93,6 +94,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("init run history: %v", err)
 	}
+	auditLog, err := audit.NewDisk(cfg.AuditDir)
+	if err != nil {
+		log.Fatalf("init audit log: %v", err)
+	}
 	if sec.LocalEnabled() {
 		log.Printf("local secret store enabled (%s)", cfg.SecretsDir)
 	} else {
@@ -164,7 +169,7 @@ func main() {
 
 	// Initial Authenticator is local-only; ReloadAuth then adds OIDC from the
 	// persisted settings (bounded discovery; failure is non-fatal).
-	srv := api.New(cfg, runners, st, sc, sec, webui.FS(), auth.New(auth.NewLocalProvider(users)), sessions, users, set, runHist)
+	srv := api.New(cfg, runners, st, sc, sec, webui.FS(), auth.New(auth.NewLocalProvider(users)), sessions, users, set, runHist, auditLog)
 	rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
 	if err := srv.ReloadAuth(rctx); err != nil {
 		log.Printf("WARNING: OIDC SSO disabled: %v", err)

@@ -1,12 +1,13 @@
 <script lang="ts">
 	import Modal from '$lib/components/Modal.svelte';
 	import { api, type AdminUser, type SSOSettings, type LicenseStatus } from '$lib/api/client';
+	import type { AuditEntry } from '$lib/types';
 	import { auth } from '$lib/stores/auth.svelte';
-	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck, Award } from 'lucide-svelte';
+	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck, Award, ScrollText } from 'lucide-svelte';
 
 	let { open = $bindable(false) }: { open: boolean } = $props();
 
-	type Tab = 'users' | 'sso' | 'license';
+	type Tab = 'users' | 'sso' | 'license' | 'audit';
 	let tab = $state<Tab>('users');
 	let error = $state('');
 	let notice = $state('');
@@ -182,12 +183,30 @@
 		}
 	}
 
+	// --- Audit log ---
+	let auditEntries = $state<AuditEntry[]>([]);
+	let loadingAudit = $state(false);
+	let auditUserFilter = $state('');
+
+	async function loadAudit() {
+		loadingAudit = true;
+		error = '';
+		try {
+			auditEntries = await api.admin.listAudit({ user: auditUserFilter.trim() || undefined, limit: 300 });
+		} catch (e) {
+			error = (e as Error).message;
+		} finally {
+			loadingAudit = false;
+		}
+	}
+
 	// Load per-tab when the modal opens or the tab changes.
 	$effect(() => {
 		if (!open) return;
 		if (tab === 'users' && users.length === 0) loadUsers();
 		if (tab === 'sso' && sso === null) loadSSO();
 		if (tab === 'license' && license === null) loadLicense();
+		if (tab === 'audit' && auditEntries.length === 0) loadAudit();
 	});
 
 	const field =
@@ -201,6 +220,7 @@
 		<button class={tabBtn(tab === 'users')} onclick={() => (tab = 'users')}>Users</button>
 		<button class={tabBtn(tab === 'sso')} onclick={() => (tab = 'sso')}>Single sign-on</button>
 		<button class={tabBtn(tab === 'license')} onclick={() => (tab = 'license')}>License</button>
+		<button class={tabBtn(tab === 'audit')} onclick={() => (tab = 'audit')}>Audit log</button>
 	</div>
 
 	{#if error}<p class="mb-2 text-sm text-[var(--al-danger)]">{error}</p>{/if}
@@ -399,5 +419,40 @@
 			</div>
 			<p class="mt-2 text-[11px] text-[var(--al-muted)]">Keys are verified offline against an embedded vendor key. The homelab core works fully without a license.</p>
 		{/if}
+	{:else if tab === 'audit'}
+		<div class="mb-3 flex items-center gap-2">
+			<ScrollText size={15} class="text-[var(--al-muted)]" />
+			<span class="text-sm text-[var(--al-text)]">Recent changes — who did what, newest first.</span>
+			<input class="{field} ml-auto max-w-40 py-1 text-xs" placeholder="filter by user" bind:value={auditUserFilter} onkeydown={(e) => { if (e.key === 'Enter') loadAudit(); }} />
+			<button class="rounded-md border border-[var(--al-border)] px-2.5 py-1 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)] disabled:opacity-40" onclick={loadAudit} disabled={loadingAudit}>
+				{#if loadingAudit}<Loader2 size={12} class="animate-spin" />{:else}Refresh{/if}
+			</button>
+		</div>
+		<p class="mb-2 text-[11px] text-[var(--al-muted)]">Deploy operations (plan / apply / destroy) are recorded per project in the Runs panel.</p>
+		<div class="max-h-[52vh] overflow-y-auto rounded-md border border-[var(--al-border)]">
+			<table class="w-full text-xs">
+				<thead class="sticky top-0 bg-[var(--al-panel-2)] text-[var(--al-muted)]">
+					<tr>
+						<th class="px-2.5 py-1.5 text-left font-medium">When</th>
+						<th class="px-2.5 py-1.5 text-left font-medium">User</th>
+						<th class="px-2.5 py-1.5 text-left font-medium">Action</th>
+						<th class="px-2.5 py-1.5 text-left font-medium">Detail</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each auditEntries as e (e.id)}
+						<tr class="border-t border-[var(--al-border)]">
+							<td class="whitespace-nowrap px-2.5 py-1 text-[var(--al-muted)]">{new Date(e.time).toLocaleString()}</td>
+							<td class="px-2.5 py-1 text-[var(--al-text)]">{e.user || '—'}</td>
+							<td class="px-2.5 py-1"><span class="mono rounded bg-[var(--al-accent-weak)] px-1.5 py-0.5 text-[10px] text-[var(--al-accent)]">{e.action}</span></td>
+							<td class="mono truncate px-2.5 py-1 text-[10px] text-[var(--al-muted)]" style="max-width:0;">{e.detail ?? ''}</td>
+						</tr>
+					{/each}
+					{#if auditEntries.length === 0 && !loadingAudit}
+						<tr><td colspan="4" class="px-2.5 py-4 text-center text-[var(--al-muted)]">No audit entries yet.</td></tr>
+					{/if}
+				</tbody>
+			</table>
+		</div>
 	{/if}
 </Modal>

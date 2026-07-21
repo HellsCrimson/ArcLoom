@@ -171,3 +171,36 @@ func TestGitCreds_RequiresKeyForSecret(t *testing.T) {
 		t.Fatalf("storing without a secret should succeed: %v", err)
 	}
 }
+
+func TestProjectACL_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.yaml")
+	s, err := NewStore(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Absent => open.
+	if _, ok := s.ProjectACL("p1"); ok {
+		t.Fatal("new project should be unrestricted")
+	}
+	entries := []ACLEntry{{UserID: "u1", Perms: []string{"resources", "deploy"}}, {UserID: "u2"}}
+	if err := s.SetProjectACL("p1", entries); err != nil {
+		t.Fatal(err)
+	}
+	// Reload from disk.
+	s2, err := NewStore(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := s2.ProjectACL("p1")
+	if !ok || len(got) != 2 || got[0].UserID != "u1" || len(got[0].Perms) != 2 || got[1].UserID != "u2" {
+		t.Fatalf("round-trip lost data: %+v ok=%v", got, ok)
+	}
+	// Empty list clears the restriction.
+	if err := s2.SetProjectACL("p1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s2.ProjectACL("p1"); ok {
+		t.Fatal("empty list should clear the ACL")
+	}
+}

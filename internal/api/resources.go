@@ -59,9 +59,14 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Hide projects the caller may not read (per-project access list).
+	u, _ := userFromContext(r)
 	driftStates := s.driftStatuses()
 	out := make([]map[string]any, 0, len(projects))
 	for _, p := range projects {
+		if !s.projectVisible(u, p.ID) {
+			continue
+		}
 		entry := map[string]any{
 			"id":            p.ID,
 			"name":          p.Name,
@@ -335,6 +340,10 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	if s.settings != nil {
 		_ = s.settings.DeleteDrift(id)
 		_ = s.settings.DeleteGitCreds(id)
+		_ = s.settings.DeleteProjectACL(id)
+	}
+	if s.audit != nil {
+		_ = s.audit.DeleteProject(id)
 	}
 	s.driftMu.Lock()
 	delete(s.driftStates, id)

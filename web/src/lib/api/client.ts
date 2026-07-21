@@ -11,6 +11,8 @@ import type {
 	GitCommit,
 	GitBranch,
 	GitCredMeta,
+	AuditEntry,
+	ProjectACL,
 	AttrValue,
 	DriftConfig,
 	DriftStatus,
@@ -312,8 +314,28 @@ export const api = {
 				credentials: 'same-origin',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ token })
-			}).then((r) => json<LicenseStatus>(r))
+			}).then((r) => json<LicenseStatus>(r)),
+		listAudit: (params?: { project?: string; user?: string; limit?: number }) => {
+			const q = new URLSearchParams();
+			if (params?.project) q.set('project', params.project);
+			if (params?.user) q.set('user', params.user);
+			if (params?.limit) q.set('limit', String(params.limit));
+			const qs = q.toString();
+			return fetch(`/api/admin/audit${qs ? `?${qs}` : ''}`, { credentials: 'same-origin' }).then((r) =>
+				json<AuditEntry[]>(r)
+			);
+		},
+		setACL: (projectId: string, entries: { userId: string; perms: string[] }[]) =>
+			fetch(`/api/projects/${projectId}/acl`, {
+				method: 'PUT',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ entries })
+			}).then((r) => json<ProjectACL>(r))
 	},
+
+	getACL: (projectId: string) =>
+		fetch(`/api/projects/${projectId}/acl`, { credentials: 'same-origin' }).then((r) => json<ProjectACL>(r)),
 
 	getLicense: () => fetch('/api/license', { credentials: 'same-origin' }).then((r) => json<LicenseStatus>(r)),
 

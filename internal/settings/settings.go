@@ -71,6 +71,15 @@ type GitCredMeta struct {
 	HasPassphrase bool   `json:"hasPassphrase"`
 }
 
+// ACLEntry grants one user a set of project-scoped permissions. An entry with
+// no perms still grants read access (the user can open the project). Perms are a
+// subset of the global Perm* capabilities and act as a *restriction* on top of
+// the user's global permissions — an ACL can narrow access, never escalate it.
+type ACLEntry struct {
+	UserID string   `yaml:"user_id" json:"userId"`
+	Perms  []string `yaml:"perms,omitempty" json:"perms"`
+}
+
 type document struct {
 	SSO SSO `yaml:"sso"`
 	// Drift maps project ID -> drift schedule. Kept here (not on the project
@@ -78,6 +87,11 @@ type document struct {
 	Drift map[string]Drift `yaml:"drift,omitempty"`
 	// GitCreds maps project ID -> stored remote credential (encrypted secrets).
 	GitCreds map[string]GitCred `yaml:"git_creds,omitempty"`
+	// ACL maps project ID -> access list. A project ABSENT from the map is open
+	// (global RBAC applies); a project PRESENT (even with an empty list) is
+	// restricted to admins + the listed users. Kept here so it stays out of
+	// HCL/Git/undo, like drift and git creds.
+	ACL map[string][]ACLEntry `yaml:"acl,omitempty"`
 	// License is the ArcLoom Enterprise license token (vendor-signed, verified
 	// offline). Stored in plaintext — it is signed, not secret.
 	License string `yaml:"license,omitempty"`
@@ -293,6 +307,44 @@ func (s *Store) DeleteGitCreds(projectID string) error {
 	}
 	delete(s.doc.GitCreds, projectID)
 	return s.persist()
+}
+
+// ProjectACL returns a project's access list and whether one is configured
+// (ok=false means the project is open / unrestricted).
+func (s *Store) ProjectACL(projectID string) ([]ACLEntry, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	acl, ok := s.doc.ACL[projectID]
+	if !ok {
+		return nil, false
+	}
+	out := make([]ACLEntry, len(acl))
+	copy(out, acl)
+	return out, true
+}
+
+// SetProjectACL restricts a project to the given entries. Passing a nil/empty
+// list removes the restriction (the project becomes open again).
+func (s *Store) SetProjectACL(projectID string, entries []ACLEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(entries) == 0 {
+		if _, ok := s.doc.ACL[projectID]; !ok {
+			return nil
+		}
+		delete(s.doc.ACL, projectID)
+		return s.persist()
+	}
+	if s.doc.ACL == nil {
+		s.doc.ACL = map[string][]ACLEntry{}
+	}
+	s.doc.ACL[projectID] = entries
+	return s.persist()
+}
+
+// DeleteProjectACL removes a project's access list (used on project delete).
+func (s *Store) DeleteProjectACL(projectID string) error {
+	return s.SetProjectACL(projectID, nil)
 }
 
 func (s *Store) persist() error {

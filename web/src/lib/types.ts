@@ -219,6 +219,30 @@ export interface GitCommit {
 	date: string;
 }
 
+// AuditEntry is one recorded action in the admin-visible audit log.
+export interface AuditEntry {
+	id: string;
+	time: string;
+	user: string;
+	action: string;
+	projectId?: string;
+	detail?: string;
+}
+
+// ACLEntry grants one user a set of project-scoped permissions.
+export interface ACLEntry {
+	userId: string;
+	username: string;
+	perms: string[];
+}
+
+// ProjectACL is a project's access list. `restricted` false means the project
+// is open (global RBAC applies).
+export interface ProjectACL {
+	restricted: boolean;
+	entries: ACLEntry[];
+}
+
 // GitCredMeta describes a project's stored remote credential without exposing
 // any secret value.
 export interface GitCredMeta {
