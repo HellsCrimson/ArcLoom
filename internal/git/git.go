@@ -19,7 +19,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	httpauth "github.com/go-git/go-git/v5/plumbing/transport/http"
+	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/pmezard/go-difflib/difflib"
+	cryptossh "golang.org/x/crypto/ssh"
 )
 
 const gitignore = `# ArcLoom — never commit state or secrets
@@ -201,8 +203,10 @@ func statusWord(s *gogit.FileStatus) string {
 	}
 }
 
-// CommitChanges stages all changes and commits them, returning the new hash.
-func CommitChanges(dir, message, name, email string) (string, error) {
+// CommitChanges stages changes and commits them, returning the new hash. When
+// paths is empty every change is staged; otherwise only the listed paths are
+// staged (per-file staging), leaving the rest as uncommitted working changes.
+func CommitChanges(dir, message, name, email string, paths []string) (string, error) {
 	if message == "" {
 		return "", fmt.Errorf("commit message is required")
 	}
@@ -217,7 +221,7 @@ func CommitChanges(dir, message, name, email string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := wt.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
+	if err := stage(wt, dir, paths); err != nil {
 		return "", fmt.Errorf("stage: %w", err)
 	}
 	if name == "" {
@@ -233,6 +237,26 @@ func CommitChanges(dir, message, name, email string) (string, error) {
 		return "", err
 	}
 	return h.String(), nil
+}
+
+// stage adds the given paths to the index (or everything when paths is empty).
+// A path whose file no longer exists on disk is staged as a deletion.
+func stage(wt *gogit.Worktree, dir string, paths []string) error {
+	if len(paths) == 0 {
+		return wt.AddWithOptions(&gogit.AddOptions{All: true})
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(filepath.Join(dir, p)); os.IsNotExist(err) {
+			if _, err := wt.Remove(p); err != nil {
+				return fmt.Errorf("%s: %w", p, err)
+			}
+			continue
+		}
+		if _, err := wt.Add(p); err != nil {
+			return fmt.Errorf("%s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 // Log returns up to limit commits, newest first.
@@ -557,22 +581,40 @@ func SetRemote(dir, url string) error {
 	return err
 }
 
-// Push pushes to origin over HTTPS with a token.
-func Push(dir, username, token string) error {
+// Auth carries the credentials for a remote operation. The transport is chosen
+// from the remote URL: an SSH URL (git@host:… or ssh://…) uses SSHKey, an HTTPS
+// URL uses Username/Token. Fields left empty select an unauthenticated attempt.
+type Auth struct {
+	Username   string // HTTPS username (optional; defaults to "arcloom")
+	Token      string // HTTPS personal access token / password
+	SSHKey     string // SSH private key (PEM)
+	Passphrase string // SSH key passphrase (optional)
+}
+
+// Push pushes the current branch to origin.
+func Push(dir string, a Auth) error {
 	repo, err := gogit.PlainOpen(dir)
 	if err != nil {
 		return err
 	}
-	err = repo.Push(&gogit.PushOptions{RemoteName: "origin", Auth: auth(username, token)})
+	am, err := authFor(repo, a)
+	if err != nil {
+		return err
+	}
+	err = repo.Push(&gogit.PushOptions{RemoteName: "origin", Auth: am})
 	if errors.Is(err, gogit.NoErrAlreadyUpToDate) {
 		return nil
 	}
 	return err
 }
 
-// Pull pulls from origin over HTTPS with a token.
-func Pull(dir, username, token string) error {
+// Pull pulls from origin into the current branch's worktree.
+func Pull(dir string, a Auth) error {
 	repo, err := gogit.PlainOpen(dir)
+	if err != nil {
+		return err
+	}
+	am, err := authFor(repo, a)
 	if err != nil {
 		return err
 	}
@@ -580,21 +622,80 @@ func Pull(dir, username, token string) error {
 	if err != nil {
 		return err
 	}
-	err = wt.Pull(&gogit.PullOptions{RemoteName: "origin", Auth: auth(username, token)})
+	err = wt.Pull(&gogit.PullOptions{RemoteName: "origin", Auth: am})
 	if errors.Is(err, gogit.NoErrAlreadyUpToDate) {
 		return nil
 	}
 	return err
 }
 
-func auth(username, token string) transport.AuthMethod {
-	if token == "" {
-		return nil
+// authFor builds the transport auth for the origin remote, picking SSH vs HTTPS
+// from its URL. Returns nil (anonymous) when no matching credential is supplied.
+func authFor(repo *gogit.Repository, a Auth) (transport.AuthMethod, error) {
+	url := originURL(repo)
+	if isSSHURL(url) {
+		return sshAuth(url, a)
 	}
+	if a.Token == "" {
+		return nil, nil
+	}
+	username := a.Username
 	if username == "" {
 		username = "arcloom" // GitHub ignores the username when a PAT is the password
 	}
-	return &httpauth.BasicAuth{Username: username, Password: token}
+	return &httpauth.BasicAuth{Username: username, Password: a.Token}, nil
+}
+
+// sshAuth builds public-key auth from a stored private key. Host-key
+// verification is intentionally skipped: ArcLoom is a single-node homelab tool
+// with no interactive known_hosts prompt, and the remote is user-configured.
+func sshAuth(url string, a Auth) (transport.AuthMethod, error) {
+	if a.SSHKey == "" {
+		return nil, fmt.Errorf("this remote uses SSH — add an SSH private key credential")
+	}
+	user := sshUser(url)
+	keys, err := gitssh.NewPublicKeys(user, []byte(a.SSHKey), a.Passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("load SSH key: %w", err)
+	}
+	keys.HostKeyCallback = cryptossh.InsecureIgnoreHostKey()
+	return keys, nil
+}
+
+func originURL(repo *gogit.Repository) string {
+	rem, err := repo.Remote("origin")
+	if err != nil {
+		return ""
+	}
+	if urls := rem.Config().URLs; len(urls) > 0 {
+		return urls[0]
+	}
+	return ""
+}
+
+// isSSHURL reports whether a remote URL uses the SSH transport (scp-style
+// git@host:path or an explicit ssh:// scheme).
+func isSSHURL(url string) bool {
+	if strings.HasPrefix(url, "ssh://") {
+		return true
+	}
+	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+		return false
+	}
+	// scp-style "user@host:path": an '@' and a ':' before any '/'.
+	at := strings.IndexByte(url, '@')
+	colon := strings.IndexByte(url, ':')
+	slash := strings.IndexByte(url, '/')
+	return at > 0 && colon > at && (slash == -1 || colon < slash)
+}
+
+// sshUser extracts the login from an SSH remote URL, defaulting to "git".
+func sshUser(url string) string {
+	rest := strings.TrimPrefix(url, "ssh://")
+	if at := strings.IndexByte(rest, '@'); at > 0 {
+		return rest[:at]
+	}
+	return "git"
 }
 
 func fileAtHead(repo *gogit.Repository, path string) (string, bool) {

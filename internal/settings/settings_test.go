@@ -102,3 +102,72 @@ func TestSetSSO_RequiresKeyForSecret(t *testing.T) {
 		t.Fatalf("no-secret save should succeed: %v", err)
 	}
 }
+
+func TestGitCreds_RoundTripEncryptsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.yaml")
+	s, err := NewStore(path, "master-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetGitCreds("proj1", GitCred{
+		AuthType: "ssh", Username: "git",
+		SSHKey: "PRIVATE-KEY-MATERIAL", Passphrase: "hunter2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// No plaintext secret on disk.
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "PRIVATE-KEY-MATERIAL") || strings.Contains(string(raw), "hunter2") {
+		t.Fatal("git credential stored in plaintext on disk")
+	}
+
+	// Meta never exposes secrets but reports what is stored.
+	m := s.GitCredMeta("proj1")
+	if !m.Stored || m.AuthType != "ssh" || m.Username != "git" || !m.HasSSHKey || !m.HasPassphrase || m.HasToken {
+		t.Fatalf("unexpected meta: %+v", m)
+	}
+
+	// A fresh store decrypts the secrets back.
+	s2, err := NewStore(path, "master-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, ok := s2.GitCreds("proj1")
+	if !ok || c.SSHKey != "PRIVATE-KEY-MATERIAL" || c.Passphrase != "hunter2" {
+		t.Fatalf("round-trip lost data: %+v ok=%v", c, ok)
+	}
+
+	// Empty secret fields keep the previously stored values (UI need not resend).
+	if err := s2.SetGitCreds("proj1", GitCred{AuthType: "ssh", Username: "deploy"}); err != nil {
+		t.Fatal(err)
+	}
+	c, _ = s2.GitCreds("proj1")
+	if c.Username != "deploy" || c.SSHKey != "PRIVATE-KEY-MATERIAL" {
+		t.Fatalf("blank secret should keep prior key: %+v", c)
+	}
+
+	// Delete clears it.
+	if err := s2.DeleteGitCreds("proj1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s2.GitCreds("proj1"); ok {
+		t.Fatal("credential should be gone after delete")
+	}
+}
+
+func TestGitCreds_RequiresKeyForSecret(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(filepath.Join(dir, "settings.yaml"), "") // no master key
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetGitCreds("p", GitCred{AuthType: "https", Token: "pat"}); err != ErrSecretKeyRequired {
+		t.Fatalf("want ErrSecretKeyRequired, got %v", err)
+	}
+	// Non-secret metadata is storable without a key.
+	if err := s.SetGitCreds("p", GitCred{AuthType: "https", Username: "u"}); err != nil {
+		t.Fatalf("storing without a secret should succeed: %v", err)
+	}
+}

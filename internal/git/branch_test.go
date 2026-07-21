@@ -17,7 +17,7 @@ func TestBranchLifecycle(t *testing.T) {
 		t.Fatal("expected error creating a branch with no commits")
 	}
 
-	if _, err := CommitChanges(dir, "initial", "T", "t@e.com"); err != nil {
+	if _, err := CommitChanges(dir, "initial", "T", "t@e.com", nil); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	base := branchTip(t, dir)
@@ -40,7 +40,7 @@ func TestBranchLifecycle(t *testing.T) {
 
 	// Commit on feature so it advances past base.
 	write(t, dir, "arcloom.yaml", "name: demo\nchanged: true\n")
-	if _, err := CommitChanges(dir, "feature work", "T", "t@e.com"); err != nil {
+	if _, err := CommitChanges(dir, "feature work", "T", "t@e.com", nil); err != nil {
 		t.Fatalf("commit on feature: %v", err)
 	}
 	featTip := branchTip(t, dir)

@@ -33,7 +33,7 @@ func TestGitLifecycle(t *testing.T) {
 	}
 
 	// First commit initializes + records.
-	h1, err := CommitChanges(dir, "initial", "Tester", "t@example.com")
+	h1, err := CommitChanges(dir, "initial", "Tester", "t@example.com", nil)
 	if err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestGitLifecycle(t *testing.T) {
 	}
 
 	// Second commit.
-	h2, err := CommitChanges(dir, "add a", "", "")
+	h2, err := CommitChanges(dir, "add a", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,5 +100,89 @@ func TestGitLifecycle(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(dir, "generated/main.tf"))
 	if strings.Contains(string(got), "a = 1") {
 		t.Errorf("restore did not revert file: %s", got)
+	}
+}
+
+func TestPerFileStaging(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "arcloom.yaml", "name: demo\n")
+	if _, err := CommitChanges(dir, "initial", "T", "t@e.com", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two new files; commit only one of them.
+	write(t, dir, "generated/a.tf", "resource \"a\" \"a\" {}\n")
+	write(t, dir, "generated/b.tf", "resource \"b\" \"b\" {}\n")
+	if _, err := CommitChanges(dir, "add a only", "T", "t@e.com", []string{"generated/a.tf"}); err != nil {
+		t.Fatalf("partial commit: %v", err)
+	}
+
+	// b.tf remains an uncommitted change.
+	st, _ := GetStatus(dir)
+	if st.Clean {
+		t.Fatal("b.tf should still be an uncommitted change")
+	}
+	if len(st.Files) != 1 || st.Files[0].Path != "generated/b.tf" {
+		t.Fatalf("expected only b.tf pending, got %+v", st.Files)
+	}
+
+	// The committed tree contains a.tf but not b.tf.
+	cd, err := CommitDiff(dir, mustHead(t, dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cd, "generated/a.tf") || strings.Contains(cd, "generated/b.tf") {
+		t.Errorf("commit should include a.tf only:\n%s", cd)
+	}
+
+	// Staging a deletion: remove a.tf and commit that path.
+	if err := os.Remove(filepath.Join(dir, "generated/a.tf")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CommitChanges(dir, "drop a", "T", "t@e.com", []string{"generated/a.tf"}); err != nil {
+		t.Fatalf("commit deletion: %v", err)
+	}
+	cd, _ = CommitDiff(dir, mustHead(t, dir))
+	if !strings.Contains(cd, "generated/a.tf") {
+		t.Errorf("deletion commit should reference a.tf:\n%s", cd)
+	}
+}
+
+func mustHead(t *testing.T, dir string) string {
+	t.Helper()
+	commits, err := Log(dir, 1)
+	if err != nil || len(commits) == 0 {
+		t.Fatalf("no head commit: %v", err)
+	}
+	return commits[0].Hash
+}
+
+func TestSSHURLDetection(t *testing.T) {
+	cases := []struct {
+		url  string
+		ssh  bool
+		user string
+	}{
+		{"https://github.com/you/repo.git", false, ""},
+		{"http://example.com/r.git", false, ""},
+		{"git@github.com:you/repo.git", true, "git"},
+		{"ssh://git@example.com:22/you/repo.git", true, "git"},
+		{"ssh://deploy@host/path.git", true, "deploy"},
+	}
+	for _, c := range cases {
+		if got := isSSHURL(c.url); got != c.ssh {
+			t.Errorf("isSSHURL(%q) = %v, want %v", c.url, got, c.ssh)
+		}
+		if c.ssh {
+			if got := sshUser(c.url); got != c.user {
+				t.Errorf("sshUser(%q) = %q, want %q", c.url, got, c.user)
+			}
+		}
+	}
+}
+
+func TestSSHAuthRequiresKey(t *testing.T) {
+	if _, err := sshAuth("git@github.com:you/repo.git", Auth{}); err == nil {
+		t.Fatal("expected error when SSH remote has no key")
 	}
 }

@@ -43,11 +43,41 @@ type Drift struct {
 	IntervalMinutes int  `yaml:"interval_minutes" json:"intervalMinutes"`
 }
 
+// GitCred is one project's stored remote credential, so a homelabber need not
+// retype a PAT / SSH key on every push and pull. The secret fields (Token,
+// SSHKey, Passphrase) are held in memory only; on disk they live encrypted in
+// their *Enc counterparts (reusing the ARCLOOM_SECRET_KEY-derived key).
+type GitCred struct {
+	AuthType string `yaml:"auth_type" json:"authType"` // "https" | "ssh"
+	Username string `yaml:"username,omitempty" json:"username,omitempty"`
+
+	Token      string `yaml:"-" json:"-"` // HTTPS personal access token
+	SSHKey     string `yaml:"-" json:"-"` // SSH private key (PEM)
+	Passphrase string `yaml:"-" json:"-"` // SSH key passphrase
+
+	TokenEnc      string `yaml:"token_enc,omitempty" json:"-"`
+	SSHKeyEnc     string `yaml:"ssh_key_enc,omitempty" json:"-"`
+	PassphraseEnc string `yaml:"passphrase_enc,omitempty" json:"-"`
+}
+
+// GitCredMeta describes stored credentials WITHOUT exposing any secret, for the
+// UI to show what is on file and prefill the auth type / username.
+type GitCredMeta struct {
+	Stored        bool   `json:"stored"`
+	AuthType      string `json:"authType"`
+	Username      string `json:"username,omitempty"`
+	HasToken      bool   `json:"hasToken"`
+	HasSSHKey     bool   `json:"hasSSHKey"`
+	HasPassphrase bool   `json:"hasPassphrase"`
+}
+
 type document struct {
 	SSO SSO `yaml:"sso"`
 	// Drift maps project ID -> drift schedule. Kept here (not on the project
 	// model) so it stays out of generated HCL, Git and undo/redo snapshots.
 	Drift map[string]Drift `yaml:"drift,omitempty"`
+	// GitCreds maps project ID -> stored remote credential (encrypted secrets).
+	GitCreds map[string]GitCred `yaml:"git_creds,omitempty"`
 	// License is the ArcLoom Enterprise license token (vendor-signed, verified
 	// offline). Stored in plaintext — it is signed, not secret.
 	License string `yaml:"license,omitempty"`
@@ -177,6 +207,91 @@ func (s *Store) DeleteDrift(projectID string) error {
 		return nil
 	}
 	delete(s.doc.Drift, projectID)
+	return s.persist()
+}
+
+// GitCreds returns a project's stored credential with its secret fields
+// decrypted in memory (ok=false when none is stored).
+func (s *Store) GitCreds(projectID string) (GitCred, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.doc.GitCreds[projectID]
+	if !ok {
+		return GitCred{}, false
+	}
+	c.Token = s.decryptSecret(c.TokenEnc)
+	c.SSHKey = s.decryptSecret(c.SSHKeyEnc)
+	c.Passphrase = s.decryptSecret(c.PassphraseEnc)
+	c.TokenEnc, c.SSHKeyEnc, c.PassphraseEnc = "", "", ""
+	return c, true
+}
+
+// GitCredMeta reports what is stored for a project without exposing any secret.
+func (s *Store) GitCredMeta(projectID string) GitCredMeta {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.doc.GitCreds[projectID]
+	if !ok {
+		return GitCredMeta{}
+	}
+	return GitCredMeta{
+		Stored:        true,
+		AuthType:      c.AuthType,
+		Username:      c.Username,
+		HasToken:      c.TokenEnc != "",
+		HasSSHKey:     c.SSHKeyEnc != "",
+		HasPassphrase: c.PassphraseEnc != "",
+	}
+}
+
+// SetGitCreds persists a project's credential. Non-empty secret fields are
+// encrypted; empty ones keep the previously stored value (so the UI need not
+// resend a token/key it never received back). Requires a master key when
+// introducing a new secret.
+func (s *Store) SetGitCreds(projectID string, in GitCred) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prev := s.doc.GitCreds[projectID]
+	enc := func(plain, existing string) (string, error) {
+		if plain == "" {
+			return existing, nil
+		}
+		if s.key == nil {
+			return "", ErrSecretKeyRequired
+		}
+		blob, err := secrets.Encrypt(s.key, []byte(plain))
+		if err != nil {
+			return "", err
+		}
+		return base64.StdEncoding.EncodeToString(blob), nil
+	}
+	var err error
+	if in.TokenEnc, err = enc(in.Token, prev.TokenEnc); err != nil {
+		return err
+	}
+	if in.SSHKeyEnc, err = enc(in.SSHKey, prev.SSHKeyEnc); err != nil {
+		return err
+	}
+	if in.PassphraseEnc, err = enc(in.Passphrase, prev.PassphraseEnc); err != nil {
+		return err
+	}
+	in.Token, in.SSHKey, in.Passphrase = "", "", ""
+	if s.doc.GitCreds == nil {
+		s.doc.GitCreds = map[string]GitCred{}
+	}
+	s.doc.GitCreds[projectID] = in
+	return s.persist()
+}
+
+// DeleteGitCreds removes a project's stored credential (also on project delete).
+func (s *Store) DeleteGitCreds(projectID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.doc.GitCreds[projectID]; !ok {
+		return nil
+	}
+	delete(s.doc.GitCreds, projectID)
 	return s.persist()
 }
 

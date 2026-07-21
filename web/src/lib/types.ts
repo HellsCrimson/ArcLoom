@@ -219,6 +219,17 @@ export interface GitCommit {
 	date: string;
 }
 
+// GitCredMeta describes a project's stored remote credential without exposing
+// any secret value.
+export interface GitCredMeta {
+	stored: boolean;
+	authType: string; // "https" | "ssh"
+	username?: string;
+	hasToken: boolean;
+	hasSSHKey: boolean;
+	hasPassphrase: boolean;
+}
+
 // DriftConfig is a project's scheduled drift-check setting (periodic
 // refresh-only plans on the server).
 export interface DriftConfig {

@@ -10,6 +10,7 @@ import type {
 	GitStatus,
 	GitCommit,
 	GitBranch,
+	GitCredMeta,
 	AttrValue,
 	DriftConfig,
 	DriftStatus,
@@ -323,11 +324,11 @@ export const api = {
 			fetch(`/api/projects/${id}/git/diff${commit ? `?commit=${commit}` : ''}`).then((r) =>
 				json<{ diff: string }>(r).then((d) => d.diff)
 			),
-		commit: (id: string, message: string) =>
+		commit: (id: string, message: string, paths?: string[]) =>
 			fetch(`/api/projects/${id}/git/commit`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ message })
+				body: JSON.stringify(paths && paths.length ? { message, paths } : { message })
 			}).then((r) => json<{ hash: string }>(r)),
 		restore: (id: string, commit: string) =>
 			fetch(`/api/projects/${id}/git/restore`, {
@@ -358,7 +359,20 @@ export const api = {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ name })
-			}).then((r) => json<Project>(r))
+			}).then((r) => json<Project>(r)),
+		credentials: (id: string) =>
+			fetch(`/api/projects/${id}/git/credentials`).then((r) => json<GitCredMeta>(r)),
+		setCredentials: (
+			id: string,
+			body: { authType: string; username?: string; token?: string; sshKey?: string; passphrase?: string }
+		) =>
+			fetch(`/api/projects/${id}/git/credentials`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			}).then((r) => json<GitCredMeta>(r)),
+		deleteCredentials: (id: string) =>
+			gitAction(`/api/projects/${id}/git/credentials`, undefined, 'DELETE')
 	}
 };
 

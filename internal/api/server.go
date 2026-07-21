@@ -188,6 +188,9 @@ func (s *Server) Handler() http.Handler {
 				r.Delete("/projects/{id}/git/branch", s.handleGitDeleteBranch)
 				r.Post("/projects/{id}/git/checkout", s.handleGitCheckout)
 				r.Post("/projects/{id}/git/merge", s.handleGitMerge)
+				r.Get("/projects/{id}/git/credentials", s.handleGitCredentials)
+				r.Put("/projects/{id}/git/credentials", s.handleSetGitCredentials)
+				r.Delete("/projects/{id}/git/credentials", s.handleDeleteGitCredentials)
 			})
 
 			// Administration: user management + settings (admin only).

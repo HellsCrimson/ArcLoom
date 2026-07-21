@@ -334,6 +334,7 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.settings != nil {
 		_ = s.settings.DeleteDrift(id)
+		_ = s.settings.DeleteGitCreds(id)
 	}
 	s.driftMu.Lock()
 	delete(s.driftStates, id)

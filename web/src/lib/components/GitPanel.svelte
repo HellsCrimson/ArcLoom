@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
-	import type { GitStatus, GitCommit, GitBranch as GitBranchType, Project } from '$lib/types';
+	import type { GitStatus, GitCommit, GitBranch as GitBranchType, GitCredMeta, Project } from '$lib/types';
 	import Modal from './Modal.svelte';
 	import {
 		GitBranch, GitCommitVertical, History, Loader2, Upload, Download, RotateCcw, Cloud,
-		GitMerge, Trash2, Plus, ArrowUp, ArrowDown
+		GitMerge, Trash2, Plus, ArrowUp, ArrowDown, KeyRound
 	} from 'lucide-svelte';
 
 	let {
@@ -24,11 +24,22 @@
 	let err = $state('');
 	let info = $state('');
 
+	// Per-file staging: which changed paths the next commit will include.
+	let staged = $state<Set<string>>(new Set());
+
 	// Remote
 	let remoteUrl = $state('');
 	let username = $state('');
 	let token = $state('');
 	let showRemote = $state(false);
+
+	// Stored credentials
+	let cred = $state<GitCredMeta | null>(null);
+	let credType = $state<'https' | 'ssh'>('https');
+	let credUser = $state('');
+	let credToken = $state('');
+	let credKey = $state('');
+	let credPass = $state('');
 
 	$effect(() => {
 		if (open && projectId) refresh();
@@ -41,10 +52,29 @@
 			commits = await api.git.log(projectId);
 			branches = await api.git.branches(projectId);
 			remoteUrl = status.remoteUrl ?? remoteUrl;
+			// Default the next commit to stage every changed file.
+			staged = new Set((status.files ?? []).map((f) => f.path));
+			cred = await api.git.credentials(projectId);
+			if (cred.stored && (cred.authType === 'https' || cred.authType === 'ssh')) {
+				credType = cred.authType;
+				credUser = cred.username ?? credUser;
+			}
 			await loadDiff(selectedCommit);
 		} catch (e) {
 			err = (e as Error).message;
 		}
+	}
+
+	function toggleStaged(path: string) {
+		const next = new Set(staged);
+		if (next.has(path)) next.delete(path);
+		else next.add(path);
+		staged = next;
+	}
+
+	function toggleAllStaged() {
+		const all = (status?.files ?? []).map((f) => f.path);
+		staged = staged.size === all.length ? new Set() : new Set(all);
 	}
 
 	async function createBranch() {
@@ -130,11 +160,56 @@
 		err = '';
 		info = '';
 		try {
-			const { hash } = await api.git.commit(projectId, message.trim());
+			const all = (status?.files ?? []).map((f) => f.path);
+			// Send paths only for a partial selection; empty = stage everything.
+			const paths = staged.size === all.length ? undefined : [...staged];
+			const { hash } = await api.git.commit(projectId, message.trim(), paths);
 			info = `Committed ${hash.slice(0, 7)}`;
 			message = '';
 			selectedCommit = null;
 			await refresh();
+		} catch (e) {
+			err = (e as Error).message;
+		} finally {
+			busy = '';
+		}
+	}
+
+	async function saveCred() {
+		busy = 'cred';
+		err = '';
+		info = '';
+		try {
+			cred = await api.git.setCredentials(projectId, {
+				authType: credType,
+				username: credUser.trim() || undefined,
+				token: credType === 'https' ? credToken || undefined : undefined,
+				sshKey: credType === 'ssh' ? credKey || undefined : undefined,
+				passphrase: credType === 'ssh' ? credPass || undefined : undefined
+			});
+			credToken = '';
+			credKey = '';
+			credPass = '';
+			info = 'Credential saved';
+		} catch (e) {
+			err = (e as Error).message;
+		} finally {
+			busy = '';
+		}
+	}
+
+	async function clearCred() {
+		if (!confirm('Remove the stored git credential for this project?')) return;
+		busy = 'cred';
+		err = '';
+		info = '';
+		try {
+			await api.git.deleteCredentials(projectId);
+			cred = await api.git.credentials(projectId);
+			credToken = '';
+			credKey = '';
+			credPass = '';
+			info = 'Credential removed';
 		} catch (e) {
 			err = (e as Error).message;
 		} finally {
@@ -201,6 +276,11 @@
 		if (l.startsWith('-')) return '#f85149';
 		return '#8b949e';
 	}
+	function fileColor(s: string): string {
+		if (s === 'added' || s === 'untracked') return '#3fb950';
+		if (s === 'deleted') return '#f85149';
+		return '#d29922'; // modified
+	}
 	const diffLines = $derived(diff ? diff.split('\n') : []);
 
 	const inp =
@@ -237,9 +317,29 @@
 		{/if}
 	</div>
 
+	<!-- changed files (per-file staging) -->
+	{#if status && !status.clean && (status.files?.length ?? 0) > 0}
+		<div class="mb-3 max-h-40 overflow-y-auto rounded-md border border-[var(--al-border)]">
+			<button
+				class="flex w-full items-center gap-2 border-b border-[var(--al-border)] px-2.5 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]"
+				onclick={toggleAllStaged}
+			>
+				<input type="checkbox" checked={staged.size === (status.files?.length ?? 0)} tabindex="-1" class="pointer-events-none accent-[var(--al-accent)]" />
+				Stage {staged.size}/{status.files?.length} for commit
+			</button>
+			{#each status.files ?? [] as f (f.path)}
+				<label class="flex cursor-pointer items-center gap-2 px-2.5 py-1 text-xs hover:bg-[var(--al-panel-2)]">
+					<input type="checkbox" checked={staged.has(f.path)} onchange={() => toggleStaged(f.path)} class="accent-[var(--al-accent)]" />
+					<span class="mono truncate text-[var(--al-text)]" style="flex:1;">{f.path}</span>
+					<span class="text-[10px] uppercase" style="color:{fileColor(f.status)};">{f.status}</span>
+				</label>
+			{/each}
+		</div>
+	{/if}
+
 	<div class="mb-4 flex items-end gap-2">
 		<input class="{inp} flex-1" placeholder="commit message" bind:value={message} onkeydown={(e) => { if (e.key === 'Enter') commit(); }} />
-		<button class={btnPrimary} onclick={commit} disabled={busy === 'commit' || !message.trim() || status?.clean}>
+		<button class={btnPrimary} onclick={commit} disabled={busy === 'commit' || !message.trim() || status?.clean || ((status?.files?.length ?? 0) > 0 && staged.size === 0)}>
 			{#if busy === 'commit'}<Loader2 size={14} class="animate-spin" />{:else}<GitCommitVertical size={15} />{/if} Commit
 		</button>
 	</div>
@@ -317,14 +417,49 @@
 			<Cloud size={13} /> Remote {showRemote ? '▾' : '▸'}
 		</button>
 		{#if showRemote}
-			<div class="space-y-2">
+			<div class="space-y-3">
 				<div class="flex items-end gap-2">
-					<input class="{inp} mono flex-1" placeholder="https://github.com/you/repo.git" bind:value={remoteUrl} />
+					<input class="{inp} mono flex-1" placeholder="https://github.com/you/repo.git  ·  git@github.com:you/repo.git" bind:value={remoteUrl} />
 					<button class={btnGhost} onclick={setRemote} disabled={busy === 'remote'}>Save remote</button>
 				</div>
+
+				<!-- stored credentials -->
+				<div class="rounded-md border border-[var(--al-border)] p-2.5">
+					<div class="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-[var(--al-muted)]">
+						<KeyRound size={12} /> Saved credential
+						{#if cred?.stored}
+							<span class="rounded bg-[var(--al-accent-weak)] px-1.5 py-0.5 text-[10px] font-medium normal-case text-[var(--al-text)]">
+								{cred.authType === 'ssh' ? 'SSH key' : 'HTTPS token'} stored
+							</span>
+							<button class="ml-auto text-[10px] normal-case text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={clearCred} disabled={busy === 'cred'}>Remove</button>
+						{/if}
+					</div>
+					<div class="mb-2 flex gap-1.5 text-xs">
+						<button class="rounded-md border px-2 py-1 {credType === 'https' ? 'border-[var(--al-accent)] bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'border-[var(--al-border)] text-[var(--al-muted)]'}" onclick={() => (credType = 'https')}>HTTPS + token</button>
+						<button class="rounded-md border px-2 py-1 {credType === 'ssh' ? 'border-[var(--al-accent)] bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'border-[var(--al-border)] text-[var(--al-muted)]'}" onclick={() => (credType = 'ssh')}>SSH key</button>
+					</div>
+					{#if credType === 'https'}
+						<div class="flex items-end gap-2">
+							<input class="{inp} w-32" placeholder="username" bind:value={credUser} />
+							<input class="{inp} flex-1" type="password" placeholder={cred?.hasToken ? 'token (kept if blank)' : 'personal access token'} bind:value={credToken} />
+						</div>
+					{:else}
+						<div class="space-y-2">
+							<textarea class="{inp} mono w-full text-[11px]" rows="3" placeholder={cred?.hasSSHKey ? 'SSH private key (kept if blank)' : '-----BEGIN OPENSSH PRIVATE KEY-----'} bind:value={credKey}></textarea>
+							<input class="{inp} w-full" type="password" placeholder={cred?.hasPassphrase ? 'key passphrase (kept if blank)' : 'key passphrase (optional)'} bind:value={credPass} />
+						</div>
+					{/if}
+					<div class="mt-2 flex justify-end">
+						<button class={btnGhost} onclick={saveCred} disabled={busy === 'cred'}>
+							{#if busy === 'cred'}<Loader2 size={12} class="animate-spin" />{:else}<KeyRound size={12} />{/if} Save credential
+						</button>
+					</div>
+				</div>
+
+				<!-- push / pull -->
 				<div class="flex items-end gap-2">
 					<input class="{inp} w-32" placeholder="username" bind:value={username} />
-					<input class="{inp} flex-1" type="password" placeholder="token (transient)" bind:value={token} />
+					<input class="{inp} flex-1" type="password" placeholder={cred?.stored ? 'token (uses saved credential if blank)' : 'token (transient)'} bind:value={token} />
 					<button class={btnGhost} onclick={() => sync('push')} disabled={busy === 'push' || !status?.hasRemote}>
 						{#if busy === 'push'}<Loader2 size={12} class="animate-spin" />{:else}<Upload size={12} />{/if} Push
 					</button>
@@ -332,7 +467,7 @@
 						{#if busy === 'pull'}<Loader2 size={12} class="animate-spin" />{:else}<Download size={12} />{/if} Pull
 					</button>
 				</div>
-				<p class="text-[10px] text-[var(--al-muted)]">The token is used only for this request and never stored. State and secrets are excluded via .gitignore.</p>
+				<p class="text-[10px] text-[var(--al-muted)]">Saved credentials are encrypted at rest (needs ARCLOOM_SECRET_KEY). The push/pull token above is transient and overrides the saved one for that request only. State and secrets are excluded via .gitignore.</p>
 			</div>
 		{/if}
 	</div>
