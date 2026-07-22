@@ -69,7 +69,7 @@ func (s *Server) handleGetLicense(w http.ResponseWriter, r *http.Request) {
 // only. It verifies the token before persisting and hot-swaps the live gate,
 // then reloads auth so an SSO-gated provider comes up or down accordingly.
 func (s *Server) handleSetLicense(w http.ResponseWriter, r *http.Request) {
-	if !s.sameOrigin(r) {
+	if !s.csrfSafe(r) {
 		writeErr(w, http.StatusForbidden, "cross-origin request rejected")
 		return
 	}

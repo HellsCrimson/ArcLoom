@@ -186,7 +186,12 @@ func main() {
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second, // Slowloris guard on headers
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB header cap
+		// No ReadTimeout/WriteTimeout: the plan/apply SSE streams are long-lived
+		// on the write side, and request bodies are separately capped by the
+		// limitBody middleware.
 	}
 
 	go func() {

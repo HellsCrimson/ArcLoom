@@ -104,6 +104,7 @@ func (s *Server) Handler() http.Handler {
 		// returns the current user or 401, which the SPA uses to decide whether
 		// to show the login screen.
 		r.Group(func(r chi.Router) {
+			r.Use(limitBody(maxBodySmall)) // auth payloads are tiny
 			r.Post("/auth/login", s.handleLogin)
 			r.Post("/auth/logout", s.handleLogout)
 			r.Get("/auth/me", s.handleMe)
@@ -122,6 +123,9 @@ func (s *Server) Handler() http.Handler {
 			// filesystem path from it (covers every {id} route, incl. the git
 			// reads that skip store.Get and auth-disabled mode).
 			r.Use(s.validateID)
+			// Bound every request body so a large upload can't exhaust memory.
+			// Import routes (tfstate/HCL) share this cap, hence the generous size.
+			r.Use(limitBody(maxBodyLarge))
 
 			// Read-only / self-service (any authenticated user, project-agnostic).
 			r.Post("/auth/password", s.handlePasswordChange)
@@ -155,6 +159,7 @@ func (s *Server) Handler() http.Handler {
 			// Resource editing (PermResources + per-project ACL, audited).
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireProjectPerm(user.PermResources))
+				r.Use(s.csrfGuard)
 				r.Use(s.auditMiddleware)
 				r.Post("/providers", s.handleAddProvider)
 				r.Post("/projects", s.handleCreateProject)
@@ -184,6 +189,9 @@ func (s *Server) Handler() http.Handler {
 			// them.
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireProjectPerm(user.PermDeploy))
+				// Guards the GET SSE plan/validate/lint (side effects) as well as
+				// the POST apply/destroy/state ops against cross-site triggering.
+				r.Use(s.csrfGuard)
 				r.Get("/projects/{id}/plan", s.handlePlan)
 				r.Get("/projects/{id}/validate", s.handleValidate)
 				r.Get("/projects/{id}/lint", s.handleLint)
@@ -201,6 +209,7 @@ func (s *Server) Handler() http.Handler {
 			// Git operations (PermGit + per-project ACL, audited).
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireProjectPerm(user.PermGit))
+				r.Use(s.csrfGuard)
 				r.Use(s.auditMiddleware)
 				r.Post("/projects/{id}/git/commit", s.handleGitCommit)
 				r.Post("/projects/{id}/git/restore", s.handleGitRestore)
@@ -220,6 +229,7 @@ func (s *Server) Handler() http.Handler {
 			// mutations audited).
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireAdmin)
+				r.Use(s.csrfGuard)
 				r.Use(s.auditMiddleware)
 				r.Get("/admin/users", s.handleListUsers)
 				r.Post("/admin/users", s.handleCreateUser)

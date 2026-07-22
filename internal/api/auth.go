@@ -152,7 +152,7 @@ type loginRequest struct {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if !s.sameOrigin(r) {
+	if !s.csrfSafe(r) {
 		writeErr(w, http.StatusForbidden, "cross-origin request rejected")
 		return
 	}
@@ -235,7 +235,7 @@ type passwordChangeRequest struct {
 // handlePasswordChange lets the logged-in user rotate their own password. It
 // revokes the user's other sessions so a leaked old session cannot linger.
 func (s *Server) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
-	if !s.sameOrigin(r) {
+	if !s.csrfSafe(r) {
 		writeErr(w, http.StatusForbidden, "cross-origin request rejected")
 		return
 	}
@@ -314,19 +314,30 @@ func (s *Server) expiredCookie() *http.Cookie {
 	}
 }
 
-// sameOrigin is a lightweight CSRF check for state-changing requests: if an
-// Origin (or Referer) header is present, its host must match the request Host.
-// Combined with SameSite=Lax and JSON-only bodies this blocks cross-site forgery
-// without a separate CSRF token (documented assumption: SPA and API are
-// same-origin).
-func (s *Server) sameOrigin(r *http.Request) bool {
+// csrfSafe reports whether a state-changing (or side-effectful) request is safe
+// from cross-site forgery. It prefers the browser-controlled Sec-Fetch-Site
+// header, which a cross-site page can neither forge nor suppress: `same-origin`
+// (the SPA's own fetch/EventSource) and `none` (a direct user navigation, i.e.
+// the user themselves) pass; `same-site` and `cross-site` are rejected. This is
+// what closes the GET-SSE hole — SameSite=Lax still sends the cookie on a
+// cross-site top-level GET navigation, and an attacker can strip Origin/Referer
+// via Referrer-Policy, so the Origin check alone is not enough.
+//
+// When Fetch Metadata is absent (older browsers, curl, tests) it falls back to
+// matching the Origin/Referer host against the request Host, allowing requests
+// that carry neither (non-browser clients).
+func (s *Server) csrfSafe(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none":
+		return true
+	case "same-site", "cross-site":
+		return false
+	}
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		origin = r.Header.Get("Referer")
 	}
 	if origin == "" {
-		// No Origin/Referer (e.g. curl, same-origin navigations): allow. Browsers
-		// attach Origin to cross-site fetch/XHR, which is the case we block.
 		return true
 	}
 	u, err := url.Parse(origin)
@@ -334,6 +345,20 @@ func (s *Server) sameOrigin(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(u.Host, r.Host)
+}
+
+// csrfGuard rejects cross-site requests. It is mounted on the mutating groups
+// (resources / git / admin) and on the deploy group, whose GET SSE plan /
+// validate / lint routes have server-side side effects a bare cross-site
+// navigation could otherwise trigger.
+func (s *Server) csrfGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.csrfSafe(r) {
+			writeErr(w, http.StatusForbidden, "cross-origin request rejected")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // --- OIDC SSO (browser redirect flow) ---

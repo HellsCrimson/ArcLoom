@@ -81,7 +81,7 @@ type ssoUpdateRequest struct {
 // handleSetSSO validates the OIDC config (by attempting discovery when enabled),
 // persists it, and hot-swaps the live provider. Admin only.
 func (s *Server) handleSetSSO(w http.ResponseWriter, r *http.Request) {
-	if !s.sameOrigin(r) {
+	if !s.csrfSafe(r) {
 		writeErr(w, http.StatusForbidden, "cross-origin request rejected")
 		return
 	}
