@@ -112,6 +112,10 @@ func (s *Server) Handler() http.Handler {
 		// (resources / deploy / git / admin); reads need only a session.
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
+			// Reject a path-traversing {id} before any handler builds a
+			// filesystem path from it (covers every {id} route, incl. the git
+			// reads that skip store.Get and auth-disabled mode).
+			r.Use(s.validateID)
 
 			// Read-only / self-service (any authenticated user, project-agnostic).
 			r.Post("/auth/password", s.handlePasswordChange)

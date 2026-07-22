@@ -56,6 +56,23 @@ func (s *Store) path(projectID string) string {
 	return filepath.Join(s.dir, projectID+".enc")
 }
 
+// validProjectID reports whether a project id is safe to interpolate into the
+// secrets file path (letters, digits, underscore, hyphen — no '.', '/' or '\'),
+// so a caller can never read or write a .enc file outside the secrets dir.
+func validProjectID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Set stores a secret value in the local encrypted backend.
 func (s *Store) Set(projectID, name, value string) error {
 	if !validName(name) {
@@ -154,6 +171,9 @@ func envSecrets() map[string]string {
 
 func (s *Store) loadLocal(projectID string) (map[string]string, error) {
 	m := map[string]string{}
+	if !validProjectID(projectID) {
+		return nil, fmt.Errorf("invalid project id %q", projectID)
+	}
 	if s.key == nil {
 		return m, nil
 	}
@@ -175,6 +195,9 @@ func (s *Store) loadLocal(projectID string) (map[string]string, error) {
 }
 
 func (s *Store) saveLocal(projectID string, m map[string]string) error {
+	if !validProjectID(projectID) {
+		return fmt.Errorf("invalid project id %q", projectID)
+	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
 	}

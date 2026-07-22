@@ -83,3 +83,35 @@ func indexOf(b []byte, sub string) int {
 	}
 	return -1
 }
+
+// A project id that would traverse out of the secrets directory is refused by
+// every path-taking method rather than reading/writing an arbitrary .enc file.
+func TestSecrets_RejectsTraversalProjectID(t *testing.T) {
+	s := NewStore(t.TempDir(), "master-passphrase")
+	bad := "../../etc/evil"
+	if err := s.Set(bad, "db_pw", "x"); err == nil {
+		t.Error("Set with traversal id should fail")
+	}
+	if err := s.Delete(bad, "db_pw"); err == nil {
+		t.Error("Delete with traversal id should fail")
+	}
+	if _, err := s.List(bad); err == nil {
+		t.Error("List with traversal id should fail")
+	}
+	if _, _, err := s.Resolve(bad, "db_pw"); err == nil {
+		t.Error("Resolve with traversal id should fail")
+	}
+}
+
+func TestValidProjectID(t *testing.T) {
+	for _, s := range []string{"p1", "under_score", "550e8400-e29b-41d4-a716-446655440000"} {
+		if !validProjectID(s) {
+			t.Errorf("validProjectID(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"", "..", "a/b", "a.enc", "a\\b"} {
+		if validProjectID(s) {
+			t.Errorf("validProjectID(%q) = true, want false", s)
+		}
+	}
+}

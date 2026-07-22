@@ -32,6 +32,24 @@ func NewDisk(dir string) (*Disk, error) {
 
 func (d *Disk) path(token string) string { return filepath.Join(d.root, token+".yaml") }
 
+// validToken reports whether a token is safe to use as a filename: the
+// base64url alphabet only (matching newToken). Rejecting '.', '/' and '\'
+// stops a forged cookie value from escaping the sessions directory when it is
+// joined into a path.
+func validToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (d *Disk) Create(userID, provider string, ttl time.Duration) (*Session, error) {
 	token, err := newToken()
 	if err != nil {
@@ -58,7 +76,7 @@ func (d *Disk) Create(userID, provider string, ttl time.Duration) (*Session, err
 }
 
 func (d *Disk) Get(token string) (*Session, error) {
-	if token == "" {
+	if !validToken(token) {
 		return nil, ErrNotFound
 	}
 	d.mu.Lock()
@@ -75,6 +93,9 @@ func (d *Disk) Get(token string) (*Session, error) {
 }
 
 func (d *Disk) Delete(token string) error {
+	if !validToken(token) {
+		return nil // nothing a forged/malformed token could have created
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	err := os.Remove(d.path(token))
