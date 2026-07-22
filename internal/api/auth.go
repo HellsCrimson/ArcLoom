@@ -161,6 +161,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// Throttle before the expensive argon2 verify: gate per source IP and per
+	// username so neither a brute-force nor a burst of hashes can run unbounded.
+	ipKey := "login-ip:" + clientIP(r)
+	userKey := "login-user:" + req.Username
+	if ok, retry := s.authLimiter.allow(ipKey); !ok {
+		tooManyAttempts(w, retry)
+		return
+	}
+	if req.Username != "" {
+		if ok, retry := s.authLimiter.allow(userKey); !ok {
+			tooManyAttempts(w, retry)
+			return
+		}
+	}
 	local, ok := s.authn().Local()
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "password login is disabled")
@@ -172,6 +186,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
+	// Success: refund both buckets so legitimate logins never accumulate toward
+	// a lockout (only failing attempts deplete).
+	s.authLimiter.reset(ipKey)
+	s.authLimiter.reset(userKey)
 	sess, err := s.sessions.Create(id.Subject, id.Provider, s.cfg.SessionTTL)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "could not create session")
@@ -239,11 +257,19 @@ func (s *Server) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "account has no password to change")
 		return
 	}
+	// Throttle the argon2 verify by user (an authenticated attacker could
+	// otherwise hammer it); refunded on success below.
+	pwKey := "pw:" + u.ID
+	if ok, retry := s.authLimiter.allow(pwKey); !ok {
+		tooManyAttempts(w, retry)
+		return
+	}
 	ok2, err := auth.Verify(u.PasswordHash, req.CurrentPassword)
 	if err != nil || !ok2 {
 		writeErr(w, http.StatusUnauthorized, "current password is incorrect")
 		return
 	}
+	s.authLimiter.reset(pwKey)
 	newHash, err := auth.Hash(req.NewPassword)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "could not hash password")

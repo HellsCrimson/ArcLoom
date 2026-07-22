@@ -46,6 +46,11 @@ type Server struct {
 	audit    audit.Store // may be nil (audit disabled, e.g. in tests)
 	registry *registry.Client
 
+	// authLimiter throttles the argon2-backed password endpoints (login +
+	// password change) per IP / username / user to blunt brute force and the
+	// memory-DoS a burst of hashes would cause.
+	authLimiter *rateLimiter
+
 	// Drift scheduler state: latest check outcome per project (in-memory) and
 	// a nudge channel so config changes take effect without waiting a tick.
 	driftMu     sync.Mutex
@@ -57,6 +62,7 @@ type Server struct {
 func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store, auditLog audit.Store) *Server {
 	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist, audit: auditLog,
 		registry:    registry.NewClient(),
+		authLimiter: newRateLimiter(loginBurst, loginRefill),
 		driftStates: map[string]driftStatus{}, driftKick: make(chan struct{}, 1)}
 	s.auth.Store(authn)
 	// License gate: verify the persisted token (if any) against the embedded
