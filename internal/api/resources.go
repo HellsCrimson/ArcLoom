@@ -363,6 +363,10 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		_ = s.settings.DeleteProjectACL(id)
 		_ = s.settings.DeleteCost(id)
 		_ = s.settings.DeleteEnvironments(id)
+		_ = s.settings.DeleteApprovalPolicy(id)
+	}
+	if s.approvals != nil {
+		_ = s.approvals.DeleteProject(id)
 	}
 	if s.audit != nil {
 		_ = s.audit.DeleteProject(id)

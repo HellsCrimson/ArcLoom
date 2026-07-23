@@ -258,6 +258,26 @@ func (t *TfExec) Apply(ctx context.Context, dir string, files map[string][]byte,
 	return nil
 }
 
+// ApplyPlan applies a saved plan artifact verbatim. The workspace is synced +
+// initialized (prepare) like Apply, then the approved plan bytes are written as
+// the plan file and applied with no re-plan, so the applied changes are exactly
+// those reviewed. prepare's sync wipes any stale plan file, so it is written
+// after prepare returns.
+func (t *TfExec) ApplyPlan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, planBytes []byte, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+	defer cleanup()
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, planFileName), planBytes, 0o644); err != nil {
+		return fmt.Errorf("stage approved plan: %w", err)
+	}
+	if err := tf.Apply(ctx, tfexec.DirOrPlan(planFileName)); err != nil {
+		return fmt.Errorf("apply approved plan: %w", err)
+	}
+	return nil
+}
+
 // Outputs reads root output values from the state persisted in dir. It does
 // not sync files or init: the workspace is whatever the last operation left.
 func (t *TfExec) Outputs(ctx context.Context, dir string) (map[string]tfexec.OutputMeta, error) {

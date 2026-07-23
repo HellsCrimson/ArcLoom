@@ -135,6 +135,10 @@ type document struct {
 	// (not on the model) so per-env backend config / var overrides stay out of
 	// HCL/Git/undo.
 	Environments map[string][]Environment `yaml:"environments,omitempty"`
+	// ApprovalRequired maps project ID -> whether an apply must run a plan a
+	// user with the approve permission has signed off on (the plan → approve →
+	// apply gate). Absent/false = apply re-plans and auto-approves (default).
+	ApprovalRequired map[string]bool `yaml:"approval_required,omitempty"`
 	// License is the ArcLoom Enterprise license token (vendor-signed, verified
 	// offline). Stored in plaintext — it is signed, not secret.
 	License string `yaml:"license,omitempty"`
@@ -458,6 +462,37 @@ func (s *Store) SetEnvironments(projectID string, envs []Environment) error {
 // DeleteEnvironments removes a project's environments (used on project delete).
 func (s *Store) DeleteEnvironments(projectID string) error {
 	return s.SetEnvironments(projectID, nil)
+}
+
+// ApprovalRequired reports whether applies for a project are gated behind an
+// explicit plan approval.
+func (s *Store) ApprovalRequired(projectID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.doc.ApprovalRequired[projectID]
+}
+
+// SetApprovalRequired sets (or, when false, clears) a project's approval gate.
+func (s *Store) SetApprovalRequired(projectID string, required bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !required {
+		if _, ok := s.doc.ApprovalRequired[projectID]; !ok {
+			return nil
+		}
+		delete(s.doc.ApprovalRequired, projectID)
+		return s.persist()
+	}
+	if s.doc.ApprovalRequired == nil {
+		s.doc.ApprovalRequired = map[string]bool{}
+	}
+	s.doc.ApprovalRequired[projectID] = true
+	return s.persist()
+}
+
+// DeleteApprovalPolicy removes a project's approval gate (used on project delete).
+func (s *Store) DeleteApprovalPolicy(projectID string) error {
+	return s.SetApprovalRequired(projectID, false)
 }
 
 // GitCreds returns a project's stored credential with its secret fields

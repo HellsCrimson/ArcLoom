@@ -24,14 +24,15 @@ var ErrExists = errors.New("user already exists")
 // may read; these gate the mutating/operational actions.
 const (
 	PermResources = "resources" // create/update/delete resources, modules, variables, providers, secrets, import, projects
-	PermDeploy    = "deploy"     // run plan
-	PermGit       = "git"        // git commit/push/pull/restore/remote
+	PermDeploy    = "deploy"    // run plan/apply/destroy/state ops
+	PermGit       = "git"       // git commit/push/pull/restore/remote
+	PermApprove   = "approve"   // approve a saved plan so a gated apply can run it
 )
 
 // AllPermissions is the set of grantable (non-admin) permissions, in display
 // order.
 func AllPermissions() []string {
-	return []string{PermResources, PermDeploy, PermGit}
+	return []string{PermResources, PermDeploy, PermGit, PermApprove}
 }
 
 // User is an application account.

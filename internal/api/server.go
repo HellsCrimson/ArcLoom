@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/HellsCrimson/ArcLoom/internal/approvals"
 	"github.com/HellsCrimson/ArcLoom/internal/audit"
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/cache"
@@ -42,9 +43,10 @@ type Server struct {
 	users    user.Store
 	settings *settings.Store
 	license  *license.Manager
-	runs     runs.Store  // may be nil (history disabled, e.g. in tests)
-	audit    audit.Store // may be nil (audit disabled, e.g. in tests)
-	registry *registry.Client
+	runs      runs.Store      // may be nil (history disabled, e.g. in tests)
+	audit     audit.Store     // may be nil (audit disabled, e.g. in tests)
+	approvals approvals.Store // may be nil (approval gate disabled, e.g. in tests)
+	registry  *registry.Client
 
 	// authLimiter throttles the argon2-backed password endpoints (login +
 	// password change) per IP / username / user to blunt brute force and the
@@ -59,8 +61,8 @@ type Server struct {
 }
 
 // New builds a Server. runners maps each available engine to its runner.
-func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store, auditLog audit.Store) *Server {
-	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist, audit: auditLog,
+func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store, auditLog audit.Store, approvalStore approvals.Store) *Server {
+	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist, audit: auditLog, approvals: approvalStore,
 		registry:    registry.NewClient(),
 		authLimiter: newRateLimiter(loginBurst, loginRefill),
 		driftStates: map[string]driftStatus{}, driftKick: make(chan struct{}, 1)}
@@ -157,6 +159,7 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/projects/{id}/provider-updates", s.handleProviderUpdates)
 				r.Get("/projects/{id}/acl", s.handleGetACL)
 				r.Get("/projects/{id}/environments", s.handleGetEnvironments)
+				r.Get("/projects/{id}/approval", s.handleGetApproval)
 			})
 
 			// Resource editing (PermResources + per-project ACL, audited).
@@ -192,6 +195,7 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/projects/{id}/import/state", s.handleImportState)
 				r.Put("/projects/{id}/cost", s.handleSetCost)
 				r.Put("/projects/{id}/environments", s.handleSetEnvironments)
+				r.Put("/projects/{id}/approval", s.handleSetApprovalPolicy)
 			})
 
 			// Deploy: plan / apply / destroy (PermDeploy). Plan is a GET so the
@@ -215,6 +219,16 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/projects/{id}/state/init-backend", s.handleInitBackend)
 				// Drift schedule: enabling it makes the server run plans.
 				r.Put("/projects/{id}/drift", s.handleSetDrift)
+			})
+
+			// Approve a saved plan for a gated apply (PermApprove + per-project ACL,
+			// audited). Separate from deploy so an org can split "can review/approve"
+			// from "can run plans".
+			r.Group(func(r chi.Router) {
+				r.Use(s.requireProjectPerm(user.PermApprove))
+				r.Use(s.csrfGuard)
+				r.Use(s.auditMiddleware)
+				r.Post("/projects/{id}/approve", s.handleApprove)
 			})
 
 			// Git operations (PermGit + per-project ACL, audited).

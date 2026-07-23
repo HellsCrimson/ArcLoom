@@ -37,7 +37,7 @@ func newAuthTestServer(t *testing.T) http.Handler {
 		SessionTTL:  time.Hour,
 	}
 	authn := auth.New(auth.NewLocalProvider(users))
-	srv := New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, session.NewMemory(), users, testSettings(t), nil, nil)
+	srv := New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, session.NewMemory(), users, testSettings(t), nil, nil, nil)
 	return srv.Handler()
 }
 
@@ -209,7 +209,7 @@ func newSSOTestServer(t *testing.T, fake *fakeRedirect) (http.Handler, user.Stor
 	sessions := session.NewMemory()
 	cfg := config.Config{AuthEnabled: true, CookieName: "arcloom_session", SessionTTL: time.Hour}
 	authn := auth.New(auth.NewLocalProvider(users), fake)
-	return New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, sessions, users, testSettings(t), nil, nil).Handler(), users, sessions
+	return New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, sessions, users, testSettings(t), nil, nil, nil).Handler(), users, sessions
 }
 
 func TestSSOLogin_RedirectsAndSetsCookies(t *testing.T) {

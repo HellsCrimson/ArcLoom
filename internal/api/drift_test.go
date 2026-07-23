@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-exec/tfexec"
 	tfjson "github.com/hashicorp/terraform-json"
 
+	"github.com/HellsCrimson/ArcLoom/internal/approvals"
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/config"
 	"github.com/HellsCrimson/ArcLoom/internal/license"
@@ -28,6 +29,10 @@ import (
 type fakeRunner struct {
 	res runner.PlanResult
 	err error
+	// applyPlanBytes records the plan artifact passed to ApplyPlan (approval gate).
+	applyPlanBytes  []byte
+	applyPlanCalled bool
+	applyCalled     bool
 }
 
 func (f *fakeRunner) Engine() model.Engine { return model.EngineTofu }
@@ -45,6 +50,12 @@ func (f *fakeRunner) RefreshPlan(context.Context, string, map[string][]byte, map
 	return f.res, f.err
 }
 func (f *fakeRunner) Apply(context.Context, string, map[string][]byte, map[string]string, io.Writer) error {
+	f.applyCalled = true
+	return nil
+}
+func (f *fakeRunner) ApplyPlan(_ context.Context, _ string, _ map[string][]byte, _ map[string]string, planBytes []byte, _ io.Writer) error {
+	f.applyPlanCalled = true
+	f.applyPlanBytes = planBytes
 	return nil
 }
 func (f *fakeRunner) Destroy(context.Context, string, map[string][]byte, map[string]string, io.Writer) error {
@@ -89,8 +100,12 @@ func driftTestServer(t *testing.T, fake *fakeRunner) (*Server, runs.Store) {
 	}
 	cfg := config.Config{AuthEnabled: false, CookieName: "arcloom_session", DataDir: t.TempDir(), DefaultEngine: "tofu"}
 	authn := auth.New(auth.NewLocalProvider(user.NewMemory()))
+	appr, err := approvals.NewDisk(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv := New(cfg, map[model.Engine]runner.Runner{model.EngineTofu: fake}, st, nil, nil, nil,
-		authn, session.NewMemory(), user.NewMemory(), testSettings(t), rh, nil)
+		authn, session.NewMemory(), user.NewMemory(), testSettings(t), rh, nil, appr)
 	// Scheduled drift is enterprise-gated; run these tests as a licensed install.
 	srv.license.Install(&license.License{Tier: license.TierEnterprise})
 	return srv, rh

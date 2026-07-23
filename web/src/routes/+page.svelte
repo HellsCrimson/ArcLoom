@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type PlanChange, type RunOutput, type StateEntry, type CostSummary, type LintSummary, type Environment } from '$lib/api/client';
+	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type PlanChange, type RunOutput, type StateEntry, type CostSummary, type LintSummary, type Environment, type Approval } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
 	import StatePanel from '$lib/components/StatePanel.svelte';
 	import type { AttrValue, DriftConfig, Engine, Module, NormalizedSchema, Project, ProjectSummary, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
@@ -22,7 +22,7 @@
 	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck, AlertTriangle, Search, ArrowUp, Ruler, DollarSign
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck, AlertTriangle, Search, ArrowUp, Ruler, DollarSign, CheckCircle2, Lock, LockOpen
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -82,6 +82,9 @@
 	let environments = $state<Environment[]>([]);
 	let activeEnv = $state('');
 	let showEnvironments = $state(false);
+	// Plan → approve → apply gate (per project + active env).
+	let approvalRequired = $state(false);
+	let currentApproval = $state<Approval | null>(null);
 	// Provider upgrade suggestions, keyed by source (best-effort registry check).
 	let providerUpdates = $state<Record<string, ProviderUpdate>>({});
 	let bumping = $state('');
@@ -240,6 +243,9 @@
 			planCounts = null;
 			planCost = null;
 			planLint = null;
+			// A model edit makes any approved plan stale: block a gated apply until
+			// the user re-plans and re-approves.
+			currentApproval = null;
 		}
 	});
 
@@ -409,6 +415,7 @@
 			await refreshHcl();
 			await loadSecrets();
 			await loadEnvironments();
+			await loadApproval();
 			if (project.providers?.length) providerSource = project.providers[0].source;
 		} catch (err) {
 			error = (err as Error).message;
@@ -437,7 +444,55 @@
 		planCost = null;
 		planResult = '';
 		if (showState) loadState();
+		loadApproval();
 	}
+
+	// loadApproval fetches the approval-gate state for the active environment.
+	async function loadApproval() {
+		if (!project) {
+			approvalRequired = false;
+			currentApproval = null;
+			return;
+		}
+		try {
+			const st = await api.getApproval(project.id, activeEnv);
+			approvalRequired = st.required;
+			currentApproval = st.approval;
+		} catch {
+			approvalRequired = false;
+			currentApproval = null;
+		}
+	}
+
+	// approvePlan snapshots the current saved plan as an approval so a gated apply
+	// can run it. Requires the approve permission (server-enforced).
+	async function approvePlan() {
+		if (!project) return;
+		error = '';
+		try {
+			const s = planCounts ?? { add: 0, change: 0, destroy: 0, replace: 0 };
+			currentApproval = await api.approve(project.id, activeEnv, s);
+		} catch (err) {
+			error = (err as Error).message;
+		}
+	}
+
+	// toggleApprovalGate turns the per-project apply approval requirement on/off
+	// (resources permission).
+	async function toggleApprovalGate() {
+		if (!project) return;
+		error = '';
+		try {
+			const st = await api.setApprovalPolicy(project.id, !approvalRequired);
+			approvalRequired = st.required;
+			currentApproval = st.approval;
+		} catch (err) {
+			error = (err as Error).message;
+		}
+	}
+
+	// A pending approval for the active env means a gated apply is unblocked.
+	const approvalReady = $derived(!approvalRequired || (!!currentApproval && !currentApproval.consumed));
 
 	// loadProviderUpdates checks each provider source against the registry and
 	// keys the result by source for the sidebar badge. Best-effort: any failure
@@ -1182,7 +1237,10 @@
 			} else if (ev.kind === 'error') {
 				error = ev.error;
 				busy = '';
-			} else if (ev.kind === 'done') busy = '';
+			} else if (ev.kind === 'done') {
+				busy = '';
+				if (approvalRequired) loadApproval(); // the new plan superseded any approval
+			}
 		}, 'plan', activeEnv);
 	}
 
@@ -1361,6 +1419,12 @@
 	// reflects what is really deployed.
 	function runOp(op: 'apply' | 'destroy') {
 		if (!project) return;
+		// Enforce the approval gate client-side too (the server also 409s), so a
+		// disabled Apply gives a clear message instead of a failed request.
+		if (op === 'apply' && approvalRequired && !approvalReady) {
+			error = 'This project requires an approved plan before applying. Run a plan, then approve it.';
+			return;
+		}
 		error = '';
 		planLog = [];
 		planResult = '';
@@ -1379,6 +1443,7 @@
 			} else if (ev.kind === 'done') {
 				planResult = op === 'apply' ? 'Applied' : 'Destroyed';
 				busy = '';
+				if (op === 'apply' && approvalRequired) loadApproval(); // approval consumed
 			}
 		}, undefined, activeEnv);
 	}
@@ -1784,7 +1849,22 @@
 						<button class={btnGhost} onclick={runPlan} disabled={!project || running}>
 							{#if busy === 'plan'}<Loader2 size={14} class="animate-spin" />{:else}<Play size={14} />{/if} Plan
 						</button>
-						<button class={btnPrimary} onclick={() => (showApplyConfirm = true)} disabled={!project || running}>
+						{#if approvalRequired && auth.can('approve')}
+							<button
+								class={btnGhost}
+								title={approvalReady ? 'This plan is approved' : 'Approve the current plan so it can be applied'}
+								onclick={approvePlan}
+								disabled={!project || running || approvalReady || planCounts === null}
+							>
+								<CheckCircle2 size={14} /> {approvalReady ? 'Approved' : 'Approve'}
+							</button>
+						{/if}
+						<button
+							class={btnPrimary}
+							onclick={() => (showApplyConfirm = true)}
+							disabled={!project || running || (approvalRequired && !approvalReady)}
+							title={approvalRequired && !approvalReady ? 'Apply is gated: an approved plan is required' : 'Apply the plan'}
+						>
 							{#if busy === 'apply'}<Loader2 size={14} class="animate-spin" />{:else}<Rocket size={14} />{/if} Apply
 						</button>
 						<button
@@ -1805,6 +1885,23 @@
 					<div class="font-mono" style="font-size:12.5px;font-weight:600;color:var(--al-code-text);">run output</div>
 					{#if planResult}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:{accentWeak};color:{accentHex};">{planResult}</span>{/if}
 					{#if planCost}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:rgba(16,185,129,0.15);color:#10b981;" title="Estimated monthly cost">${planCost.totalMonthly.toFixed(2)}/mo</span>{/if}
+					{#if project}
+						{#if auth.can('resources')}
+							<button
+								class="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold"
+								style="background:var(--al-panel-2);color:var(--al-muted);"
+								title={approvalRequired ? 'Apply requires an approved plan — click to disable' : 'Require an approved plan before apply'}
+								onclick={toggleApprovalGate}
+							>
+								{#if approvalRequired}<Lock size={11} /> Gate on{:else}<LockOpen size={11} /> Gate off{/if}
+							</button>
+						{:else if approvalRequired}
+							<span class="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:var(--al-panel-2);color:var(--al-muted);"><Lock size={11} /> Gated</span>
+						{/if}
+						{#if approvalRequired && currentApproval && !currentApproval.consumed}
+							<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:rgba(16,185,129,0.15);color:#10b981;" title="Approved — apply enabled">✓ approved by {currentApproval.approvedBy}</span>
+						{/if}
+					{/if}
 					{#if planCounts}
 						<span class="ml-auto flex items-center gap-2 font-mono text-[11px] font-semibold">
 							<span style="color:{ACTION_COLOR.create}">+{planCounts.add}</span>

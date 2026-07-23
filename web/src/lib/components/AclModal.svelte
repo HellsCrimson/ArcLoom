@@ -12,6 +12,7 @@
 	const PERMS = [
 		{ key: 'resources', label: 'Edit' },
 		{ key: 'deploy', label: 'Deploy' },
+		{ key: 'approve', label: 'Approve' },
 		{ key: 'git', label: 'Git' }
 	];
 

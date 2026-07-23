@@ -33,6 +33,9 @@ type Config struct {
 	// AuditDir holds the append-only audit log (model edits, git ops, admin
 	// actions), never in Git.
 	AuditDir string
+	// ApprovalsDir holds plan-approval records + their saved plan artifacts for
+	// the plan → approve → apply gate, never in Git.
+	ApprovalsDir string
 	// SecretKey is the master passphrase for the local encrypted secrets
 	// backend (from ARCLOOM_SECRET_KEY); empty disables local storage.
 	SecretKey string
@@ -109,6 +112,7 @@ func Load() Config {
 		SecretsDir:     env("ARCLOOM_SECRETS_DIR", filepath.Join(filepath.Dir(dataDir), "secrets")),
 		RunsDir:        env("ARCLOOM_RUNS_DIR", filepath.Join(filepath.Dir(dataDir), "runs")),
 		AuditDir:       env("ARCLOOM_AUDIT_DIR", filepath.Join(filepath.Dir(dataDir), "audit")),
+		ApprovalsDir:   env("ARCLOOM_APPROVALS_DIR", filepath.Join(filepath.Dir(dataDir), "approvals")),
 		SecretKey:      os.Getenv("ARCLOOM_SECRET_KEY"),
 
 		LogLevel:  env("ARCLOOM_LOG_LEVEL", "info"),

@@ -345,3 +345,24 @@ func TestEnvironments_RoundTrip(t *testing.T) {
 		t.Fatalf("empty list should clear environments, got %+v", envs)
 	}
 }
+
+func TestApprovalRequired_RoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.yaml")
+	s, _ := NewStore(path, "")
+	if s.ApprovalRequired("p1") {
+		t.Fatal("default should be false")
+	}
+	if err := s.SetApprovalRequired("p1", true); err != nil {
+		t.Fatal(err)
+	}
+	s2, _ := NewStore(path, "")
+	if !s2.ApprovalRequired("p1") {
+		t.Fatal("approval requirement not persisted")
+	}
+	if err := s2.SetApprovalRequired("p1", false); err != nil {
+		t.Fatal(err)
+	}
+	if s2.ApprovalRequired("p1") {
+		t.Fatal("disabling did not clear")
+	}
+}

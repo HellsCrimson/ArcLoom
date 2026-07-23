@@ -127,6 +127,25 @@ export const api = {
 	getEnvironments: (id: string) =>
 		fetch(`/api/projects/${id}/environments`).then((r) => json<Environment[]>(r)),
 
+	getApproval: (id: string, env = '') =>
+		fetch(`/api/projects/${id}/approval${env ? `?env=${encodeURIComponent(env)}` : ''}`).then((r) =>
+			json<ApprovalState>(r)
+		),
+
+	setApprovalPolicy: (id: string, required: boolean) =>
+		fetch(`/api/projects/${id}/approval`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ required })
+		}).then((r) => json<ApprovalState>(r)),
+
+	approve: (id: string, env: string, summary: { add: number; change: number; destroy: number; replace: number }) =>
+		fetch(`/api/projects/${id}/approve${env ? `?env=${encodeURIComponent(env)}` : ''}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(summary)
+		}).then((r) => json<Approval>(r)),
+
 	setEnvironments: (id: string, environments: Environment[]) =>
 		fetch(`/api/projects/${id}/environments`, {
 			method: 'PUT',
@@ -577,6 +596,26 @@ export interface Environment {
 	name: string;
 	backendConfig?: Record<string, string>;
 	vars?: Record<string, string>;
+}
+
+// Approval records that a specific saved plan was signed off for a gated apply.
+export interface Approval {
+	id: string;
+	projectId: string;
+	env?: string;
+	add: number;
+	change: number;
+	destroy: number;
+	replace: number;
+	approvedBy: string;
+	approvedAt: string;
+	consumed: boolean;
+}
+
+// ApprovalState is the gate status for a project + environment.
+export interface ApprovalState {
+	required: boolean;
+	approval: Approval | null;
 }
 
 // RunOutput is one root output value captured after an apply.

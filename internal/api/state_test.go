@@ -24,7 +24,7 @@ func TestStateList(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := config.Config{AuthEnabled: false, CookieName: "arcloom_session", DataDir: dataDir}
 	authn := auth.New(auth.NewLocalProvider(user.NewMemory()))
-	h := New(cfg, nil, st, nil, nil, nil, authn, session.NewMemory(), user.NewMemory(), testSettings(t), nil, nil).Handler()
+	h := New(cfg, nil, st, nil, nil, nil, authn, session.NewMemory(), user.NewMemory(), testSettings(t), nil, nil, nil).Handler()
 
 	get := func() []stateEntry {
 		rec := httptest.NewRecorder()

@@ -14,7 +14,8 @@
 
 	const PERMS: { key: string; label: string }[] = [
 		{ key: 'resources', label: 'Edit resources' },
-		{ key: 'deploy', label: 'Deploy (plan)' },
+		{ key: 'deploy', label: 'Deploy (plan/apply)' },
+		{ key: 'approve', label: 'Approve plans' },
 		{ key: 'git', label: 'Git' }
 	];
 

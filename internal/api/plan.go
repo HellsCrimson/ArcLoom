@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	tfjson "github.com/hashicorp/terraform-json"
 
+	"github.com/HellsCrimson/ArcLoom/internal/approvals"
 	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
@@ -111,6 +112,18 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Approval gate: a gated apply must run a plan a user with the approve
+	// permission signed off on. Resolve it before streaming so "needs approval"
+	// is a clean 409, not a mid-stream error, and no run record is written.
+	var approved *approvals.Approval
+	if op == "apply" && s.approvals != nil && s.settings.ApprovalRequired(p.ID) {
+		a, ok := s.approvals.Latest(p.ID, envName)
+		if !ok {
+			writeErr(w, http.StatusConflict, "approval required: run a plan and have it approved before applying")
+			return
+		}
+		approved = a
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeErr(w, http.StatusInternalServerError, "streaming unsupported")
@@ -182,6 +195,11 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		res, err = run.Plan(r.Context(), dir, files, tfVars, logW)
 		logW.flush()
 		if err == nil {
+			// A new plan supersedes any pending approval for this environment, so a
+			// gated apply can never run a stale approved plan.
+			if s.approvals != nil {
+				_ = s.approvals.InvalidateEnv(p.ID, envName)
+			}
 			// Best-effort cost annotation (enterprise + enabled). Runs while the
 			// saved plan file still exists so Infracost can read it.
 			s.attachCost(r.Context(), run, dir, p, &res, logW)
@@ -190,9 +208,21 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 			sse.event("result", res)
 		}
 	case "apply":
-		err = run.Apply(r.Context(), dir, files, tfVars, logW)
+		if approved != nil {
+			// Gated apply: run the exact approved plan artifact (no re-plan).
+			var planBytes []byte
+			if planBytes, err = s.approvals.Plan(p.ID, approved.ID); err == nil {
+				sse.event("log", map[string]string{"line": "applying plan approved by " + approved.ApprovedBy})
+				err = run.ApplyPlan(r.Context(), dir, files, tfVars, planBytes, logW)
+			}
+		} else {
+			err = run.Apply(r.Context(), dir, files, tfVars, logW)
+		}
 		logW.flush()
 		if err == nil {
+			if approved != nil {
+				_ = s.approvals.Consume(p.ID, approved.ID) // single-use
+			}
 			rec.Outputs = s.readOutputs(r, run, dir)
 			sse.event("result", map[string]any{"outputs": rec.Outputs})
 		}

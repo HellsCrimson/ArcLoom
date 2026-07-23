@@ -110,6 +110,12 @@ type Runner interface {
 	// Apply syncs the generated files into the persistent workspace at dir,
 	// initializes it, and applies the configuration. State is persisted in dir.
 	Apply(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error
+	// ApplyPlan applies a previously saved plan artifact VERBATIM (no re-plan):
+	// the workspace is synced + initialized like Apply, then planBytes is written
+	// as the plan file and applied. Used by the plan → approve → apply gate so the
+	// applied changes are exactly the ones that were reviewed. A stale plan (state
+	// changed since it was created) is rejected by the engine.
+	ApplyPlan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, planBytes []byte, out io.Writer) error
 	// Destroy syncs the generated files into the persistent workspace at dir,
 	// initializes it, and destroys all managed resources recorded in state.
 	Destroy(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error
