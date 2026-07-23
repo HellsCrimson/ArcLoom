@@ -4,7 +4,7 @@ package api
 
 import (
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -70,7 +70,7 @@ func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Sto
 	s.license = license.NewManager(license.VendorKey())
 	if tok := set.License(); tok != "" {
 		if err := s.license.Set(tok); err != nil {
-			log.Printf("WARNING: stored license rejected (%v); running as community", err)
+			slog.Warn("stored license rejected; running as community", "err", err)
 		}
 	}
 	return s
@@ -96,8 +96,13 @@ func (s *Server) runnerFor(name string) (runner.Runner, bool) {
 // Handler builds the full HTTP handler (API routes + SPA fallback).
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.Logger)
+	r.Use(requestLogger)
 	r.Use(middleware.Recoverer)
+
+	// Liveness/health probes: public, unauthenticated, dependency-free. Declared
+	// before the SPA catch-all so they aren't shadowed by the index fallback.
+	r.Get("/healthz", s.handleHealth)
+	r.Get("/livez", s.handleHealth)
 
 	r.Route("/api", func(r chi.Router) {
 		// Public: reachable without a session so the user can log in. /auth/me

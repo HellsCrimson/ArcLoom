@@ -17,7 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -65,7 +65,7 @@ func NewStore(dir, masterKey string) *Store {
 		// Can't establish the argon2id salt (disk error): fall back to the legacy
 		// derivation so existing secrets stay readable. Migration is retried on
 		// the next start once the salt file can be written.
-		log.Printf("secrets: argon2id KDF unavailable (%v); using legacy key derivation", err)
+		slog.Warn("secrets: argon2id KDF unavailable; using legacy key derivation", "err", err)
 		s.key = s.legacyKey
 		return s
 	}

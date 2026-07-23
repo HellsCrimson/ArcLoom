@@ -37,6 +37,13 @@ type Config struct {
 	// backend (from ARCLOOM_SECRET_KEY); empty disables local storage.
 	SecretKey string
 
+	// LogLevel is the minimum slog level to emit (ARCLOOM_LOG_LEVEL: debug,
+	// info, warn, error; default info).
+	LogLevel string
+	// LogFormat selects the slog handler (ARCLOOM_LOG_FORMAT: text or json;
+	// default text).
+	LogFormat string
+
 	// --- Authentication ---
 
 	// AuthEnabled gates the whole /api surface behind a login (ARCLOOM_AUTH,
@@ -103,6 +110,9 @@ func Load() Config {
 		RunsDir:        env("ARCLOOM_RUNS_DIR", filepath.Join(filepath.Dir(dataDir), "runs")),
 		AuditDir:       env("ARCLOOM_AUDIT_DIR", filepath.Join(filepath.Dir(dataDir), "audit")),
 		SecretKey:      os.Getenv("ARCLOOM_SECRET_KEY"),
+
+		LogLevel:  env("ARCLOOM_LOG_LEVEL", "info"),
+		LogFormat: env("ARCLOOM_LOG_FORMAT", "text"),
 
 		AuthEnabled:   boolEnv("ARCLOOM_AUTH", true),
 		UsersDir:      env("ARCLOOM_USERS_DIR", filepath.Join(filepath.Dir(dataDir), "users")),

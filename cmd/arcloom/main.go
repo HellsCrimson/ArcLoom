@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -56,6 +57,7 @@ func main() {
 	}
 
 	cfg := config.Load()
+	setupLogging(cfg)
 
 	// Build a runner per engine that resolves on PATH. Engines that are not
 	// installed are skipped rather than fatal.
@@ -63,14 +65,14 @@ func main() {
 	for _, eng := range []model.Engine{model.EngineTofu, model.EngineTerraform} {
 		r, err := runner.New(eng, "", cfg.WorkDir, cfg.PluginCacheDir)
 		if err != nil {
-			log.Printf("engine %s unavailable: %v", eng, err)
+			slog.Warn("engine unavailable", "engine", eng, "err", err)
 			continue
 		}
 		runners[eng] = r
-		log.Printf("engine %s -> %s", eng, r.ExecPath())
+		slog.Info("engine ready", "engine", eng, "path", r.ExecPath())
 	}
 	if len(runners) == 0 {
-		log.Fatal("no engines available: install tofu or terraform")
+		fatal("no engines available: install tofu or terraform")
 	}
 	if _, ok := runners[model.Engine(cfg.DefaultEngine)]; !ok {
 		// Fall back the default to whatever is available.
@@ -78,30 +80,30 @@ func main() {
 			cfg.DefaultEngine = string(eng)
 			break
 		}
-		log.Printf("default engine adjusted to %s", cfg.DefaultEngine)
+		slog.Info("default engine adjusted", "engine", cfg.DefaultEngine)
 	}
 
 	st, err := store.NewDisk(cfg.DataDir, hclgen.GenerateFiles)
 	if err != nil {
-		log.Fatalf("init store: %v", err)
+		fatal("init store", "err", err)
 	}
-	log.Printf("projects stored in %s", cfg.DataDir)
+	slog.Info("projects store ready", "dir", cfg.DataDir)
 	sc := cache.New(cfg.CacheDir)
 
 	sec := secrets.NewStore(cfg.SecretsDir, cfg.SecretKey)
 
 	runHist, err := runs.NewDisk(cfg.RunsDir)
 	if err != nil {
-		log.Fatalf("init run history: %v", err)
+		fatal("init run history", "err", err)
 	}
 	auditLog, err := audit.NewDisk(cfg.AuditDir)
 	if err != nil {
-		log.Fatalf("init audit log: %v", err)
+		fatal("init audit log", "err", err)
 	}
 	if sec.LocalEnabled() {
-		log.Printf("local secret store enabled (%s)", cfg.SecretsDir)
+		slog.Info("local secret store enabled", "dir", cfg.SecretsDir)
 	} else {
-		log.Printf("local secret store disabled (set ARCLOOM_SECRET_KEY); env secrets still work")
+		slog.Info("local secret store disabled (set ARCLOOM_SECRET_KEY); env secrets still work")
 	}
 
 	// Authentication: a user store (password accounts) + a server-side session
@@ -109,20 +111,20 @@ func main() {
 	// provider in slice 1; OIDC SSO is appended here in slice 2.
 	users, err := user.NewDisk(cfg.UsersDir)
 	if err != nil {
-		log.Fatalf("init user store: %v", err)
+		fatal("init user store", "err", err)
 	}
 	sessions, err := session.NewDisk(cfg.SessionsDir)
 	if err != nil {
-		log.Fatalf("init session store: %v", err)
+		fatal("init session store", "err", err)
 	}
 	if cfg.AuthEnabled {
 		if err := bootstrapAdmin(users, cfg); err != nil {
-			log.Fatalf("auth bootstrap: %v", err)
+			fatal("auth bootstrap", "err", err)
 		}
 		if err := ensureAdmin(users, cfg); err != nil {
-			log.Fatalf("ensure admin: %v", err)
+			fatal("ensure admin", "err", err)
 		}
-		log.Printf("authentication enabled (users in %s)", cfg.UsersDir)
+		slog.Info("authentication enabled", "usersDir", cfg.UsersDir)
 		// Periodically purge expired sessions.
 		go func() {
 			t := time.NewTicker(time.Hour)
@@ -132,23 +134,23 @@ func main() {
 			}
 		}()
 	} else {
-		log.Printf("WARNING: authentication disabled (ARCLOOM_AUTH=false); the API is open")
+		slog.Warn("authentication disabled (ARCLOOM_AUTH=false); the API is open")
 	}
 	// App-level settings (runtime-editable SSO). Seed from the ARCLOOM_OIDC_* env
 	// vars on first run so existing env-based deployments migrate automatically;
 	// after that the persisted settings are the source of truth.
 	set, err := settings.NewStore(cfg.SettingsFile, cfg.SecretKey)
 	if err != nil {
-		log.Fatalf("init settings: %v", err)
+		fatal("init settings", "err", err)
 	}
 	if cfg.OIDCEnabled() && !set.SSO().Enabled {
 		if err := set.SetSSO(settings.SSO{
 			Enabled: true, Issuer: cfg.OIDCIssuer, ClientID: cfg.OIDCClientID,
 			ClientSecret: cfg.OIDCClientSecret, RedirectURL: cfg.OIDCRedirectURL, Scopes: cfg.OIDCScopes,
 		}); err != nil {
-			log.Printf("WARNING: could not seed SSO settings from env: %v", err)
+			slog.Warn("could not seed SSO settings from env", "err", err)
 		} else {
-			log.Printf("seeded SSO settings from ARCLOOM_OIDC_* env")
+			slog.Info("seeded SSO settings from ARCLOOM_OIDC_* env")
 		}
 	}
 
@@ -161,9 +163,9 @@ func main() {
 			token = strings.TrimSpace(string(data))
 		}
 		if err := set.SetLicense(token); err != nil {
-			log.Printf("WARNING: could not seed license from ARCLOOM_LICENSE: %v", err)
+			slog.Warn("could not seed license from ARCLOOM_LICENSE", "err", err)
 		} else {
-			log.Printf("seeded license from ARCLOOM_LICENSE")
+			slog.Info("seeded license from ARCLOOM_LICENSE")
 		}
 	}
 
@@ -172,9 +174,9 @@ func main() {
 	srv := api.New(cfg, runners, st, sc, sec, webui.FS(), auth.New(auth.NewLocalProvider(users)), sessions, users, set, runHist, auditLog)
 	rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
 	if err := srv.ReloadAuth(rctx); err != nil {
-		log.Printf("WARNING: OIDC SSO disabled: %v", err)
+		slog.Warn("OIDC SSO disabled", "err", err)
 	} else if set.SSO().Enabled {
-		log.Printf("OIDC SSO enabled (issuer %s)", set.SSO().Issuer)
+		slog.Info("OIDC SSO enabled", "issuer", set.SSO().Issuer)
 	}
 	rcancel()
 
@@ -195,9 +197,9 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("ArcLoom %s listening on %s (default engine: %s)", version, cfg.Addr, cfg.DefaultEngine)
+		slog.Info("listening", "version", version, "addr", cfg.Addr, "defaultEngine", cfg.DefaultEngine)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+			fatal("server error", "err", err)
 		}
 	}()
 
@@ -209,7 +211,51 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(ctx)
-	log.Println("shut down")
+	slog.Info("shut down")
+}
+
+// setupLogging installs the process-wide slog handler (text or JSON) at the
+// configured level, and routes the standard log package through it so panic
+// dumps and any third-party log.Print output stays structured and honors the
+// same level.
+func setupLogging(cfg config.Config) {
+	var level slog.Level
+	switch strings.ToLower(cfg.LogLevel) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	var h slog.Handler
+	if strings.EqualFold(cfg.LogFormat, "json") {
+		h = slog.NewJSONHandler(os.Stderr, opts)
+	} else {
+		h = slog.NewTextHandler(os.Stderr, opts)
+	}
+	slog.SetDefault(slog.New(h))
+	log.SetFlags(0)
+	log.SetOutput(stdlogBridge{})
+}
+
+// stdlogBridge forwards standard-library log output into slog so nothing bypasses
+// the configured handler.
+type stdlogBridge struct{}
+
+func (stdlogBridge) Write(p []byte) (int, error) {
+	slog.Error("stdlog", "msg", strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
+// fatal logs an error record and exits non-zero — the slog replacement for
+// log.Fatal (which slog has no direct equivalent for).
+func fatal(msg string, args ...any) {
+	slog.Error(msg, args...)
+	os.Exit(1)
 }
 
 // bootstrapAdmin seeds the first admin user from ARCLOOM_ADMIN_PASSWORD on first
@@ -242,7 +288,7 @@ func bootstrapAdmin(users user.Store, cfg config.Config) error {
 	if err := users.Create(u); err != nil {
 		return fmt.Errorf("create admin: %w", err)
 	}
-	log.Printf("seeded admin user %q", cfg.AdminUsername)
+	slog.Info("seeded admin user", "username", cfg.AdminUsername)
 	return nil
 }
 
@@ -272,12 +318,12 @@ func ensureAdmin(users user.Store, cfg config.Config) error {
 		target = all[0].ID
 	}
 	if target == "" {
-		log.Printf("WARNING: no admin user exists; set one via ARCLOOM_ADMIN_USERNAME")
+		slog.Warn("no admin user exists; set one via ARCLOOM_ADMIN_USERNAME")
 		return nil
 	}
 	if err := users.Update(target, func(u *user.User) error { u.Admin = true; return nil }); err != nil {
 		return err
 	}
-	log.Printf("promoted existing user to admin")
+	slog.Info("promoted existing user to admin")
 	return nil
 }

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -274,7 +274,7 @@ func (s *Server) resolveTFVars(p *model.Project, onMissing func(ref string)) (ma
 func (s *Server) readOutputs(r *http.Request, run runner.Runner, dir string) []runs.Output {
 	metas, err := run.Outputs(r.Context(), dir)
 	if err != nil {
-		log.Printf("read outputs after apply: %v", err)
+		slog.Warn("read outputs after apply", "err", err)
 		return nil
 	}
 	out := make([]runs.Output, 0, len(metas))
@@ -296,7 +296,7 @@ func (s *Server) recordRun(rec *runs.Run) {
 		return
 	}
 	if err := s.runs.Append(rec); err != nil {
-		log.Printf("record run %s/%s: %v", rec.ProjectID, rec.ID, err)
+		slog.Warn("record run", "project", rec.ProjectID, "run", rec.ID, "err", err)
 	}
 }
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"maps"
 	"net/http"
 	"strings"
@@ -133,7 +133,7 @@ func (s *Server) runDriftCheck(ctx context.Context, projectID string) {
 	cur := driftStatus{CheckedAt: time.Now()}
 	if err != nil {
 		cur.Error = err.Error()
-		log.Printf("drift check %s: %v", projectID, err)
+		slog.Warn("drift check failed", "project", projectID, "err", err)
 	} else {
 		cur.Drifted = res.HasChanges
 		cur.Add, cur.Change, cur.Destroy, cur.Replace = res.Add, res.Change, res.Destroy, res.Replace
