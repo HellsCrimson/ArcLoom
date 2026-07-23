@@ -18,6 +18,7 @@ FROM debian:bookworm-slim AS runtime
 
 ARG TERRAFORM_VERSION=1.15.8
 ARG OPENTOFU_VERSION=1.12.4
+ARG TFLINT_VERSION=0.64.0
 ARG TARGETARCH=amd64
 
 RUN set -eux; \
@@ -29,10 +30,13 @@ RUN set -eux; \
 	# OpenTofu
 	curl -fsSL "https://github.com/opentofu/opentofu/releases/download/v${OPENTOFU_VERSION}/tofu_${OPENTOFU_VERSION}_linux_${TARGETARCH}.zip" -o /tmp/tofu.zip; \
 	unzip /tmp/tofu.zip tofu -d /usr/local/bin; \
-	chmod +x /usr/local/bin/terraform /usr/local/bin/tofu; \
-	rm -f /tmp/tf.zip /tmp/tofu.zip; \
+	# tflint (optional; enables the Lint feature — degrades gracefully if absent)
+	curl -fsSL "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_${TARGETARCH}.zip" -o /tmp/tflint.zip; \
+	unzip /tmp/tflint.zip tflint -d /usr/local/bin; \
+	chmod +x /usr/local/bin/terraform /usr/local/bin/tofu /usr/local/bin/tflint; \
+	rm -f /tmp/tf.zip /tmp/tofu.zip /tmp/tflint.zip; \
 	apt-get purge -y unzip; apt-get autoremove -y; rm -rf /var/lib/apt/lists/*; \
-	terraform version; tofu version
+	terraform version; tofu version; tflint --version
 
 COPY --from=gobuild /out/arcloom /usr/local/bin/arcloom
 
