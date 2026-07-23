@@ -6,14 +6,26 @@
 	// reference or secret can be placed inside a collection.
 	import type { AttrValue, Field, ValueMode } from '$lib/types';
 	import PlainField from './PlainField.svelte';
-	import { ensureLiteralShape } from './defaults';
+	import { ensureLiteralShape, isContainer } from './defaults';
 
 	let {
 		field,
 		value = $bindable(),
 		references = [],
-		secrets = []
-	}: { field: Field; value: AttrValue; references?: string[]; secrets?: string[] } = $props();
+		secrets = [],
+		// compact renders a primitive value (e.g. a map(string) entry) as a plain
+		// inline input, tucking the Literal/Reference/Expression/Secret toggle
+		// behind an "ƒx" button so a key/value map reads as clean pairs instead of
+		// a stack of mode toggles. The advanced modes are one click away and stay
+		// expanded once a non-literal mode is chosen.
+		compact = false
+	}: {
+		field: Field;
+		value: AttrValue;
+		references?: string[];
+		secrets?: string[];
+		compact?: boolean;
+	} = $props();
 
 	const modes: { id: ValueMode; label: string }[] = [
 		{ id: 'literal', label: 'Literal' },
@@ -21,6 +33,11 @@
 		{ id: 'expression', label: 'Expression' },
 		{ id: 'secret', label: 'Secret' }
 	];
+
+	// A primitive value in a compact collection collapses its mode toggle until
+	// the user opts into an advanced mode (or one is already set on load).
+	const collapsible = $derived(compact && !isContainer(field));
+	let advanced = $state(value.mode !== 'literal');
 
 	function setMode(m: ValueMode) {
 		value.mode = m;
@@ -31,6 +48,20 @@
 		'w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm text-[var(--al-text)] outline-none focus:border-[var(--al-accent)]';
 </script>
 
+{#if collapsible && !advanced}
+	<!-- Clean key→value case: plain input + an unobtrusive advanced toggle. -->
+	<div class="flex items-center gap-1.5">
+		<div class="flex-1"><PlainField {field} bind:value {references} {secrets} /></div>
+		<button
+			type="button"
+			class="flex-none rounded border border-[var(--al-border)] px-1.5 py-1 text-[11px] italic text-[var(--al-muted)] hover:text-[var(--al-text)]"
+			title="Use a reference, expression or secret instead of a literal"
+			onclick={() => (advanced = true)}
+		>
+			ƒx
+		</button>
+	</div>
+{:else}
 <div>
 	<div class="mb-1.5 inline-flex overflow-hidden rounded-md border border-[var(--al-border)] text-[11px]">
 		{#each modes as m (m.id)}
@@ -74,3 +105,4 @@
 		<PlainField {field} bind:value {references} {secrets} />
 	{/if}
 </div>
+{/if}

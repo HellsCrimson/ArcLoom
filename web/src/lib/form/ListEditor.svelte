@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { AttrValue, Field } from '$lib/types';
 	import FieldRenderer from './FieldRenderer.svelte';
-	import { defaultAttr, elemField } from './defaults';
+	import { defaultAttr, elemField, isContainer } from './defaults';
 	import { Plus, Trash2 } from 'lucide-svelte';
 
 	let {
@@ -17,6 +17,8 @@
 	});
 
 	const elem = $derived(elemField(field));
+	// list(string) etc. read best as plain rows; collapse the per-item mode toggle.
+	const compactVal = $derived(!isContainer(elem));
 
 	function add() {
 		items = [...(items ?? []), defaultAttr(elem)];
@@ -30,7 +32,7 @@
 	{#each items ?? [] as _, i (i)}
 		<div class="flex items-start gap-2">
 			<div class="flex-1">
-				<FieldRenderer field={elem} bind:value={items[i]} {references} {secrets} />
+				<FieldRenderer field={elem} bind:value={items[i]} {references} {secrets} compact={compactVal} />
 			</div>
 			<button
 				type="button"

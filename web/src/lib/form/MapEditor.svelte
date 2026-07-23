@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { AttrEntry, Field } from '$lib/types';
 	import FieldRenderer from './FieldRenderer.svelte';
-	import { defaultAttr, elemField } from './defaults';
+	import { defaultAttr, elemField, isContainer } from './defaults';
 	import { Plus, Trash2 } from 'lucide-svelte';
 
 	let {
@@ -17,6 +17,9 @@
 	});
 
 	const elem = $derived(elemField(field));
+	// A primitive-valued map (map(string), map(number)…) reads best as clean
+	// key→value pairs, so collapse each value's mode toggle behind "ƒx".
+	const compactVal = $derived(!isContainer(elem));
 
 	function add() {
 		entries = [...(entries ?? []), { key: '', value: defaultAttr(elem) }];
@@ -35,7 +38,7 @@
 				bind:value={entry.key}
 			/>
 			<div class="flex-1">
-				<FieldRenderer field={elem} bind:value={entry.value} {references} {secrets} />
+				<FieldRenderer field={elem} bind:value={entry.value} {references} {secrets} compact={compactVal} />
 			</div>
 			<button
 				type="button"

@@ -150,10 +150,34 @@ func (t *TfExec) prepare(ctx context.Context, dir string, files map[string][]byt
 	// (partial backend). Within one env's workspace the config is stable across
 	// runs, so a plain init stays idempotent; a changed config needs InitBackend
 	// (reconfigure), same as any backend change.
-	if err := tf.Init(ctx, ws.backendInitOpts()...); err != nil {
-		return nil, cleanup, fmt.Errorf("init: %w", err)
+	initOpts := ws.backendInitOpts()
+	if err := tf.Init(ctx, initOpts...); err != nil {
+		// When a provider's version constraint changed, .terraform.lock.hcl (kept
+		// across the workspace re-sync) still pins the old version, so a plain init
+		// fails asking for -upgrade. Retry once allowing the lock to move to a
+		// version satisfying the new constraint. Scoped to this specific failure so
+		// -upgrade is not run on every op (which would needlessly re-resolve every
+		// provider).
+		if !isLockConstraintMismatch(err) {
+			return nil, cleanup, fmt.Errorf("init: %w", err)
+		}
+		if err := tf.Init(ctx, append(initOpts, tfexec.Upgrade(true))...); err != nil {
+			return nil, cleanup, fmt.Errorf("init -upgrade: %w", err)
+		}
 	}
 	return tf, cleanup, nil
+}
+
+// isLockConstraintMismatch reports whether an init error is the "dependency lock
+// no longer satisfies the configured provider constraints" failure — the one
+// Terraform/OpenTofu tell you to fix with `init -upgrade`. Matched on the
+// diagnostic text (terraform-exec surfaces it in the error) since there is no
+// typed error for it.
+func isLockConstraintMismatch(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "does not match configured version constraint") ||
+		strings.Contains(s, "locked dependencies") ||
+		strings.Contains(s, "init -upgrade")
 }
 
 // planFileName is the saved plan inside the persistent workspace. It is not in
