@@ -124,7 +124,7 @@ func (s *Server) runDriftCheck(ctx context.Context, projectID string) {
 				fmt.Fprintf(logW, "warning: secret %s is not set\n", ref)
 			})
 			if err == nil {
-				res, err = run.RefreshPlan(ctx, s.runDir(p.ID), files, tfVars, logW)
+				res, err = run.RefreshPlan(ctx, s.runDir(p.ID, ""), files, tfVars, logW)
 			}
 		}
 	}

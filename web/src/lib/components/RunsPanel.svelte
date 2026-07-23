@@ -81,6 +81,9 @@
 				<XCircle size={15} style="color:{ACTION_COLOR.delete};" />
 			{/if}
 			<span class="text-[var(--al-text)]">{when(detail)}</span>
+			{#if detail.env}
+				<span class="rounded bg-[var(--al-panel-2)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--al-muted)]" title="environment">{detail.env}</span>
+			{/if}
 			<span class="text-xs text-[var(--al-muted)]">· {duration(detail)}{#if detail.user}&nbsp;· {detail.user}{/if}</span>
 		</div>
 		{#if detail.error}
@@ -163,6 +166,9 @@
 							<XCircle size={15} class="flex-none" style="color:{ACTION_COLOR.delete};" />
 						{/if}
 						<span class="text-sm text-[var(--al-text)]">{when(r)}</span>
+						{#if r.env}
+							<span class="rounded bg-[var(--al-panel-2)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--al-muted)]" title="environment">{r.env}</span>
+						{/if}
 						<span class="text-xs text-[var(--al-muted)]">· {duration(r)}{#if r.user}&nbsp;· {r.user}{/if}</span>
 						<span class="ml-auto flex items-center gap-2 font-mono text-[11px] font-semibold">
 							{#if (r.op === 'plan' || r.op === 'drift') && r.plan}

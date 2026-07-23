@@ -21,8 +21,9 @@ type Output struct {
 type Run struct {
 	ID         string    `json:"id"`
 	ProjectID  string    `json:"projectId"`
-	Op         string    `json:"op"`   // "plan" | "apply" | "destroy"
-	User       string    `json:"user"` // username; empty when auth is disabled
+	Op         string    `json:"op"`            // "plan" | "apply" | "destroy"
+	Env        string    `json:"env,omitempty"` // target environment ("" = default workspace)
+	User       string    `json:"user"`          // username; empty when auth is disabled
 	StartedAt  time.Time `json:"startedAt"`
 	FinishedAt time.Time `json:"finishedAt"`
 	Status     string    `json:"status"` // "success" | "error"

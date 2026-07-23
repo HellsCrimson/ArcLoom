@@ -156,6 +156,7 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/projects/{id}/cost", s.handleGetCost)
 				r.Get("/projects/{id}/provider-updates", s.handleProviderUpdates)
 				r.Get("/projects/{id}/acl", s.handleGetACL)
+				r.Get("/projects/{id}/environments", s.handleGetEnvironments)
 			})
 
 			// Resource editing (PermResources + per-project ACL, audited).
@@ -190,6 +191,7 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/projects/{id}/import/hcl", s.handleImportHCL)
 				r.Post("/projects/{id}/import/state", s.handleImportState)
 				r.Put("/projects/{id}/cost", s.handleSetCost)
+				r.Put("/projects/{id}/environments", s.handleSetEnvironments)
 			})
 
 			// Deploy: plan / apply / destroy (PermDeploy). Plan is a GET so the

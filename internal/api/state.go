@@ -98,6 +98,12 @@ func (s *Server) handleStateList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "project not found")
 		return
 	}
+	envName, _, err := s.resolveEnv(id, r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	dir := s.runDir(id, envName)
 	var data []byte
 	if p.Backend != nil {
 		run, ok := s.runnerFor(string(p.Engine))
@@ -105,7 +111,7 @@ func (s *Server) handleStateList(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "unknown engine")
 			return
 		}
-		raw, perr := run.StatePull(r.Context(), s.runDir(id))
+		raw, perr := run.StatePull(r.Context(), dir)
 		if perr != nil {
 			// Workspace not initialized against the backend yet (or backend
 			// unreachable): report empty rather than failing the panel.
@@ -113,7 +119,7 @@ func (s *Server) handleStateList(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data = []byte(raw)
-	} else if data, err = os.ReadFile(filepath.Join(s.runDir(id), "terraform.tfstate")); err != nil {
+	} else if data, err = os.ReadFile(filepath.Join(dir, "terraform.tfstate")); err != nil {
 		writeJSON(w, http.StatusOK, []stateEntry{})
 		return
 	}

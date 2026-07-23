@@ -21,11 +21,18 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/runs"
 )
 
-// runDir is the persistent CLI workspace for a project. It lives inside the
-// project folder (so a project backup includes its state) and is excluded from
-// Git via the generated .gitignore.
-func (s *Server) runDir(id string) string {
-	return filepath.Join(s.projectDir(id), "run")
+// runDir is the persistent CLI workspace for a project + environment. It lives
+// inside the project folder (so a project backup includes its state) and is
+// excluded from Git via the generated .gitignore. The empty (default)
+// environment uses run/ for backward compatibility; a named environment gets its
+// own run/envs/<name>/ so state never crosses environments. The env name is
+// validated (validID) before it reaches this path.
+func (s *Server) runDir(id, env string) string {
+	base := filepath.Join(s.projectDir(id), "run")
+	if env == "" {
+		return base
+	}
+	return filepath.Join(base, "envs", env)
 }
 
 // handlePlan, handleApply and handleDestroy generate HCL for a project and
@@ -34,7 +41,7 @@ func (s *Server) runDir(id string) string {
 // (stream end). Plan is a GET (consumed via EventSource); apply and destroy
 // mutate real infrastructure and are POSTs (consumed via fetch streaming).
 func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request)    { s.streamOp(w, r, "plan") }
-func (s *Server) handleApply(w http.ResponseWriter, r *http.Request)  { s.streamOp(w, r, "apply") }
+func (s *Server) handleApply(w http.ResponseWriter, r *http.Request)   { s.streamOp(w, r, "apply") }
 func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) { s.streamOp(w, r, "destroy") }
 
 // handleValidate streams a config validation (sync + init + validate). Like
@@ -97,6 +104,13 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		writeErr(w, http.StatusBadRequest, "unknown engine")
 		return
 	}
+	// Resolve the target environment before the stream starts so a bad ?env=
+	// fails with a 400 rather than mid-stream. Empty = the default workspace.
+	envName, env, err := s.resolveEnv(p.ID, r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeErr(w, http.StatusInternalServerError, "streaming unsupported")
@@ -116,6 +130,18 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		sse.event("error", map[string]string{"error": "generate: " + err.Error()})
 		return
 	}
+	// A named environment with backend config writes its partial `-backend-config`
+	// values into the workspace; the runner passes them to init. Only meaningful
+	// when the project has a backend (otherwise each env just gets its own local
+	// state in run/envs/<name>/).
+	if p.Backend != nil {
+		if bc := backendConfigFileContents(env); bc != nil {
+			files[".arcloom.tfbackend"] = bc
+		}
+	}
+	if envName != "" {
+		sse.event("log", map[string]string{"line": "environment: " + envName})
+	}
 
 	// Resolve secrets referenced by the project into TF_VAR_ injections. Values
 	// are held in memory only and never written to disk or HCL.
@@ -125,6 +151,13 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 	if err != nil {
 		sse.event("error", map[string]string{"error": err.Error()})
 		return
+	}
+	// Overlay per-env variable value overrides (TF_VAR_<name>). Secrets win on a
+	// name collision (a secret-backed variable keeps its resolved value).
+	for k, v := range env.Vars {
+		if _, taken := tfVars[k]; !taken {
+			tfVars[k] = v
+		}
 	}
 
 	// Stream CLI output line-by-line as "log" events, and mirror it into a
@@ -137,12 +170,12 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		sse.event("log", map[string]string{"line": line})
 	}}
 
-	rec := &runs.Run{ID: uuid.NewString(), ProjectID: p.ID, Op: op, StartedAt: time.Now()}
+	rec := &runs.Run{ID: uuid.NewString(), ProjectID: p.ID, Op: op, Env: envName, StartedAt: time.Now()}
 	if u, ok := userFromContext(r); ok {
 		rec.User = u.Username
 	}
 
-	dir := s.runDir(p.ID)
+	dir := s.runDir(p.ID, envName)
 	switch op {
 	case "plan":
 		var res runner.PlanResult

@@ -146,7 +146,11 @@ func (t *TfExec) prepare(ctx context.Context, dir string, files map[string][]byt
 		}
 	}
 
-	if err := tf.Init(ctx); err != nil {
+	// Pass per-env `-backend-config` values when the workspace carries them
+	// (partial backend). Within one env's workspace the config is stable across
+	// runs, so a plain init stays idempotent; a changed config needs InitBackend
+	// (reconfigure), same as any backend change.
+	if err := tf.Init(ctx, ws.backendInitOpts()...); err != nil {
 		return nil, cleanup, fmt.Errorf("init: %w", err)
 	}
 	return tf, cleanup, nil
@@ -330,15 +334,17 @@ func (t *TfExec) InitBackend(ctx context.Context, dir string, files map[string][
 		tf.SetStdout(out)
 		tf.SetStderr(out)
 	}
-	opt := tfexec.Reconfigure(true)
+	// Include any per-env backend config (partial backend) alongside the
+	// migrate/reconfigure flag.
+	bc := ws.backendInitOpts()
 	if migrate {
 		// -force-copy implies -migrate-state and answers the copy prompt.
-		if err := tf.Init(ctx, tfexec.ForceCopy(true)); err != nil {
+		if err := tf.Init(ctx, append(bc, tfexec.ForceCopy(true))...); err != nil {
 			return fmt.Errorf("init -migrate-state: %w", err)
 		}
 		return nil
 	}
-	if err := tf.Init(ctx, opt); err != nil {
+	if err := tf.Init(ctx, append(bc, tfexec.Reconfigure(true))...); err != nil {
 		return fmt.Errorf("init -reconfigure: %w", err)
 	}
 	return nil

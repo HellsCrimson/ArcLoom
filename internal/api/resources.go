@@ -276,23 +276,43 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 // backend the state is pulled through the CLI (best-effort — the state itself
 // survives project deletion, so the guard is advisory there).
 func (s *Server) deployedResourceCount(ctx context.Context, id string) int {
-	var data []byte
 	p, err := s.store.Get(id)
 	if err != nil {
 		return 0
 	}
+	// Check the default workspace plus every configured environment workspace, so
+	// a project with resources deployed only under a named env still warns.
+	envDirs := []string{""}
+	if s.settings != nil {
+		for _, e := range s.settings.Environments(id) {
+			envDirs = append(envDirs, e.Name)
+		}
+	}
+	n := 0
+	for _, env := range envDirs {
+		n += s.managedCountIn(ctx, p, s.runDir(id, env))
+	}
+	return n
+}
+
+// managedCountIn returns the number of managed resources tracked in one
+// workspace's state (0 on any error — a never-applied workspace deletes freely).
+func (s *Server) managedCountIn(ctx context.Context, p *model.Project, dir string) int {
+	var data []byte
 	if p.Backend != nil {
 		run, ok := s.runnerFor(string(p.Engine))
 		if !ok {
 			return 0
 		}
-		raw, perr := run.StatePull(ctx, s.runDir(id))
+		raw, perr := run.StatePull(ctx, dir)
 		if perr != nil {
 			return 0
 		}
 		data = []byte(raw)
-	} else if data, err = os.ReadFile(filepath.Join(s.runDir(id), "terraform.tfstate")); err != nil {
+	} else if b, err := os.ReadFile(filepath.Join(dir, "terraform.tfstate")); err != nil {
 		return 0
+	} else {
+		data = b
 	}
 	var st struct {
 		Resources []struct {
@@ -342,6 +362,7 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		_ = s.settings.DeleteGitCreds(id)
 		_ = s.settings.DeleteProjectACL(id)
 		_ = s.settings.DeleteCost(id)
+		_ = s.settings.DeleteEnvironments(id)
 	}
 	if s.audit != nil {
 		_ = s.audit.DeleteProject(id)

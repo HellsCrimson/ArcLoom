@@ -90,6 +90,23 @@ type Cost struct {
 	Overrides []CostOverride `yaml:"overrides,omitempty" json:"overrides"`
 }
 
+// Environment is one deployment target (dev / staging / prod) for a project.
+// The generated HCL stays env-agnostic (one backend TYPE, shared config); an
+// environment layers per-env backend config values (applied via -backend-config
+// at init) and per-env variable value overrides (injected as TF_VAR_*), and gets
+// its own persistent workspace (run/envs/<name>/) so state never crosses envs.
+// Kept here (not on the model) so it stays out of generated HCL, Git and
+// undo/redo, like drift/cost/ACL.
+type Environment struct {
+	Name string `yaml:"name" json:"name"`
+	// BackendConfig supplies the per-env values for the project's backend
+	// (partial config, e.g. the state key/path), raw literals keyed by backend
+	// argument name. Empty when the project has no backend.
+	BackendConfig map[string]string `yaml:"backend_config,omitempty" json:"backendConfig,omitempty"`
+	// Vars are per-env input-variable value overrides, injected as TF_VAR_<name>.
+	Vars map[string]string `yaml:"vars,omitempty" json:"vars,omitempty"`
+}
+
 // ACLEntry grants one user a set of project-scoped permissions. An entry with
 // no perms still grants read access (the user can open the project). Perms are a
 // subset of the global Perm* capabilities and act as a *restriction* on top of
@@ -114,6 +131,10 @@ type document struct {
 	// Cost maps project ID -> cost-estimation config (enable + price overrides).
 	// Kept here so it stays out of HCL/Git/undo, like drift and ACLs.
 	Cost map[string]Cost `yaml:"cost,omitempty"`
+	// Environments maps project ID -> ordered deployment environments. Kept here
+	// (not on the model) so per-env backend config / var overrides stay out of
+	// HCL/Git/undo.
+	Environments map[string][]Environment `yaml:"environments,omitempty"`
 	// License is the ArcLoom Enterprise license token (vendor-signed, verified
 	// offline). Stored in plaintext — it is signed, not secret.
 	License string `yaml:"license,omitempty"`
@@ -380,6 +401,63 @@ func (s *Store) DeleteCost(projectID string) error {
 	}
 	delete(s.doc.Cost, projectID)
 	return s.persist()
+}
+
+// Environments returns a project's deployment environments (nil when none are
+// configured). The slice and its maps are deep-copied so callers cannot mutate
+// the store.
+func (s *Store) Environments(projectID string) []Environment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	envs := s.doc.Environments[projectID]
+	if envs == nil {
+		return nil
+	}
+	out := make([]Environment, len(envs))
+	for i, e := range envs {
+		out[i] = Environment{Name: e.Name}
+		if e.BackendConfig != nil {
+			out[i].BackendConfig = maps.Clone(e.BackendConfig)
+		}
+		if e.Vars != nil {
+			out[i].Vars = maps.Clone(e.Vars)
+		}
+	}
+	return out
+}
+
+// Environment returns one named environment (ok=false when absent).
+func (s *Store) Environment(projectID, name string) (Environment, bool) {
+	for _, e := range s.Environments(projectID) {
+		if e.Name == name {
+			return e, true
+		}
+	}
+	return Environment{}, false
+}
+
+// SetEnvironments replaces a project's environment list. An empty list clears
+// it (the project reverts to the single default workspace).
+func (s *Store) SetEnvironments(projectID string, envs []Environment) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(envs) == 0 {
+		if _, ok := s.doc.Environments[projectID]; !ok {
+			return nil
+		}
+		delete(s.doc.Environments, projectID)
+		return s.persist()
+	}
+	if s.doc.Environments == nil {
+		s.doc.Environments = map[string][]Environment{}
+	}
+	s.doc.Environments[projectID] = envs
+	return s.persist()
+}
+
+// DeleteEnvironments removes a project's environments (used on project delete).
+func (s *Store) DeleteEnvironments(projectID string) error {
+	return s.SetEnvironments(projectID, nil)
 }
 
 // GitCreds returns a project's stored credential with its secret fields

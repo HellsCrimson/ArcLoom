@@ -119,7 +119,20 @@ export const api = {
 
 	listRuns: (id: string) => fetch(`/api/projects/${id}/runs`).then((r) => json<RunRecord[]>(r)),
 
-	stateList: (id: string) => fetch(`/api/projects/${id}/state`).then((r) => json<StateEntry[]>(r)),
+	stateList: (id: string, env = '') =>
+		fetch(`/api/projects/${id}/state${env ? `?env=${encodeURIComponent(env)}` : ''}`).then((r) =>
+			json<StateEntry[]>(r)
+		),
+
+	getEnvironments: (id: string) =>
+		fetch(`/api/projects/${id}/environments`).then((r) => json<Environment[]>(r)),
+
+	setEnvironments: (id: string, environments: Environment[]) =>
+		fetch(`/api/projects/${id}/environments`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ environments })
+		}).then((r) => json<Environment[]>(r)),
 
 	setBackend: (id: string, body: { type: string; config: Record<string, AttrValue> }) =>
 		fetch(`/api/projects/${id}/backend`, {
@@ -556,6 +569,16 @@ export interface CostConfig {
 	overrides: CostOverride[];
 }
 
+// Environment is one deployment target (dev/staging/prod): a per-env backend
+// config (partial `-backend-config` values) + variable value overrides. Kept
+// server-side out of HCL/Git; selecting one scopes deploy/state ops to its own
+// run/envs/<name>/ workspace.
+export interface Environment {
+	name: string;
+	backendConfig?: Record<string, string>;
+	vars?: Record<string, string>;
+}
+
 // RunOutput is one root output value captured after an apply.
 export interface RunOutput {
 	name: string;
@@ -585,6 +608,7 @@ export interface RunRecord {
 	id: string;
 	projectId: string;
 	op: 'plan' | 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv' | 'init-backend' | 'validate' | 'lint' | 'drift';
+	env?: string;
 	user: string;
 	startedAt: string;
 	finishedAt: string;
@@ -620,9 +644,11 @@ export type PlanEvent =
 export function streamPlan(
 	projectId: string,
 	onEvent: (e: PlanEvent) => void,
-	op: 'plan' | 'validate' | 'lint' = 'plan'
+	op: 'plan' | 'validate' | 'lint' = 'plan',
+	env = ''
 ): () => void {
-	const es = new EventSource(`/api/projects/${projectId}/${op}`);
+	const q = env ? `?env=${encodeURIComponent(env)}` : '';
+	const es = new EventSource(`/api/projects/${projectId}/${op}${q}`);
 
 	es.addEventListener('log', (ev) => {
 		const d = JSON.parse((ev as MessageEvent).data);
@@ -689,11 +715,13 @@ export function streamOp(
 	projectId: string,
 	op: StreamableOp,
 	onEvent: (e: PlanEvent) => void,
-	params?: Record<string, string>
+	params?: Record<string, string>,
+	env = ''
 ): () => void {
 	const ctrl = new AbortController();
 	(async () => {
-		const q = params ? `?${new URLSearchParams(params)}` : '';
+		const merged = { ...(params ?? {}), ...(env ? { env } : {}) };
+		const q = Object.keys(merged).length ? `?${new URLSearchParams(merged)}` : '';
 		const res = await fetch(`/api/projects/${projectId}/${OP_PATH[op]}${q}`, {
 			method: 'POST',
 			signal: ctrl.signal

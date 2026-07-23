@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type PlanChange, type RunOutput, type StateEntry, type CostSummary, type LintSummary } from '$lib/api/client';
+	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type PlanChange, type RunOutput, type StateEntry, type CostSummary, type LintSummary, type Environment } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
 	import StatePanel from '$lib/components/StatePanel.svelte';
 	import type { AttrValue, DriftConfig, Engine, Module, NormalizedSchema, Project, ProjectSummary, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
@@ -11,6 +11,7 @@
 	import GitPanel from '$lib/components/GitPanel.svelte';
 	import AclModal from '$lib/components/AclModal.svelte';
 	import CostPanel from '$lib/components/CostPanel.svelte';
+	import EnvironmentsPanel from '$lib/components/EnvironmentsPanel.svelte';
 	import UserMenu from '$lib/components/UserMenu.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
 	import CommandPalette, { type PaletteItem } from '$lib/components/CommandPalette.svelte';
@@ -76,6 +77,11 @@
 	let stateEntries = $state<StateEntry[]>([]);
 	let stateLoading = $state(false);
 	let driftInfo = $state<DriftInfo | null>(null);
+	// Deployment environments (dev/staging/prod) + the currently selected one
+	// (''=default workspace). Loaded per project; scopes deploy/state ops.
+	let environments = $state<Environment[]>([]);
+	let activeEnv = $state('');
+	let showEnvironments = $state(false);
 	// Provider upgrade suggestions, keyed by source (best-effort registry check).
 	let providerUpdates = $state<Record<string, ProviderUpdate>>({});
 	let bumping = $state('');
@@ -344,6 +350,7 @@
 			}
 			if (auth.can('resources')) {
 				items.push({ id: 'cmd:cost', label: 'Cost estimation', group: 'commands', run: () => (showCost = true) });
+				items.push({ id: 'cmd:environments', label: 'Environments', group: 'commands', run: () => (showEnvironments = true) });
 				items.push({ id: 'cmd:import-hcl', label: 'Import HCL', group: 'commands', run: () => { importMsg = ''; showImportHcl = true; } });
 				items.push({ id: 'cmd:import-state', label: 'Import state', group: 'commands', run: () => { importMsg = ''; showImportState = true; } });
 			}
@@ -401,10 +408,35 @@
 			localStorage.setItem(LAST_PROJECT_KEY, id);
 			await refreshHcl();
 			await loadSecrets();
+			await loadEnvironments();
 			if (project.providers?.length) providerSource = project.providers[0].source;
 		} catch (err) {
 			error = (err as Error).message;
 		}
+	}
+
+	// loadEnvironments fetches the project's deployment environments and keeps the
+	// active selection valid (falls back to the default workspace if it vanished).
+	async function loadEnvironments() {
+		if (!project) return;
+		try {
+			environments = await api.getEnvironments(project.id);
+		} catch {
+			environments = [];
+		}
+		if (activeEnv && !environments.some((e) => e.name === activeEnv)) activeEnv = '';
+	}
+
+	// selectEnv switches the active environment. The plan overlay and state list
+	// are per-env, so clear/refresh them to avoid showing another env's diff.
+	function selectEnv(name: string) {
+		if (name === activeEnv) return;
+		activeEnv = name;
+		planChanges = [];
+		planCounts = null;
+		planCost = null;
+		planResult = '';
+		if (showState) loadState();
 	}
 
 	// loadProviderUpdates checks each provider source against the registry and
@@ -1151,7 +1183,7 @@
 				error = ev.error;
 				busy = '';
 			} else if (ev.kind === 'done') busy = '';
-		});
+		}, 'plan', activeEnv);
 	}
 
 	// runValidate streams a config validation into the run pane (diagnostics
@@ -1177,7 +1209,7 @@
 				error = ev.error;
 				busy = '';
 			} else if (ev.kind === 'done') busy = '';
-		}, 'validate');
+		}, 'validate', activeEnv);
 	}
 
 	// runLint streams a tflint run into the run pane (issues arrive as log lines;
@@ -1205,14 +1237,14 @@
 				error = ev.error;
 				busy = '';
 			} else if (ev.kind === 'done') busy = '';
-		}, 'lint');
+		}, 'lint', activeEnv);
 	}
 
 	async function loadState() {
 		if (!project) return;
 		stateLoading = true;
 		try {
-			stateEntries = await api.stateList(project.id);
+			stateEntries = await api.stateList(project.id, activeEnv);
 		} catch {
 			stateEntries = [];
 		} finally {
@@ -1274,7 +1306,7 @@
 				busy = '';
 				loadState();
 			}
-		}, params);
+		}, params, activeEnv);
 	}
 
 	function openBackend() {
@@ -1348,7 +1380,7 @@
 				planResult = op === 'apply' ? 'Applied' : 'Destroyed';
 				busy = '';
 			}
-		});
+		}, undefined, activeEnv);
 	}
 
 	const btn = 'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-40';
@@ -1431,6 +1463,26 @@
 				{#if auth.can('resources')}
 					<button class={hdrBtn} onclick={() => (showCost = true)} title="Cost estimation settings">
 						<DollarSign size={14} /> Cost
+					</button>
+				{/if}
+				{#if environments.length > 0}
+					<div class="flex items-center gap-1" title="Active deployment environment (scopes plan / apply / state)">
+						<Boxes size={14} class="text-[var(--al-muted)]" />
+						<select
+							class="rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs text-[var(--al-text)] outline-none focus:border-[var(--al-accent)]"
+							value={activeEnv}
+							onchange={(e) => selectEnv((e.currentTarget as HTMLSelectElement).value)}
+						>
+							<option value="">Default</option>
+							{#each environments as env (env.name)}
+								<option value={env.name}>{env.name}</option>
+							{/each}
+						</select>
+					</div>
+				{/if}
+				{#if auth.can('resources')}
+					<button class={hdrBtn} onclick={() => (showEnvironments = true)} title="Manage deployment environments">
+						<Boxes size={14} /> Environments
 					</button>
 				{/if}
 				{#if auth.isAdmin}
@@ -1895,6 +1947,16 @@
 	<AclModal bind:open={showAcl} projectId={project.id} projectName={project.name} />
 
 	<CostPanel bind:open={showCost} projectId={project.id} />
+
+	<EnvironmentsPanel
+		bind:open={showEnvironments}
+		projectId={project.id}
+		hasBackend={!!project.backend}
+		onSaved={(envs) => {
+			environments = envs;
+			if (activeEnv && !envs.some((e) => e.name === activeEnv)) activeEnv = '';
+		}}
+	/>
 
 	<StatePanel
 		bind:open={showState}

@@ -47,7 +47,7 @@ func (s *Server) handleProviderUpdates(w http.ResponseWriter, r *http.Request) {
 
 	// The lock file records the concrete versions last installed — the best
 	// "current" reference. Absent (never initialised) it stays empty.
-	installed := registry.InstalledVersions(filepath.Join(s.runDir(id), ".terraform.lock.hcl"))
+	installed := registry.InstalledVersions(filepath.Join(s.runDir(id, ""), ".terraform.lock.hcl"))
 
 	// Collapse instances to unique sources (required_providers is per source /
 	// local name; aliases share a version). Keep the strongest pin seen.

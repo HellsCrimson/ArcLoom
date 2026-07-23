@@ -295,3 +295,53 @@ func TestSettings_MigratesLegacySecret(t *testing.T) {
 		t.Fatalf("reopened secret: got %q, want topsecret", got)
 	}
 }
+
+func TestEnvironments_RoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.yaml")
+	s, err := NewStore(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Absent => nil.
+	if envs := s.Environments("p1"); envs != nil {
+		t.Fatalf("new project should have no environments, got %+v", envs)
+	}
+	in := []Environment{
+		{Name: "dev", Vars: map[string]string{"region": "eu-west-1"}},
+		{Name: "prod", BackendConfig: map[string]string{"key": "prod/terraform.tfstate"}, Vars: map[string]string{"region": "us-east-1"}},
+	}
+	if err := s.SetEnvironments("p1", in); err != nil {
+		t.Fatal(err)
+	}
+	// Reload from disk.
+	s2, err := NewStore(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s2.Environments("p1")
+	if len(got) != 2 || got[0].Name != "dev" || got[1].Name != "prod" {
+		t.Fatalf("round-trip lost data: %+v", got)
+	}
+	if got[0].Vars["region"] != "eu-west-1" || got[1].BackendConfig["key"] != "prod/terraform.tfstate" {
+		t.Fatalf("env fields wrong: %+v", got)
+	}
+	// Returned maps are copies — mutating must not affect the store.
+	got[0].Vars["region"] = "mutated"
+	if again := s2.Environments("p1"); again[0].Vars["region"] != "eu-west-1" {
+		t.Fatal("Environments() returned a mutable reference into the store")
+	}
+	// Environment() looks one up by name.
+	if e, ok := s2.Environment("p1", "prod"); !ok || e.Vars["region"] != "us-east-1" {
+		t.Fatalf("Environment(prod) = %+v ok=%v", e, ok)
+	}
+	if _, ok := s2.Environment("p1", "nope"); ok {
+		t.Fatal("Environment(nope) should be absent")
+	}
+	// Empty list clears it.
+	if err := s2.SetEnvironments("p1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if envs := s2.Environments("p1"); envs != nil {
+		t.Fatalf("empty list should clear environments, got %+v", envs)
+	}
+}

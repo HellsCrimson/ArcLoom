@@ -23,6 +23,23 @@ type workspace struct {
 	persistent bool
 }
 
+// backendConfigFile is the optional per-environment backend configuration the
+// API writes into a workspace (partial `-backend-config` values, e.g. the state
+// key). Its extension is not one Terraform auto-loads (only *.tf / *.tf.json /
+// *.tfvars are), so it is used solely via `-backend-config` at init. It is NOT
+// in persistKeep — it is rewritten from the generated files on every op, and
+// removed when an env no longer supplies backend config.
+const backendConfigFile = ".arcloom.tfbackend"
+
+// backendInitOpts returns the -backend-config init option when the workspace has
+// a per-env backend config file, else nil.
+func (w *workspace) backendInitOpts() []tfexec.InitOption {
+	if _, err := os.Stat(filepath.Join(w.dir, backendConfigFile)); err == nil {
+		return []tfexec.InitOption{tfexec.BackendConfig(backendConfigFile)}
+	}
+	return nil
+}
+
 // persistKeep are workspace entries that carry engine state between runs and
 // must survive a config re-sync. Everything else in a persistent workspace is
 // owned by ArcLoom and rewritten from the generated files on every operation.
