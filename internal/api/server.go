@@ -131,9 +131,6 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/auth/password", s.handlePasswordChange)
 			r.Get("/license", s.handleGetLicense)
 			r.Get("/engines", s.handleEngines)
-			r.Get("/providers/{source}/schema", s.handleProviderSchema)
-			r.Get("/providers/{source}/resources/{type}/schema", s.handleResourceSchema)
-			r.Get("/providers/{source}/datasources/{type}/schema", s.handleDataSourceSchema)
 			r.Get("/projects", s.handleListProjects) // filtered by per-project ACL
 
 			// Project reads gated by the per-project access list.
@@ -161,6 +158,13 @@ func (s *Server) Handler() http.Handler {
 				r.Use(s.requireProjectPerm(user.PermResources))
 				r.Use(s.csrfGuard)
 				r.Use(s.auditMiddleware)
+				// Schema reads init + execute the named provider plugin, so they
+				// need PermResources (a read-only user must not make the server
+				// download and run an arbitrary binary). They carry no {id}, so
+				// requireProjectPerm falls back to the global capability check.
+				r.Get("/providers/{source}/schema", s.handleProviderSchema)
+				r.Get("/providers/{source}/resources/{type}/schema", s.handleResourceSchema)
+				r.Get("/providers/{source}/datasources/{type}/schema", s.handleDataSourceSchema)
 				r.Post("/providers", s.handleAddProvider)
 				r.Post("/projects", s.handleCreateProject)
 				r.Put("/projects/{id}", s.handleReplaceProject)

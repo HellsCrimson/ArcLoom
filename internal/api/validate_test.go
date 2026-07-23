@@ -45,3 +45,62 @@ func TestValidateID_AllowsWellFormed(t *testing.T) {
 		}
 	}
 }
+
+// validProviderSource accepts real registry addresses and rejects anything that
+// could carry path-traversal or HCL-identifier-breaking characters into
+// run.ProvidersSchema / the required_providers key.
+func TestValidProviderSource(t *testing.T) {
+	valid := []string{
+		"aws", "hashicorp/aws", "hashicorp/random", "hashicorp/google-beta",
+		"registry.terraform.io/hashicorp/aws", "registry.opentofu.org/hashicorp/null",
+	}
+	for _, s := range valid {
+		if !validProviderSource(s) {
+			t.Errorf("validProviderSource(%q) = false, want true", s)
+		}
+	}
+	invalid := []string{
+		"", "../../etc/passwd", "hashicorp/aws;rm", "a/b/c/d", "/aws",
+		"hashicorp/", "1aws", "has hicorp/aws", "hashicorp/aws\n", "hashi\\corp/aws",
+	}
+	for _, s := range invalid {
+		if validProviderSource(s) {
+			t.Errorf("validProviderSource(%q) = true, want false", s)
+		}
+	}
+}
+
+// The provider-schema endpoints init + execute the named provider plugin, so
+// they now require PermResources: a read-only viewer is blocked (403) before any
+// binary runs, while an editor passes the gate and reaches the handler.
+func TestSchemaEndpoints_RequireResourcesPerm(t *testing.T) {
+	h, _, _ := newRBACServer(t)
+	viewer := login(t, h, "viewer", "password1") // no perms
+	editor := login(t, h, "editor", "password1") // resources perm
+
+	paths := []string{
+		"/api/providers/hashicorp%2Faws/schema?engine=tofu",
+		"/api/providers/hashicorp%2Faws/resources/aws_instance/schema?engine=tofu",
+		"/api/providers/hashicorp%2Faws/datasources/aws_ami/schema?engine=tofu",
+	}
+	for _, p := range paths {
+		if rec := do(t, h, http.MethodGet, p, viewer, ""); rec.Code != http.StatusForbidden {
+			t.Errorf("viewer GET %s: got %d, want 403", p, rec.Code)
+		}
+		// Editor clears the gate (no runner is configured, so the handler itself
+		// answers 400 "unknown engine" — the point is it's never 403).
+		if rec := do(t, h, http.MethodGet, p, editor, ""); rec.Code == http.StatusForbidden {
+			t.Errorf("editor GET %s: got 403, want it to pass the perm gate", p)
+		}
+	}
+}
+
+// A malformed {source} is rejected with 400 before any provider runs, even for a
+// permitted user.
+func TestSchemaEndpoint_RejectsBadSource(t *testing.T) {
+	h, _, _ := newRBACServer(t)
+	editor := login(t, h, "editor", "password1")
+	if rec := do(t, h, http.MethodGet, "/api/providers/..%2F..%2Fetc/schema?engine=tofu", editor, ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("bad source: got %d, want 400", rec.Code)
+	}
+}

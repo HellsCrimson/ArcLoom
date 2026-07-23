@@ -55,6 +55,10 @@ func (s *Server) handleAddProvider(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "source is required")
 		return
 	}
+	if !validProviderSource(req.Source) {
+		writeErr(w, http.StatusBadRequest, "invalid provider source")
+		return
+	}
 	run, ok := s.runnerFor(req.Engine)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "unknown engine")
@@ -117,6 +121,10 @@ func (s *Server) handleDataSourceSchema(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, "invalid source")
 		return
 	}
+	if !validProviderSource(source) {
+		writeErr(w, http.StatusBadRequest, "invalid provider source")
+		return
+	}
 	dataType := chi.URLParam(r, "type")
 	engine := r.URL.Query().Get("engine")
 	version := r.URL.Query().Get("version")
@@ -159,6 +167,10 @@ func (s *Server) handleResourceSchema(w http.ResponseWriter, r *http.Request) {
 	source, err := url.PathUnescape(chi.URLParam(r, "source"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid source")
+		return
+	}
+	if !validProviderSource(source) {
+		writeErr(w, http.StatusBadRequest, "invalid provider source")
 		return
 	}
 	resourceType := chi.URLParam(r, "type")
@@ -208,6 +220,10 @@ func (s *Server) handleProviderSchema(w http.ResponseWriter, r *http.Request) {
 	source, err := url.PathUnescape(chi.URLParam(r, "source"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid source")
+		return
+	}
+	if !validProviderSource(source) {
+		writeErr(w, http.StatusBadRequest, "invalid provider source")
 		return
 	}
 	engine := r.URL.Query().Get("engine")

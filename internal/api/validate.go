@@ -17,6 +17,23 @@ var safeSegmentRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // validID reports whether a project id is safe to interpolate into a path.
 func validID(id string) bool { return safeSegmentRe.MatchString(id) }
 
+// providerSourceRe validates a Terraform/OpenTofu provider source address:
+//
+//	[hostname/][namespace/]type
+//
+// Labels are alphanumerics with internal dots and hyphens; the final `type`
+// (which becomes the provider's local name and an HCL identifier via
+// providerKeyFromSource) must start with a letter. This keeps a URL- or
+// body-supplied source from carrying path-traversal or HCL-breaking characters
+// into run.ProvidersSchema (which writes it into a generated config, then
+// downloads and executes that provider plugin) and into hclgen's
+// required_providers key (`generate.go` uses the local name as a bare attribute
+// name).
+var providerSourceRe = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9.-]*/){0,2}[A-Za-z][A-Za-z0-9_-]*$`)
+
+// validProviderSource reports whether a provider source address is well-formed.
+func validProviderSource(source string) bool { return providerSourceRe.MatchString(source) }
+
 // Request body caps. Unbounded bodies let a client exhaust server memory
 // (`json.NewDecoder(r.Body)` reads as much as it is given). maxBodySmall bounds
 // the tiny auth payloads; maxBodyLarge bounds everything else, sized generously
