@@ -117,34 +117,134 @@ type document struct {
 	// License is the ArcLoom Enterprise license token (vendor-signed, verified
 	// offline). Stored in plaintext — it is signed, not secret.
 	License string `yaml:"license,omitempty"`
+	// KDF is the key-derivation record for the encrypted fields (SSO client
+	// secret + git credentials). Persisting the salt makes the argon2id key
+	// reproducible across restarts. Absent = pre-KDF document (sha256 key).
+	KDF *kdfMeta `yaml:"kdf,omitempty"`
+}
+
+// kdfMeta persists the argon2id salt (and version, for future parameter changes)
+// alongside the encrypted fields it protects.
+type kdfMeta struct {
+	Version int    `yaml:"version"`
+	Salt    []byte `yaml:"salt"`
 }
 
 // Store is a disk-backed settings document.
 type Store struct {
 	path string
 	key  []byte // AES key derived from the master passphrase; nil disables secret storage
-	mu   sync.Mutex
-	doc  document
+	// legacyKey is the pre-KDF (bare sha256) key, kept to decrypt and migrate
+	// fields sealed before the argon2id KDF landed.
+	legacyKey []byte
+	mu        sync.Mutex
+	doc       document
 }
 
 // NewStore loads (or initializes) the settings document at path. masterKey (the
-// ARCLOOM_SECRET_KEY) enables encryption of the OIDC client secret.
+// ARCLOOM_SECRET_KEY) enables encryption of the OIDC client secret and git
+// credentials; it is stretched to an AES key with argon2id (see
+// secrets.DeriveKey) against a salt persisted in the document. Fields sealed
+// under the old sha256 key are migrated to the new key on first run.
 func NewStore(path, masterKey string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create settings dir: %w", err)
 	}
-	s := &Store{path: path, key: secrets.DeriveKey(masterKey)}
+	s := &Store{path: path}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return s, nil
+		if !os.IsNotExist(err) {
+			return nil, err
 		}
-		return nil, err
-	}
-	if err := yaml.Unmarshal(data, &s.doc); err != nil {
+	} else if err := yaml.Unmarshal(data, &s.doc); err != nil {
 		return nil, fmt.Errorf("parse settings: %w", err)
 	}
+	if masterKey != "" {
+		s.legacyKey = secrets.LegacyKey(masterKey)
+		if err := s.initKey(masterKey); err != nil {
+			return nil, err
+		}
+	}
 	return s, nil
+}
+
+// initKey establishes the argon2id encryption key. If the document already
+// carries a KDF salt, the key is reproduced from it. Otherwise a fresh salt is
+// minted and any pre-KDF secret fields are re-sealed under the new key and
+// persisted together with the salt; when nothing is stored yet, persistence is
+// deferred to the first write (which carries the salt) so a fresh install stays
+// file-less.
+func (s *Store) initKey(masterKey string) error {
+	if s.doc.KDF != nil && len(s.doc.KDF.Salt) > 0 {
+		s.key = secrets.DeriveKey(masterKey, s.doc.KDF.Salt)
+		return nil
+	}
+	salt, err := secrets.NewSalt()
+	if err != nil {
+		return err
+	}
+	s.key = secrets.DeriveKey(masterKey, salt)
+	s.doc.KDF = &kdfMeta{Version: 1, Salt: salt}
+	if s.hasEncryptedFields() {
+		s.migrateLegacy()
+		return s.persist()
+	}
+	return nil
+}
+
+// hasEncryptedFields reports whether any at-rest secret is stored.
+func (s *Store) hasEncryptedFields() bool {
+	if s.doc.SSO.ClientSecretEnc != "" {
+		return true
+	}
+	for _, c := range s.doc.GitCreds {
+		if c.TokenEnc != "" || c.SSHKeyEnc != "" || c.PassphraseEnc != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// migrateLegacy re-seals every encrypted field (SSO client secret + git creds)
+// from the legacy sha256 key to the new argon2id key. Best-effort per field: one
+// that can't be read is left as-is (decryptSecret still handles it via the
+// legacy-key fallback).
+func (s *Store) migrateLegacy() {
+	if s.legacyKey == nil {
+		return
+	}
+	s.doc.SSO.ClientSecretEnc = s.reseal(s.doc.SSO.ClientSecretEnc)
+	for id, c := range s.doc.GitCreds {
+		c.TokenEnc = s.reseal(c.TokenEnc)
+		c.SSHKeyEnc = s.reseal(c.SSHKeyEnc)
+		c.PassphraseEnc = s.reseal(c.PassphraseEnc)
+		s.doc.GitCreds[id] = c
+	}
+}
+
+// reseal decrypts a base64 blob with the legacy key and re-encrypts it under the
+// new key. It returns the input unchanged when the field is empty, already under
+// the new key, or unreadable.
+func (s *Store) reseal(enc string) string {
+	if enc == "" {
+		return ""
+	}
+	blob, err := base64.StdEncoding.DecodeString(enc)
+	if err != nil {
+		return enc
+	}
+	if _, err := secrets.Decrypt(s.key, blob); err == nil {
+		return enc // already under the new key
+	}
+	plain, err := secrets.Decrypt(s.legacyKey, blob)
+	if err != nil {
+		return enc
+	}
+	nb, err := secrets.Encrypt(s.key, plain)
+	if err != nil {
+		return enc
+	}
+	return base64.StdEncoding.EncodeToString(nb)
 }
 
 // SecretStorable reports whether an OIDC client secret can be stored (i.e. a
@@ -422,6 +522,10 @@ func (s *Store) decryptSecret(enc string) string {
 		return ""
 	}
 	plain, err := secrets.Decrypt(s.key, blob)
+	if err != nil && s.legacyKey != nil {
+		// Fall back to the pre-KDF key for a field not yet migrated.
+		plain, err = secrets.Decrypt(s.legacyKey, blob)
+	}
 	if err != nil {
 		return ""
 	}

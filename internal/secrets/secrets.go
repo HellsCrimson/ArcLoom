@@ -17,11 +17,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+
+	"golang.org/x/crypto/argon2"
 )
 
 // envPrefix is the environment prefix for env-backed secret values.
@@ -40,13 +43,37 @@ type Meta struct {
 type Store struct {
 	dir string
 	key []byte // 32-byte AES key, or nil if the local backend is disabled
-	mu  sync.Mutex
+	// legacyKey is the pre-KDF (bare sha256) key, kept so .enc files written
+	// before the argon2id KDF landed can still be decrypted and migrated.
+	legacyKey []byte
+	mu        sync.Mutex
 }
 
 // NewStore builds a store. masterKey (from ARCLOOM_SECRET_KEY) enables the local
-// encrypted backend when non-empty; it is hashed to a 32-byte AES key.
+// encrypted backend when non-empty; it is stretched into a 32-byte AES key with
+// argon2id (see DeriveKey) against a per-installation salt persisted in the
+// secrets dir. Existing sha256-key .enc files are migrated to the new key on
+// first run (best-effort; the legacy key stays available as a decrypt fallback).
 func NewStore(dir, masterKey string) *Store {
-	return &Store{dir: dir, key: DeriveKey(masterKey)}
+	s := &Store{dir: dir}
+	if masterKey == "" {
+		return s // local backend disabled
+	}
+	s.legacyKey = LegacyKey(masterKey)
+	salt, created, err := loadOrCreateSalt(dir)
+	if err != nil {
+		// Can't establish the argon2id salt (disk error): fall back to the legacy
+		// derivation so existing secrets stay readable. Migration is retried on
+		// the next start once the salt file can be written.
+		log.Printf("secrets: argon2id KDF unavailable (%v); using legacy key derivation", err)
+		s.key = s.legacyKey
+		return s
+	}
+	s.key = DeriveKey(masterKey, salt)
+	if created {
+		s.migrateLegacy() // re-encrypt any pre-KDF files under the new key
+	}
+	return s
 }
 
 // LocalEnabled reports whether the local encrypted backend is usable.
@@ -185,6 +212,13 @@ func (s *Store) loadLocal(projectID string) (map[string]string, error) {
 		return nil, err
 	}
 	plain, err := decrypt(s.key, data)
+	if err != nil && s.legacyKey != nil {
+		// Fall back to the pre-KDF key for a file not yet migrated (e.g. after an
+		// interrupted migration).
+		if p, e2 := decrypt(s.legacyKey, data); e2 == nil {
+			plain, err = p, nil
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("decrypt secrets (wrong ARCLOOM_SECRET_KEY?): %w", err)
 	}
@@ -192,6 +226,46 @@ func (s *Store) loadLocal(projectID string) (map[string]string, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+// migrateLegacy re-encrypts any pre-KDF (.enc files sealed with the bare sha256
+// key) under the new argon2id key. Best-effort: a file that can't be read or
+// rewritten is left in place — loadLocal still decrypts it via the legacy-key
+// fallback, and it is re-sealed on the next edit. Runs only during NewStore
+// (before the store is shared), so it needs no lock.
+func (s *Store) migrateLegacy() {
+	if s.legacyKey == nil {
+		return
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".enc") {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".enc")
+		if !validProjectID(id) {
+			continue
+		}
+		data, err := os.ReadFile(s.path(id))
+		if err != nil {
+			continue
+		}
+		if _, err := decrypt(s.key, data); err == nil {
+			continue // already under the new key
+		}
+		plain, err := decrypt(s.legacyKey, data)
+		if err != nil {
+			continue // unreadable with either key; leave it untouched
+		}
+		enc, err := encrypt(s.key, plain)
+		if err != nil {
+			continue
+		}
+		_ = os.WriteFile(s.path(id), enc, 0o600)
+	}
 }
 
 func (s *Store) saveLocal(projectID string, m map[string]string) error {
@@ -212,15 +286,91 @@ func (s *Store) saveLocal(projectID string, m map[string]string) error {
 	return os.WriteFile(s.path(projectID), enc, 0o600)
 }
 
-// DeriveKey turns a master passphrase into a 32-byte AES key (sha256), or nil
-// when the passphrase is empty. Exposed so other app-level encrypted stores
-// (e.g. internal/settings) share the same key derivation as the secret store.
-func DeriveKey(masterKey string) []byte {
+// argon2id KDF parameters for stretching the master passphrase into the AES
+// key. Same cost as password hashing (internal/auth); it runs once per store at
+// startup, not per secret operation.
+const (
+	kdfMemory  = 64 * 1024 // 64 MiB
+	kdfTime    = 3
+	kdfThreads = 4
+	kdfKeyLen  = 32
+	kdfSaltLen = 16
+)
+
+// kdfFile is the per-store sidecar that persists the KDF salt so the derived key
+// is reproducible across restarts.
+const kdfFile = "kdf.json"
+
+// kdfMeta is the persisted key-derivation record. The version lets the argon2id
+// parameters evolve later without breaking existing stores.
+type kdfMeta struct {
+	Version int    `json:"version"`
+	Salt    []byte `json:"salt"` // json encodes []byte as base64
+}
+
+// DeriveKey stretches a master passphrase into a 32-byte AES key with argon2id
+// against salt, or returns nil when the passphrase is empty. Exposed so other
+// app-level encrypted stores (e.g. internal/settings) share one KDF.
+func DeriveKey(masterKey string, salt []byte) []byte {
+	if masterKey == "" {
+		return nil
+	}
+	return argon2.IDKey([]byte(masterKey), salt, kdfTime, kdfMemory, kdfThreads, kdfKeyLen)
+}
+
+// LegacyKey is the pre-KDF derivation — a bare sha256 of the passphrase, with no
+// salt — retained ONLY to decrypt and migrate stores written before argon2id
+// landed. Never use it to seal new data.
+func LegacyKey(masterKey string) []byte {
 	if masterKey == "" {
 		return nil
 	}
 	h := sha256.Sum256([]byte(masterKey))
 	return h[:]
+}
+
+// NewSalt returns a fresh random KDF salt.
+func NewSalt() ([]byte, error) {
+	salt := make([]byte, kdfSaltLen)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return nil, err
+	}
+	return salt, nil
+}
+
+// loadOrCreateSalt reads the store's KDF salt from <dir>/kdf.json, minting and
+// persisting a fresh one on first use. created is true only when a new salt was
+// generated, signalling the caller to migrate any pre-KDF ciphertext.
+func loadOrCreateSalt(dir string) (salt []byte, created bool, err error) {
+	path := filepath.Join(dir, kdfFile)
+	data, rerr := os.ReadFile(path)
+	if rerr == nil {
+		var m kdfMeta
+		if jerr := json.Unmarshal(data, &m); jerr != nil || len(m.Salt) == 0 {
+			return nil, false, fmt.Errorf("corrupt KDF metadata in %s", kdfFile)
+		}
+		return m.Salt, false, nil
+	}
+	if !os.IsNotExist(rerr) {
+		return nil, false, rerr
+	}
+	// First use: mint and persist a salt before any data is sealed with the key
+	// derived from it, so a crash can never orphan already-encrypted files.
+	salt, err = NewSalt()
+	if err != nil {
+		return nil, false, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, false, err
+	}
+	blob, err := json.Marshal(kdfMeta{Version: 1, Salt: salt})
+	if err != nil {
+		return nil, false, err
+	}
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		return nil, false, err
+	}
+	return salt, true, nil
 }
 
 // Encrypt/Decrypt expose the AES-256-GCM primitives for app-level encrypted

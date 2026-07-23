@@ -1,7 +1,9 @@
 package secrets
 
 import (
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -100,6 +102,78 @@ func TestSecrets_RejectsTraversalProjectID(t *testing.T) {
 	}
 	if _, _, err := s.Resolve(bad, "db_pw"); err == nil {
 		t.Error("Resolve with traversal id should fail")
+	}
+}
+
+// An .enc file written before the KDF (sealed with the bare sha256 key, no
+// kdf.json salt) is migrated to the argon2id key when the store is opened: it
+// still resolves, a salt file appears, and the on-disk file is re-sealed under
+// the new key.
+func TestLocalStore_MigratesLegacyFiles(t *testing.T) {
+	dir := t.TempDir()
+	const master = "master-passphrase"
+	legacy := LegacyKey(master)
+	plain, _ := json.Marshal(map[string]string{"db_pw": "s3cr3t"})
+	blob, err := encrypt(legacy, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "proj1.enc"), blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewStore(dir, master)
+	if v, found, err := s.Resolve("proj1", "db_pw"); err != nil || !found || v != "s3cr3t" {
+		t.Fatalf("resolve after migrate: v=%q found=%v err=%v", v, found, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, kdfFile)); err != nil {
+		t.Fatalf("kdf salt file not created: %v", err)
+	}
+	onDisk, _ := os.ReadFile(filepath.Join(dir, "proj1.enc"))
+	if _, err := decrypt(legacy, onDisk); err == nil {
+		t.Error("file still sealed with the legacy key after migration")
+	}
+	// A fresh instance reads the persisted salt and still resolves it.
+	if v, _, _ := NewStore(dir, master).Resolve("proj1", "db_pw"); v != "s3cr3t" {
+		t.Errorf("resolve from reopened store: %q", v)
+	}
+}
+
+// A corrupt kdf.json makes the store fall back to the legacy key derivation
+// rather than failing, so pre-KDF secrets stay accessible.
+func TestLocalStore_CorruptSaltFallsBackToLegacy(t *testing.T) {
+	dir := t.TempDir()
+	const master = "master-passphrase"
+	legacy := LegacyKey(master)
+	plain, _ := json.Marshal(map[string]string{"k": "v"})
+	blob, _ := encrypt(legacy, plain)
+	if err := os.WriteFile(filepath.Join(dir, "p.enc"), blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, kdfFile), []byte("{garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewStore(dir, master)
+	if !s.LocalEnabled() {
+		t.Fatal("store should stay enabled on a corrupt salt")
+	}
+	if v, found, err := s.Resolve("p", "k"); err != nil || !found || v != "v" {
+		t.Fatalf("resolve with corrupt salt: v=%q found=%v err=%v", v, found, err)
+	}
+}
+
+// The KDF stores a salt and derives a key distinct from the bare sha256 one, so
+// a freshly written file is not decryptable with the legacy key.
+func TestLocalStore_UsesArgonNotSha256(t *testing.T) {
+	dir := t.TempDir()
+	const master = "master-passphrase"
+	s := NewStore(dir, master)
+	if err := s.Set("proj", "a", "b"); err != nil {
+		t.Fatal(err)
+	}
+	onDisk, _ := os.ReadFile(s.path("proj"))
+	if _, err := decrypt(LegacyKey(master), onDisk); err == nil {
+		t.Error("secret decryptable with the bare sha256 key — KDF not applied")
 	}
 }
 

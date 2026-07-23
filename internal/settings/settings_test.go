@@ -1,10 +1,13 @@
 package settings
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/HellsCrimson/ArcLoom/internal/secrets"
 )
 
 func TestSSO_RoundTripEncryptsSecret(t *testing.T) {
@@ -247,5 +250,48 @@ func TestCost_RoundTrip(t *testing.T) {
 	}
 	if c := s2.Cost("p1"); c.Enabled || len(c.Overrides) != 0 {
 		t.Fatalf("expected empty config after delete, got %+v", c)
+	}
+}
+
+// A settings document written before the argon2id KDF (an encrypted client
+// secret sealed with the bare sha256 key, no kdf salt) is migrated on open: the
+// secret still decrypts, the document gains a KDF salt, and the field is re-
+// sealed under the new key (no longer readable with the legacy key).
+func TestSettings_MigratesLegacySecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.yaml")
+	const master = "master-pass"
+	legacy := secrets.LegacyKey(master)
+	blob, err := secrets.Encrypt(legacy, []byte("topsecret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := base64.StdEncoding.EncodeToString(blob)
+	doc := "sso:\n  enabled: true\n  client_secret_enc: " + enc + "\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewStore(path, master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.SSO().ClientSecret; got != "topsecret" {
+		t.Fatalf("migrated secret: got %q, want topsecret", got)
+	}
+
+	// Reopen: the persisted document carries the salt and the re-sealed field.
+	s2, err := NewStore(path, master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.doc.KDF == nil || len(s2.doc.KDF.Salt) == 0 {
+		t.Fatal("KDF salt not persisted after migration")
+	}
+	raw, _ := base64.StdEncoding.DecodeString(s2.doc.SSO.ClientSecretEnc)
+	if _, err := secrets.Decrypt(legacy, raw); err == nil {
+		t.Error("client secret still sealed with the legacy key after migration")
+	}
+	if got := s2.SSO().ClientSecret; got != "topsecret" {
+		t.Fatalf("reopened secret: got %q, want topsecret", got)
 	}
 }
