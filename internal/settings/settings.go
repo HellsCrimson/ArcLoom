@@ -90,6 +90,27 @@ type Cost struct {
 	Overrides []CostOverride `yaml:"overrides,omitempty" json:"overrides"`
 }
 
+// PolicyDoc is one Rego policy document evaluated against a plan by conftest.
+// Name is the file name it is written under in the throwaway policy directory
+// (validated at the API so it can never escape that directory).
+type PolicyDoc struct {
+	Name string `yaml:"name" json:"name"`
+	Rego string `yaml:"rego" json:"rego"`
+}
+
+// Policy is one project's policy-as-code config: Rego documents run against the
+// plan JSON with conftest. Enabled annotates every plan with the result;
+// Enforce additionally BLOCKS an apply while the check reports failures (deny
+// rules), and FailOnWarn promotes warnings to blocking too. Kept here (not on
+// the model) so policies stay out of generated HCL, Git and undo, like
+// drift/cost/ACL.
+type Policy struct {
+	Enabled    bool        `yaml:"enabled" json:"enabled"`
+	Enforce    bool        `yaml:"enforce" json:"enforce"`
+	FailOnWarn bool        `yaml:"fail_on_warn" json:"failOnWarn"`
+	Docs       []PolicyDoc `yaml:"docs,omitempty" json:"docs"`
+}
+
 // Environment is one deployment target (dev / staging / prod) for a project.
 // The generated HCL stays env-agnostic (one backend TYPE, shared config); an
 // environment layers per-env backend config values (applied via -backend-config
@@ -131,6 +152,9 @@ type document struct {
 	// Cost maps project ID -> cost-estimation config (enable + price overrides).
 	// Kept here so it stays out of HCL/Git/undo, like drift and ACLs.
 	Cost map[string]Cost `yaml:"cost,omitempty"`
+	// Policy maps project ID -> policy-as-code config (Rego documents + whether
+	// a failing check blocks an apply). Kept here for the same reason as Cost.
+	Policy map[string]Policy `yaml:"policy,omitempty"`
 	// Environments maps project ID -> ordered deployment environments. Kept here
 	// (not on the model) so per-env backend config / var overrides stay out of
 	// HCL/Git/undo.
@@ -404,6 +428,42 @@ func (s *Store) DeleteCost(projectID string) error {
 		return nil
 	}
 	delete(s.doc.Cost, projectID)
+	return s.persist()
+}
+
+// Policy returns a project's policy-as-code config (zero value when none is
+// stored). The document slice is copied so callers cannot mutate the store.
+func (s *Store) Policy(projectID string) Policy {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.doc.Policy[projectID]
+	if p.Docs != nil {
+		out := make([]PolicyDoc, len(p.Docs))
+		copy(out, p.Docs)
+		p.Docs = out
+	}
+	return p
+}
+
+// SetPolicy persists a project's policy-as-code config.
+func (s *Store) SetPolicy(projectID string, p Policy) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.doc.Policy == nil {
+		s.doc.Policy = map[string]Policy{}
+	}
+	s.doc.Policy[projectID] = p
+	return s.persist()
+}
+
+// DeletePolicy removes a project's policy config (used on project delete).
+func (s *Store) DeletePolicy(projectID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.doc.Policy[projectID]; !ok {
+		return nil
+	}
+	delete(s.doc.Policy, projectID)
 	return s.persist()
 }
 

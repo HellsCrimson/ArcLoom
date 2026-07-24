@@ -33,6 +33,9 @@ type Run struct {
 	Plan *runner.PlanResult `json:"plan,omitempty"`
 	// Lint carries tflint findings for lint runs.
 	Lint *runner.LintResult `json:"lint,omitempty"`
+	// Policy carries the policy-gate result for a gated apply (a plan's own
+	// advisory policy annotation rides along in Plan).
+	Policy *runner.PolicyResult `json:"policy,omitempty"`
 	// Outputs carries the root outputs for successful applies.
 	Outputs []Output `json:"outputs,omitempty"`
 	// Log is the full streamed CLI output.

@@ -118,6 +118,27 @@
 				{/if}
 			</div>
 		{/if}
+		{#if detail.policy ?? detail.plan?.policy}
+			{@const pol = detail.policy ?? detail.plan?.policy!}
+			<div class="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">
+				Policy{#if !pol.available} — conftest not installed{:else if pol.error} — check failed{:else} · {pol.failureCount} failure{pol.failureCount === 1 ? '' : 's'} · {pol.warningCount} warning{pol.warningCount === 1 ? '' : 's'}{/if}
+			</div>
+			<div class="mb-2 rounded-md border border-[var(--al-border)] py-1">
+				{#if pol.error}
+					<div class="px-3 py-0.5 text-[11.5px]" style="color:{ACTION_COLOR.delete};">{pol.error}</div>
+				{/if}
+				{#each pol.violations as v, i (i)}
+					<div class="flex items-start gap-2 px-3 py-0.5 font-mono text-[11.5px]">
+						<span class="w-14 flex-none text-[10px] uppercase" style="color:{v.severity === 'failure' ? ACTION_COLOR.delete : ACTION_COLOR.update};">{v.severity}</span>
+						<span class="truncate text-[var(--al-text)]" title={v.message}>{v.message}</span>
+						{#if v.rule}<span class="ml-auto flex-none text-[10px] text-[var(--al-muted)]">{v.rule}</span>{/if}
+					</div>
+				{/each}
+				{#if pol.available && !pol.error && pol.violations.length === 0}
+					<div class="px-3 py-0.5 text-[11.5px] text-[var(--al-muted)]">All policies passed ({pol.successes} rule{pol.successes === 1 ? '' : 's'}).</div>
+				{/if}
+			</div>
+		{/if}
 		{#if detail.lint}
 			<div class="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">
 				Lint{#if !detail.lint.available} — tflint not installed{:else} · {detail.lint.issues.length} issue{detail.lint.issues.length === 1 ? '' : 's'}{/if}
@@ -190,6 +211,8 @@
 									<span style="color:{ACTION_COLOR.delete}">{r.lint.errorCount} err</span>
 									<span style="color:{ACTION_COLOR.update}">{r.lint.warningCount} warn</span>
 								{/if}
+							{:else if r.op === 'apply' && r.status === 'error' && r.error?.startsWith('policy')}
+								<span style="color:{ACTION_COLOR.delete}">policy blocked</span>
 							{:else if r.op === 'apply' && r.outputs?.length}
 								<span class="text-[var(--al-muted)]">{r.outputs.length} output{r.outputs.length === 1 ? '' : 's'}</span>
 							{/if}

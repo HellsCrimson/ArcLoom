@@ -42,6 +42,10 @@ type PlanResult struct {
 	// runs, only when the cost feature is licensed and enabled for the project;
 	// nil otherwise.
 	Cost *CostResult `json:"cost,omitempty"`
+	// Policy is the optional policy-as-code annotation (conftest run against
+	// the plan JSON), populated by the API after the plan runs when the project
+	// has policy checking enabled; nil otherwise.
+	Policy *PolicyResult `json:"policy,omitempty"`
 }
 
 // CostLine is one resource's estimated monthly cost in a plan's cost breakdown.
@@ -73,6 +77,36 @@ type LintIssue struct {
 	Message  string `json:"message"`
 	Filename string `json:"filename,omitempty"`
 	Line     int    `json:"line,omitempty"`
+}
+
+// PolicyViolation is one rule a policy check reported against the plan.
+type PolicyViolation struct {
+	// Severity is "failure" (a deny rule) or "warning" (a warn rule).
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+	// Namespace is the Rego package the rule lives in ("main" by convention).
+	Namespace string `json:"namespace,omitempty"`
+	// Rule is the query conftest evaluated ("data.main.deny"), when reported.
+	Rule string `json:"rule,omitempty"`
+}
+
+// PolicyResult summarizes a conftest evaluation of a plan.
+type PolicyResult struct {
+	// Available is false when the conftest binary is not installed. An
+	// advisory check then reports nothing; an ENFORCING check treats it as a
+	// blocked apply (fail closed) — the API decides.
+	Available bool `json:"available"`
+	// Checked is false when the check did not run because the project has no
+	// policy documents.
+	Checked      bool              `json:"checked"`
+	Violations   []PolicyViolation `json:"violations"`
+	FailureCount int               `json:"failureCount"`
+	WarningCount int               `json:"warningCount"`
+	// Successes is the number of rules that passed, as reported by conftest.
+	Successes int `json:"successes"`
+	// Error is a short message when the check could not run (broken Rego, a
+	// plan that could not be read). An enforcing gate treats it as a block.
+	Error string `json:"error,omitempty"`
 }
 
 // LintResult summarizes a completed tflint run.
@@ -151,6 +185,14 @@ type Runner interface {
 	// engine init or state needed) and returns its findings. A missing tflint
 	// binary is not an error: the result reports Available=false.
 	Lint(ctx context.Context, files map[string][]byte, out io.Writer) (LintResult, error)
+	// Policy evaluates Rego documents against a plan with conftest. The plan is
+	// the one saved in the persistent workspace at dir by the preceding Plan,
+	// unless planBytes is non-nil — then those bytes (e.g. an approved plan
+	// artifact) are staged and checked instead, so the gate judges exactly what
+	// will be applied. policies maps file name -> Rego source. A missing
+	// conftest binary is not an error: the result reports Available=false and
+	// the caller decides (advisory: ignore; enforcing: block).
+	Policy(ctx context.Context, dir string, planBytes []byte, policies map[string][]byte, out io.Writer) (PolicyResult, error)
 	// Infracost estimates monthly costs from the plan file left in the
 	// persistent workspace at dir by the preceding Plan (it reads <dir>/tfplan,
 	// so a plan must have run first). It returns address -> monthly USD. A

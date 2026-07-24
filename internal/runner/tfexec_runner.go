@@ -569,6 +569,170 @@ func parseTflint(data []byte) (LintResult, error) {
 	return res, nil
 }
 
+// showPlanJSON converts a saved plan file in dir into JSON at outPath using the
+// engine's `show -json` (which needs no provider access — the plan is already
+// resolved). Callers hold the workspace lock.
+func (t *TfExec) showPlanJSON(ctx context.Context, dir, planFile, outPath string) error {
+	f, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	var showErr bytes.Buffer
+	show := exec.CommandContext(ctx, t.execPath, "show", "-json", planFile)
+	show.Dir = dir
+	show.Stdout = f
+	show.Stderr = &showErr
+	runErr := show.Run()
+	f.Close()
+	if runErr != nil {
+		return fmt.Errorf("read saved plan: %w: %s", runErr, strings.TrimSpace(showErr.String()))
+	}
+	return nil
+}
+
+// policyPlanFile is where an explicitly supplied plan artifact (an approved
+// plan) is staged for a policy check, so the workspace's own saved plan is left
+// alone. Like tfplan it is not in persistKeep.
+const policyPlanFile = "tfplan.policy"
+
+// Policy evaluates the project's Rego documents against the plan JSON with
+// conftest. The plan is converted to JSON the same way Infracost consumes it, so
+// the policies see the standard Terraform plan representation
+// (input.resource_changes, input.planned_values, ...). A missing conftest binary
+// yields Available=false rather than an error; the caller decides whether that
+// blocks (enforcing) or is ignored (advisory).
+func (t *TfExec) Policy(ctx context.Context, dir string, planBytes []byte, policies map[string][]byte, out io.Writer) (PolicyResult, error) {
+	binPath, err := exec.LookPath("conftest")
+	if err != nil {
+		return PolicyResult{Available: false}, nil
+	}
+	if len(policies) == 0 {
+		return PolicyResult{Available: true}, nil
+	}
+	unlock := lockDir(dir)
+	defer unlock()
+
+	planFile := planFileName
+	if planBytes != nil {
+		planFile = policyPlanFile
+		if err := os.WriteFile(filepath.Join(dir, planFile), planBytes, 0o600); err != nil {
+			return PolicyResult{Available: true}, fmt.Errorf("stage plan for policy check: %w", err)
+		}
+		defer os.Remove(filepath.Join(dir, planFile))
+	}
+
+	planJSON := filepath.Join(dir, "policy-plan.json")
+	defer os.Remove(planJSON)
+	if err := t.showPlanJSON(ctx, dir, planFile, planJSON); err != nil {
+		return PolicyResult{Available: true}, err
+	}
+
+	// Policies live in a throwaway directory: they are stored per project (not
+	// on disk in the workspace) and must not survive the check.
+	policyDir, err := os.MkdirTemp("", "arcloom-policy-")
+	if err != nil {
+		return PolicyResult{Available: true}, err
+	}
+	defer os.RemoveAll(policyDir)
+	for name, src := range policies {
+		if err := os.WriteFile(filepath.Join(policyDir, filepath.Base(name)), src, 0o600); err != nil {
+			return PolicyResult{Available: true}, fmt.Errorf("write policy %s: %w", name, err)
+		}
+	}
+
+	// conftest exits 1 when a policy denies, so the exit status is not an error
+	// signal; the JSON on stdout is authoritative. --all-namespaces picks up
+	// rules regardless of the package name the user wrote.
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, binPath, "test", "--policy", policyDir, "--output", "json", "--all-namespaces", planJSON)
+	cmd.Dir = dir
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+
+	res, parseErr := parseConftest(stdout.Bytes())
+	if parseErr != nil {
+		// No usable JSON: a Rego compile error or a conftest failure. Surface it
+		// (an enforcing check must not pass because the policies are broken).
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" && runErr != nil {
+			msg = runErr.Error()
+		}
+		if msg == "" {
+			msg = parseErr.Error()
+		}
+		if out != nil {
+			fmt.Fprintln(out, "policy: "+msg)
+		}
+		return PolicyResult{Available: true}, fmt.Errorf("conftest: %s", firstLine(msg))
+	}
+	res.Available = true
+	res.Checked = true
+	return res, nil
+}
+
+// conftestOutput is the subset of `conftest test --output json` we consume. It
+// is an array with one entry per (file, namespace). successes is an int in
+// current conftest and an array in older releases, hence the raw decode.
+type conftestOutput []struct {
+	Namespace string          `json:"namespace"`
+	Successes json.RawMessage `json:"successes"`
+	Failures  []conftestRule  `json:"failures"`
+	Warnings  []conftestRule  `json:"warnings"`
+}
+
+type conftestRule struct {
+	Msg      string `json:"msg"`
+	Metadata struct {
+		Query string `json:"query"`
+	} `json:"metadata"`
+}
+
+func parseConftest(data []byte) (PolicyResult, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return PolicyResult{}, fmt.Errorf("conftest produced no output")
+	}
+	var out conftestOutput
+	if err := json.Unmarshal(data, &out); err != nil {
+		return PolicyResult{}, err
+	}
+	res := PolicyResult{Violations: []PolicyViolation{}}
+	for _, r := range out {
+		res.Successes += countSuccesses(r.Successes)
+		for _, f := range r.Failures {
+			res.Violations = append(res.Violations, PolicyViolation{
+				Severity: "failure", Message: f.Msg, Namespace: r.Namespace, Rule: f.Metadata.Query,
+			})
+			res.FailureCount++
+		}
+		for _, wv := range r.Warnings {
+			res.Violations = append(res.Violations, PolicyViolation{
+				Severity: "warning", Message: wv.Msg, Namespace: r.Namespace, Rule: wv.Metadata.Query,
+			})
+			res.WarningCount++
+		}
+	}
+	return res, nil
+}
+
+// countSuccesses reads conftest's "successes" field, which is a count in
+// current releases and was a list of rules in older ones.
+func countSuccesses(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var n int
+	if json.Unmarshal(raw, &n) == nil {
+		return n
+	}
+	var list []json.RawMessage
+	if json.Unmarshal(raw, &list) == nil {
+		return len(list)
+	}
+	return 0
+}
+
 // Infracost estimates monthly costs from the binary plan file left by the
 // preceding Plan. It converts <dir>/tfplan to JSON via the engine's `show
 // -json`, then runs `infracost breakdown` against that JSON (so Infracost needs
@@ -583,20 +747,9 @@ func (t *TfExec) Infracost(ctx context.Context, dir string) (map[string]float64,
 	defer unlock()
 
 	planJSON := filepath.Join(dir, "plan.json")
-	f, err := os.Create(planJSON)
-	if err != nil {
-		return nil, err
-	}
 	defer os.Remove(planJSON)
-	var showErr bytes.Buffer
-	show := exec.CommandContext(ctx, t.execPath, "show", "-json", planFileName)
-	show.Dir = dir
-	show.Stdout = f
-	show.Stderr = &showErr
-	runErr := show.Run()
-	f.Close()
-	if runErr != nil {
-		return nil, fmt.Errorf("read saved plan: %w: %s", runErr, strings.TrimSpace(showErr.String()))
+	if err := t.showPlanJSON(ctx, dir, planFileName, planJSON); err != nil {
+		return nil, err
 	}
 
 	var stdout, stderr bytes.Buffer

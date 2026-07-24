@@ -183,6 +183,16 @@ export const api = {
 			body: JSON.stringify(config)
 		}).then((r) => json<{ config: CostConfig }>(r)),
 
+	getPolicy: (id: string) =>
+		fetch(`/api/projects/${id}/policy`).then((r) => json<{ config: PolicyConfig }>(r)),
+
+	setPolicy: (id: string, config: PolicyConfig) =>
+		fetch(`/api/projects/${id}/policy`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(config)
+		}).then((r) => json<{ config: PolicyConfig }>(r)),
+
 	deleteProject: async (id: string, force = false) => {
 		const res = await fetch(`/api/projects/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' });
 		if (res.status === 409) {
@@ -538,6 +548,7 @@ export interface PlanSummary {
 	destroy: number;
 	replace: number;
 	cost?: CostSummary;
+	policy?: PolicySummary;
 }
 
 // CostLine is one resource's estimated monthly cost.
@@ -573,6 +584,42 @@ export interface LintSummary {
 	issues: LintIssue[];
 	errorCount: number;
 	warningCount: number;
+}
+
+// PolicyViolation is one rule a policy check reported against the plan.
+export interface PolicyViolation {
+	severity: 'failure' | 'warning';
+	message: string;
+	namespace?: string;
+	rule?: string;
+}
+
+// PolicySummary is a conftest evaluation of a plan. available=false means no
+// conftest binary on the server; error is set when the check could not run
+// (broken Rego) — an enforcing gate treats both as a blocked apply.
+export interface PolicySummary {
+	available: boolean;
+	checked: boolean;
+	violations: PolicyViolation[];
+	failureCount: number;
+	warningCount: number;
+	successes: number;
+	error?: string;
+}
+
+// PolicyDoc is one Rego document evaluated against the plan JSON.
+export interface PolicyDoc {
+	name: string;
+	rego: string;
+}
+
+// PolicyConfig is a project's policy-as-code config: enabled annotates plans,
+// enforce blocks applies that fail, failOnWarn promotes warnings to blocking.
+export interface PolicyConfig {
+	enabled: boolean;
+	enforce: boolean;
+	failOnWarn: boolean;
+	docs: PolicyDoc[];
 }
 
 // CostOverride assigns a flat monthly price to a resource type or address.
@@ -655,6 +702,7 @@ export interface RunRecord {
 	error?: string;
 	plan?: PlanSummary;
 	lint?: LintSummary;
+	policy?: PolicySummary;
 	outputs?: RunOutput[];
 	log?: string;
 }
@@ -708,7 +756,8 @@ export function streamPlan(
 			errorCount: d.errorCount ?? 0,
 			warningCount: d.warningCount ?? 0,
 			available: d.available,
-			lint: d.lint
+			lint: d.lint,
+			policy: d.policy
 		});
 	});
 	es.addEventListener('error', (ev) => {

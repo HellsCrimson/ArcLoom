@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -203,20 +204,47 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 			// Best-effort cost annotation (enterprise + enabled). Runs while the
 			// saved plan file still exists so Infracost can read it.
 			s.attachCost(r.Context(), run, dir, p, &res, logW)
+			// Policy annotation (advisory here — the gate bites on apply). Also
+			// needs the saved plan file, so it runs in the same window.
+			s.attachPolicy(r.Context(), run, dir, p, &res, logW)
 			logW.flush()
 			rec.Plan = &res
 			sse.event("result", res)
 		}
 	case "apply":
+		// planBytes is the artifact this apply will run verbatim: the approved
+		// plan when the approval gate is on, or (when policies enforce) a plan
+		// made here so the policy judges exactly what gets applied. Nil = plain
+		// apply, which re-plans internally as before.
+		var planBytes []byte
 		if approved != nil {
-			// Gated apply: run the exact approved plan artifact (no re-plan).
-			var planBytes []byte
-			if planBytes, err = s.approvals.Plan(p.ID, approved.ID); err == nil {
-				sse.event("log", map[string]string{"line": "applying plan approved by " + approved.ApprovedBy})
-				err = run.ApplyPlan(r.Context(), dir, files, tfVars, planBytes, logW)
+			planBytes, err = s.approvals.Plan(p.ID, approved.ID)
+		}
+		if err == nil && s.policyEnforced(p.ID) {
+			if planBytes == nil {
+				sse.event("log", map[string]string{"line": "policy gate: planning before apply"})
+				if _, err = run.Plan(r.Context(), dir, files, tfVars, logW); err == nil {
+					planBytes, err = os.ReadFile(filepath.Join(dir, planFileName))
+				}
+				logW.flush()
 			}
-		} else {
-			err = run.Apply(r.Context(), dir, files, tfVars, logW)
+			if err == nil {
+				var pres *runner.PolicyResult
+				pres, err = s.policyGate(r.Context(), run, dir, p, planBytes, logW)
+				if pres != nil {
+					rec.Policy = pres
+				}
+			}
+		}
+		if err == nil {
+			if planBytes != nil {
+				if approved != nil {
+					sse.event("log", map[string]string{"line": "applying plan approved by " + approved.ApprovedBy})
+				}
+				err = run.ApplyPlan(r.Context(), dir, files, tfVars, planBytes, logW)
+			} else {
+				err = run.Apply(r.Context(), dir, files, tfVars, logW)
+			}
 		}
 		logW.flush()
 		if err == nil {

@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -24,8 +26,8 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/user"
 )
 
-// fakeRunner implements runner.Runner for drift tests; only RefreshPlan is
-// meaningful.
+// fakeRunner implements runner.Runner for drift / approval / policy-gate tests;
+// only RefreshPlan, Plan, Apply(Plan) and Policy are meaningful.
 type fakeRunner struct {
 	res runner.PlanResult
 	err error
@@ -33,6 +35,15 @@ type fakeRunner struct {
 	applyPlanBytes  []byte
 	applyPlanCalled bool
 	applyCalled     bool
+	planCalled      bool
+	// planFile, when set, is written as the saved plan by Plan (what the policy
+	// gate reads back to apply exactly what it checked).
+	planFile []byte
+	// Policy-gate stubs: the result/error Policy returns and what it was given.
+	policyRes       runner.PolicyResult
+	policyErr       error
+	policyCalled    bool
+	policyPlanBytes []byte
 }
 
 func (f *fakeRunner) Engine() model.Engine { return model.EngineTofu }
@@ -43,7 +54,15 @@ func (f *fakeRunner) Version(context.Context) (string, error) {
 func (f *fakeRunner) ProvidersSchema(context.Context, []model.ProviderInstance) (*tfjson.ProviderSchemas, error) {
 	return nil, nil
 }
-func (f *fakeRunner) Plan(context.Context, string, map[string][]byte, map[string]string, io.Writer) (runner.PlanResult, error) {
+func (f *fakeRunner) Plan(_ context.Context, dir string, _ map[string][]byte, _ map[string]string, _ io.Writer) (runner.PlanResult, error) {
+	f.planCalled = true
+	// Mimic the real runner leaving a saved plan behind, which the policy gate
+	// reads back to apply exactly what it checked.
+	if dir != "" && f.planFile != nil {
+		if err := os.MkdirAll(dir, 0o755); err == nil {
+			_ = os.WriteFile(filepath.Join(dir, planFileName), f.planFile, 0o644)
+		}
+	}
 	return runner.PlanResult{}, nil
 }
 func (f *fakeRunner) RefreshPlan(context.Context, string, map[string][]byte, map[string]string, io.Writer) (runner.PlanResult, error) {
@@ -86,6 +105,11 @@ func (f *fakeRunner) Lint(context.Context, map[string][]byte, io.Writer) (runner
 }
 func (f *fakeRunner) Infracost(context.Context, string) (map[string]float64, error) {
 	return nil, nil
+}
+func (f *fakeRunner) Policy(_ context.Context, _ string, planBytes []byte, _ map[string][]byte, _ io.Writer) (runner.PolicyResult, error) {
+	f.policyCalled = true
+	f.policyPlanBytes = planBytes
+	return f.policyRes, f.policyErr
 }
 
 func driftTestServer(t *testing.T, fake *fakeRunner) (*Server, runs.Store) {

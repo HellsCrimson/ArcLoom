@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type PlanChange, type RunOutput, type StateEntry, type CostSummary, type LintSummary, type Environment, type Approval } from '$lib/api/client';
+	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type PlanChange, type RunOutput, type StateEntry, type CostSummary, type LintSummary, type PolicySummary, type Environment, type Approval } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
 	import StatePanel from '$lib/components/StatePanel.svelte';
 	import type { AttrValue, DriftConfig, Engine, Module, NormalizedSchema, Project, ProjectSummary, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
@@ -11,6 +11,7 @@
 	import GitPanel from '$lib/components/GitPanel.svelte';
 	import AclModal from '$lib/components/AclModal.svelte';
 	import CostPanel from '$lib/components/CostPanel.svelte';
+	import PolicyPanel from '$lib/components/PolicyPanel.svelte';
 	import EnvironmentsPanel from '$lib/components/EnvironmentsPanel.svelte';
 	import UserMenu from '$lib/components/UserMenu.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
@@ -67,6 +68,7 @@
 	let planCounts = $state<{ add: number; change: number; destroy: number; replace: number } | null>(null);
 	let planCost = $state<CostSummary | null>(null);
 	let planLint = $state<LintSummary | null>(null);
+	let planPolicy = $state<PolicySummary | null>(null);
 	let applyOutputs = $state<RunOutput[]>([]);
 	let showApplyConfirm = $state(false);
 	let showDestroyConfirm = $state(false);
@@ -128,6 +130,7 @@
 	// Per-project access list (admin)
 	let showAcl = $state(false);
 	let showCost = $state(false);
+	let showPolicy = $state(false);
 
 	// Secrets
 	let showSecrets = $state(false);
@@ -243,6 +246,7 @@
 			planCounts = null;
 			planCost = null;
 			planLint = null;
+			planPolicy = null;
 			// A model edit makes any approved plan stale: block a gated apply until
 			// the user re-plans and re-approves.
 			currentApproval = null;
@@ -277,6 +281,7 @@
 			planCounts = null;
 			planCost = null;
 			planLint = null;
+			planPolicy = null;
 			await refreshProjects();
 			await refreshHcl();
 			restored = true;
@@ -356,6 +361,7 @@
 			}
 			if (auth.can('resources')) {
 				items.push({ id: 'cmd:cost', label: 'Cost estimation', group: 'commands', run: () => (showCost = true) });
+				items.push({ id: 'cmd:policy', label: 'Policy as code', group: 'commands', run: () => (showPolicy = true) });
 				items.push({ id: 'cmd:environments', label: 'Environments', group: 'commands', run: () => (showEnvironments = true) });
 				items.push({ id: 'cmd:import-hcl', label: 'Import HCL', group: 'commands', run: () => { importMsg = ''; showImportHcl = true; } });
 				items.push({ id: 'cmd:import-state', label: 'Import state', group: 'commands', run: () => { importMsg = ''; showImportState = true; } });
@@ -607,6 +613,7 @@
 		planCounts = null;
 		planCost = null;
 		planLint = null;
+		planPolicy = null;
 		applyOutputs = [];
 		resourceTypes = [];
 		dataSourceTypes = [];
@@ -1223,6 +1230,7 @@
 		planCounts = null;
 		planCost = null;
 		planLint = null;
+		planPolicy = null;
 		applyOutputs = [];
 		busy = 'plan';
 		streamPlan(project.id, (ev) => {
@@ -1234,6 +1242,7 @@
 					? { add: ev.add ?? 0, change: ev.change ?? 0, destroy: ev.destroy ?? 0, replace: ev.replace ?? 0 }
 					: null;
 				planCost = ev.cost ?? null;
+				planPolicy = ev.policy ?? null;
 			} else if (ev.kind === 'error') {
 				error = ev.error;
 				busy = '';
@@ -1255,6 +1264,7 @@
 		planCounts = null;
 		planCost = null;
 		planLint = null;
+		planPolicy = null;
 		applyOutputs = [];
 		busy = 'validate';
 		streamPlan(project.id, (ev) => {
@@ -1281,6 +1291,7 @@
 		planCounts = null;
 		planCost = null;
 		planLint = null;
+		planPolicy = null;
 		applyOutputs = [];
 		busy = 'lint';
 		streamPlan(project.id, (ev) => {
@@ -1347,6 +1358,7 @@
 		planCounts = null;
 		planCost = null;
 		planLint = null;
+		planPolicy = null;
 		applyOutputs = [];
 		busy = op;
 		streamOp(project.id, op, (ev) => {
@@ -1432,6 +1444,7 @@
 		planCounts = null;
 		planCost = null;
 		planLint = null;
+		planPolicy = null;
 		applyOutputs = [];
 		busy = op;
 		streamOp(project.id, op, (ev) => {
@@ -1528,6 +1541,9 @@
 				{#if auth.can('resources')}
 					<button class={hdrBtn} onclick={() => (showCost = true)} title="Cost estimation settings">
 						<DollarSign size={14} /> Cost
+					</button>
+					<button class={hdrBtn} onclick={() => (showPolicy = true)} title="Policy as code (conftest/OPA)">
+						<ShieldCheck size={14} /> Policy
 					</button>
 				{/if}
 				{#if environments.length > 0}
@@ -1885,6 +1901,13 @@
 					<div class="font-mono" style="font-size:12.5px;font-weight:600;color:var(--al-code-text);">run output</div>
 					{#if planResult}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:{accentWeak};color:{accentHex};">{planResult}</span>{/if}
 					{#if planCost}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:rgba(16,185,129,0.15);color:#10b981;" title="Estimated monthly cost">${planCost.totalMonthly.toFixed(2)}/mo</span>{/if}
+					{#if planPolicy && planPolicy.available && !planPolicy.error}
+						{#if planPolicy.failureCount > 0}
+							<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:{ACTION_COLOR.delete}22;color:{ACTION_COLOR.delete};" title="Policy failures — an enforced apply is blocked">{planPolicy.failureCount} policy failure{planPolicy.failureCount === 1 ? '' : 's'}</span>
+						{:else}
+							<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:rgba(16,185,129,0.15);color:#10b981;" title="All policies passed">policy ok</span>
+						{/if}
+					{/if}
 					{#if project}
 						{#if auth.can('resources')}
 							<button
@@ -1945,6 +1968,26 @@
 						{/each}
 						{#if planCost.lines.length === 0}
 							<div class="px-[18px] py-0.5 text-[11px]" style="color:var(--al-code-muted);">No priced resources — add price overrides or configure Infracost.</div>
+						{/if}
+					</div>
+				{/if}
+				{#if planPolicy}
+					<div class="max-h-[40%] flex-none overflow-auto border-b py-1" style="border-color:var(--al-code-border);">
+						<div class="px-[18px] py-0.5 text-[10px] font-semibold uppercase tracking-wide" style="color:var(--al-code-comment);">
+							policy{#if !planPolicy.available} — conftest not installed{:else if planPolicy.error} — check failed{:else} · {planPolicy.failureCount} failure{planPolicy.failureCount === 1 ? '' : 's'} · {planPolicy.warningCount} warning{planPolicy.warningCount === 1 ? '' : 's'}{/if}
+						</div>
+						{#if planPolicy.error}
+							<div class="px-[18px] py-0.5 text-[11px]" style="color:{ACTION_COLOR.delete};">{planPolicy.error}</div>
+						{/if}
+						{#each planPolicy.violations as v, i (i)}
+							<div class="flex items-start gap-2 px-[18px] py-0.5 font-mono" style="font-size:11.5px;line-height:1.6;">
+								<span class="w-14 flex-none text-[10px] uppercase" style="color:{v.severity === 'failure' ? ACTION_COLOR.delete : ACTION_COLOR.update};">{v.severity}</span>
+								<span class="truncate" style="color:var(--al-code-text);" title={v.message}>{v.message}</span>
+								{#if v.rule}<span class="ml-auto flex-none text-[10px]" style="color:var(--al-code-comment);">{v.rule}</span>{/if}
+							</div>
+						{/each}
+						{#if planPolicy.available && !planPolicy.error && planPolicy.violations.length === 0}
+							<div class="px-[18px] py-0.5 text-[11px]" style="color:var(--al-code-muted);">All policies passed ({planPolicy.successes} rule{planPolicy.successes === 1 ? '' : 's'}).</div>
 						{/if}
 					</div>
 				{/if}
@@ -2044,6 +2087,8 @@
 	<AclModal bind:open={showAcl} projectId={project.id} projectName={project.name} />
 
 	<CostPanel bind:open={showCost} projectId={project.id} />
+
+	<PolicyPanel bind:open={showPolicy} projectId={project.id} />
 
 	<EnvironmentsPanel
 		bind:open={showEnvironments}
