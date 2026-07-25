@@ -73,6 +73,25 @@ func (s *Server) handleStateRm(w http.ResponseWriter, r *http.Request) {
 	s.streamOp(w, r, "state-rm")
 }
 
+// Taint / untaint mark (or clear) an instance as damaged. Untaint is the one with
+// no alternative: an instance a failed create-time provisioner left tainted is
+// replaced on the next apply unless the mark is cleared.
+func (s *Server) handleStateTaint(w http.ResponseWriter, r *http.Request) {
+	if !validAddress(r.URL.Query().Get("address")) {
+		writeErr(w, http.StatusBadRequest, "address is required")
+		return
+	}
+	s.streamOp(w, r, "taint")
+}
+
+func (s *Server) handleStateUntaint(w http.ResponseWriter, r *http.Request) {
+	if !validAddress(r.URL.Query().Get("address")) {
+		writeErr(w, http.StatusBadRequest, "address is required")
+		return
+	}
+	s.streamOp(w, r, "untaint")
+}
+
 // handleAcceptDrift persists the refreshed state (apply -refresh-only) so the
 // state catches up to reality. It changes no infrastructure, and it is the only
 // way to clear drift a refresh-only plan reports — that plan never writes back
@@ -282,6 +301,12 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		logW.flush()
 	case "state-rm":
 		err = run.StateRm(r.Context(), dir, files, tfVars, strings.TrimSpace(r.URL.Query().Get("address")), logW)
+		logW.flush()
+	case "taint":
+		err = run.Taint(r.Context(), dir, files, tfVars, strings.TrimSpace(r.URL.Query().Get("address")), logW)
+		logW.flush()
+	case "untaint":
+		err = run.Untaint(r.Context(), dir, files, tfVars, strings.TrimSpace(r.URL.Query().Get("address")), logW)
 		logW.flush()
 	case "state-mv":
 		q := r.URL.Query()

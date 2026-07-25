@@ -19,6 +19,9 @@
 		'state-rm': ACTION_COLOR.replace,
 		'state-mv': ACTION_COLOR.update,
 		'init-backend': '#c297ff',
+		'accept-drift': '#e3b341',
+		taint: '#e3b341',
+		untaint: ACTION_COLOR.create,
 		validate: '#79c0ff',
 		lint: '#d2a8ff',
 		drift: '#e3b341'

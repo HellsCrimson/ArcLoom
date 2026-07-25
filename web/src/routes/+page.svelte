@@ -1398,7 +1398,7 @@
 	// init-backend) into the run pane and refreshes the state list when it
 	// settles.
 	function runStateOp(
-		op: 'import' | 'state-rm' | 'state-mv' | 'init-backend' | 'accept-drift',
+		op: 'import' | 'state-rm' | 'state-mv' | 'init-backend' | 'accept-drift' | 'taint' | 'untaint',
 		params: Record<string, string>
 	) {
 		if (!project) return;
@@ -1424,6 +1424,8 @@
 					: op === 'state-rm' ? 'Removed from state'
 					: op === 'state-mv' ? 'State address moved'
 					: op === 'accept-drift' ? 'Drift absorbed into state'
+					: op === 'taint' ? 'Marked for replacement'
+					: op === 'untaint' ? 'Tainted mark cleared'
 					: 'Backend initialized';
 				busy = '';
 				loadState();
@@ -2211,6 +2213,8 @@
 		onRm={(address) => runStateOp('state-rm', { address })}
 		onMv={(from, to) => runStateOp('state-mv', { from, to })}
 		onAcceptDrift={auth.can('deploy') ? () => runStateOp('accept-drift', {}) : undefined}
+		onTaint={(address) => runStateOp('taint', { address })}
+		onUntaint={(address) => runStateOp('untaint', { address })}
 	/>
 
 	<!-- terraform block: required_version + state backend -->

@@ -132,6 +132,10 @@ type stateEntry struct {
 	// Instances holds count/for_each index keys ("0", `"a"`); empty for a
 	// single-instance resource.
 	Instances []string `json:"instances,omitempty"`
+	// Tainted lists the instance ADDRESSES the engine considers damaged (it will
+	// replace them on the next apply) — `x.y`, or `x.y[0]` for an indexed one.
+	// Untaint takes exactly these, so the UI needs no address arithmetic.
+	Tainted []string `json:"tainted,omitempty"`
 }
 
 // handleStateList returns the resources tracked in the project's state. With
@@ -179,6 +183,9 @@ func (s *Server) handleStateList(w http.ResponseWriter, r *http.Request) {
 			Module    string `json:"module"`
 			Instances []struct {
 				IndexKey any `json:"index_key"`
+				// Status is "tainted" for an instance the engine will replace;
+				// absent otherwise.
+				Status string `json:"status"`
 			} `json:"instances"`
 		} `json:"resources"`
 	}
@@ -198,15 +205,26 @@ func (s *Server) handleStateList(w http.ResponseWriter, r *http.Request) {
 		}
 		e.Address = addr
 		for _, inst := range res.Instances {
+			key := ""
 			switch k := inst.IndexKey.(type) {
 			case nil:
 				// single instance — no index key
 			case string:
-				e.Instances = append(e.Instances, fmt.Sprintf("%q", k))
+				key = fmt.Sprintf("%q", k)
 			case float64:
-				e.Instances = append(e.Instances, fmt.Sprintf("%d", int(k)))
+				key = fmt.Sprintf("%d", int(k))
 			default:
-				e.Instances = append(e.Instances, fmt.Sprintf("%v", k))
+				key = fmt.Sprintf("%v", k)
+			}
+			if key != "" {
+				e.Instances = append(e.Instances, key)
+			}
+			if inst.Status == "tainted" {
+				taintedAddr := addr
+				if key != "" {
+					taintedAddr = fmt.Sprintf("%s[%s]", addr, key)
+				}
+				e.Tainted = append(e.Tainted, taintedAddr)
 			}
 		}
 		out = append(out, e)

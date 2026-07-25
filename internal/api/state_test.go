@@ -117,3 +117,83 @@ func TestSetTerraformRequiredVersion(t *testing.T) {
 		t.Fatalf("unknown project = %d, want 404", rec.Code)
 	}
 }
+
+// A tainted instance is reported with the exact address untaint takes, so the UI
+// needs no address arithmetic — including the indexed case.
+func TestStateListReportsTaintedInstances(t *testing.T) {
+	srv, _ := driftTestServer(t, &fakeRunner{})
+	h := srv.Handler()
+
+	runDir := filepath.Join(srv.cfg.DataDir, "p1", "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := `{"version":4,"resources":[
+		{"mode":"managed","type":"null_resource","name":"single","instances":[{"status":"tainted"}]},
+		{"mode":"managed","type":"null_resource","name":"counted","instances":[{"index_key":0},{"index_key":1,"status":"tainted"}]},
+		{"mode":"managed","type":"null_resource","name":"clean","instances":[{}]}
+	]}`
+	if err := os.WriteFile(filepath.Join(runDir, "terraform.tfstate"), []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := post(t, h, http.MethodGet, "/api/projects/p1/state", "")
+	var out []stateEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]stateEntry{}
+	for _, e := range out {
+		byName[e.Name] = e
+	}
+	if got := byName["single"].Tainted; len(got) != 1 || got[0] != "null_resource.single" {
+		t.Fatalf("single tainted = %v", got)
+	}
+	if got := byName["counted"].Tainted; len(got) != 1 || got[0] != "null_resource.counted[1]" {
+		t.Fatalf("counted tainted = %v, want only the indexed instance", got)
+	}
+	if got := byName["clean"].Tainted; len(got) != 0 {
+		t.Fatalf("clean resource reported as tainted: %v", got)
+	}
+}
+
+// Taint and untaint stream like the other state ops, pass the address through and
+// land in run history; a missing address fails before the stream starts.
+func TestTaintUntaintEndpoints(t *testing.T) {
+	fake := &fakeRunner{}
+	srv, rh := driftTestServer(t, fake)
+	h := srv.Handler()
+
+	for _, c := range []struct{ op, path, want string }{
+		{"taint", "/api/projects/p1/state/taint?address=null_resource.a", "null_resource.a"},
+		{"untaint", "/api/projects/p1/state/untaint?address=null_resource.a%5B1%5D", "null_resource.a[1]"},
+	} {
+		rec := post(t, h, http.MethodPost, c.path, "")
+		if body := rec.Body.String(); !strings.Contains(body, "event: done") {
+			t.Fatalf("%s stream = %s", c.op, body)
+		}
+		got := fake.tainted
+		if c.op == "untaint" {
+			got = fake.untainted
+		}
+		if got != c.want {
+			t.Fatalf("%s received %q, want %q", c.op, got, c.want)
+		}
+	}
+
+	list, _ := rh.List("p1")
+	ops := map[string]bool{}
+	for _, r := range list {
+		ops[r.Op] = true
+	}
+	if !ops["taint"] || !ops["untaint"] {
+		t.Fatalf("state ops not recorded in history: %+v", ops)
+	}
+
+	// No address: rejected before streaming, so no run record and no engine call.
+	for _, path := range []string{"/api/projects/p1/state/taint", "/api/projects/p1/state/untaint?address="} {
+		if rec := post(t, h, http.MethodPost, path, ""); rec.Code != http.StatusBadRequest {
+			t.Fatalf("POST %s = %d, want 400", path, rec.Code)
+		}
+	}
+}

@@ -43,6 +43,9 @@ type fakeRunner struct {
 	// gate reads back to apply exactly what it checked).
 	planFile          []byte
 	acceptDriftCalled bool
+	// tainted / untainted record the address each op received.
+	tainted   string
+	untainted string
 	// State stubs: what StatePull reports and what StatePush received.
 	statePull    string
 	statePushed  []byte
@@ -103,6 +106,14 @@ func (f *fakeRunner) StateRm(context.Context, string, map[string][]byte, map[str
 	return nil
 }
 func (f *fakeRunner) StateMv(context.Context, string, map[string][]byte, map[string]string, string, string, io.Writer) error {
+	return nil
+}
+func (f *fakeRunner) Taint(_ context.Context, _ string, _ map[string][]byte, _ map[string]string, address string, _ io.Writer) error {
+	f.tainted = address
+	return nil
+}
+func (f *fakeRunner) Untaint(_ context.Context, _ string, _ map[string][]byte, _ map[string]string, address string, _ io.Writer) error {
+	f.untainted = address
 	return nil
 }
 func (f *fakeRunner) InitBackend(context.Context, string, map[string][]byte, bool, io.Writer) error {

@@ -224,6 +224,10 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/projects/{id}/state/import", s.handleStateImport)
 				r.Post("/projects/{id}/state/rm", s.handleStateRm)
 				r.Post("/projects/{id}/state/mv", s.handleStateMv)
+				// Mark an instance for replacement, or clear a mark a failed
+				// provisioner left behind.
+				r.Post("/projects/{id}/state/taint", s.handleStateTaint)
+				r.Post("/projects/{id}/state/untaint", s.handleStateUntaint)
 				r.Post("/projects/{id}/state/init-backend", s.handleInitBackend)
 				// Absorb drift into the state (apply -refresh-only; no infra change).
 				r.Post("/projects/{id}/state/accept-drift", s.handleAcceptDrift)

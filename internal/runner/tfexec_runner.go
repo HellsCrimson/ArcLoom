@@ -374,6 +374,35 @@ func (t *TfExec) StateRm(ctx context.Context, dir string, files map[string][]byt
 	return nil
 }
 
+// Taint marks an instance as damaged, so the next apply replaces it. The address
+// must name a single instance (`x.y`, or `x.y[0]` for a counted resource).
+func (t *TfExec) Taint(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+	defer cleanup()
+	if err != nil {
+		return err
+	}
+	if err := tf.Taint(ctx, address); err != nil {
+		return fmt.Errorf("taint: %w", err)
+	}
+	return nil
+}
+
+// Untaint clears the tainted mark, so a resource the engine considers damaged is
+// kept as-is. This is the state op with no alternative: an instance left tainted
+// by a failed create-time provisioner is otherwise replaced on the next apply.
+func (t *TfExec) Untaint(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+	defer cleanup()
+	if err != nil {
+		return err
+	}
+	if err := tf.Untaint(ctx, address); err != nil {
+		return fmt.Errorf("untaint: %w", err)
+	}
+	return nil
+}
+
 // StateMv renames an address inside the persisted state.
 func (t *TfExec) StateMv(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, from, to string, out io.Writer) error {
 	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)

@@ -759,6 +759,8 @@ export interface StateEntry {
 	name: string;
 	module?: string;
 	instances?: string[];
+	/** Instance addresses the engine considers damaged — exactly what untaint takes. */
+	tainted?: string[];
 }
 
 // DriftInfo is a project's drift schedule plus (once a check has run) the
@@ -868,7 +870,9 @@ export type StreamableOp =
 	| 'state-rm'
 	| 'state-mv'
 	| 'init-backend'
-	| 'accept-drift';
+	| 'accept-drift'
+	| 'taint'
+	| 'untaint';
 
 const OP_PATH: Record<StreamableOp, string> = {
 	apply: 'apply',
@@ -877,7 +881,9 @@ const OP_PATH: Record<StreamableOp, string> = {
 	'state-rm': 'state/rm',
 	'state-mv': 'state/mv',
 	'init-backend': 'state/init-backend',
-	'accept-drift': 'state/accept-drift'
+	'accept-drift': 'state/accept-drift',
+	taint: 'state/taint',
+	untaint: 'state/untaint'
 };
 
 // streamOp runs a mutating operation (apply/destroy/state surgery) and streams

@@ -171,6 +171,13 @@ type Runner interface {
 	// StateRm removes an address from the persisted state (the real resource is
 	// left untouched; a later plan will want to recreate it).
 	StateRm(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error
+	// Taint marks one instance as damaged so the next apply replaces it; the
+	// address must resolve to a single instance.
+	Taint(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error
+	// Untaint clears that mark. It is the only remedy for an instance a failed
+	// create-time provisioner left tainted, which would otherwise be replaced on
+	// the next apply.
+	Untaint(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error
 	// StateMv renames an address inside the persisted state, e.g. after a
 	// resource was renamed in the model.
 	StateMv(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, from, to string, out io.Writer) error

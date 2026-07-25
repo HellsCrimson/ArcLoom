@@ -2,7 +2,7 @@
 	import Modal from './Modal.svelte';
 	import type { DriftInfo, StateEntry } from '$lib/api/client';
 	import type { DriftConfig } from '$lib/types';
-	import { Loader2, RefreshCw, PenLine, Trash2, Settings, AlertTriangle, CheckCircle2, Check } from 'lucide-svelte';
+	import { Loader2, RefreshCw, PenLine, Trash2, Settings, AlertTriangle, CheckCircle2, Check, Biohazard, HeartPulse } from 'lucide-svelte';
 
 	let {
 		open = $bindable(false),
@@ -17,7 +17,9 @@
 		onRefresh,
 		onRm,
 		onMv,
-		onAcceptDrift
+		onAcceptDrift,
+		onTaint,
+		onUntaint
 	}: {
 		open: boolean;
 		entries: StateEntry[];
@@ -33,6 +35,10 @@
 		onMv: (from: string, to: string) => void;
 		/** Absorb the refreshed values into state (apply -refresh-only). */
 		onAcceptDrift?: () => void;
+		/** Mark an instance damaged so the next apply replaces it. */
+		onTaint?: (address: string) => void;
+		/** Clear that mark (the remedy for a failed create-time provisioner). */
+		onUntaint?: (address: string) => void;
 	} = $props();
 
 	// Editable copy of the drift schedule, re-seeded whenever fresh info loads.
@@ -75,6 +81,35 @@
 			)
 		)
 			onAcceptDrift?.();
+	}
+
+	// Taint acts on ONE instance, so a counted / for_each resource needs an index.
+	// The row knows its keys; ask which one rather than guessing.
+	function askTaint(e: StateEntry) {
+		let address = e.address;
+		if (e.instances?.length) {
+			const key = window.prompt(
+				`Which instance of ${e.address}?\n\nKeys: ${e.instances.join(', ')}`,
+				e.instances[0]
+			);
+			if (!key) return;
+			address = `${e.address}[${key.trim()}]`;
+		}
+		if (
+			confirm(
+				`Mark ${address} as damaged?\n\nNothing changes now — the next apply destroys and recreates it.`
+			)
+		)
+			onTaint?.(address);
+	}
+
+	function askUntaint(address: string) {
+		if (
+			confirm(
+				`Clear the tainted mark on ${address}?\n\nThe engine stops treating it as damaged, so the next apply keeps it as-is.`
+			)
+		)
+			onUntaint?.(address);
 	}
 
 	function askMv(from: string) {
@@ -204,8 +239,29 @@
 					{#if e.instances?.length}
 						<span class="mono flex-none text-[10px] text-[var(--al-muted)]" title={e.instances.map((i) => `[${i}]`).join(' ')}>×{e.instances.length}</span>
 					{/if}
+					{#if e.tainted?.length}
+						<span
+							class="flex-none rounded px-1 py-0.5 text-[10px] font-semibold"
+							style="background:#e3b34122;color:#e3b341;"
+							title={`Marked damaged — the next apply replaces ${e.tainted.join(', ')}`}
+						>tainted{e.tainted.length > 1 ? ` ×${e.tainted.length}` : ''}</span>
+					{/if}
 					{#if canDeploy}
+						<span class="flex flex-none items-center gap-1">
+							{#each e.tainted ?? [] as addr (addr)}
+								<button
+									class="text-[#e3b341] hover:brightness-125 disabled:opacity-40"
+									title={`Clear the tainted mark on ${addr} (keeps the resource)`}
+									aria-label="Untaint"
+									onclick={() => askUntaint(addr)}
+									disabled={busy}
+								><HeartPulse size={13} /></button>
+							{/each}
+						</span>
 						<span class="flex flex-none items-center gap-1 opacity-0 group-hover:opacity-100">
+							{#if e.mode !== 'data' && onTaint}
+								<button class="text-[var(--al-muted)] hover:text-[#e3b341] disabled:opacity-40" title="Mark damaged — the next apply replaces it" aria-label="Taint" onclick={() => askTaint(e)} disabled={busy}><Biohazard size={13} /></button>
+							{/if}
 							<button class="text-[var(--al-muted)] hover:text-[var(--al-accent)] disabled:opacity-40" title="Move / rename in state" aria-label="Move in state" onclick={() => askMv(e.address)} disabled={busy}><PenLine size={13} /></button>
 							<button class="text-[var(--al-muted)] hover:text-[var(--al-danger)] disabled:opacity-40" title="Remove from state (does not destroy)" aria-label="Remove from state" onclick={() => askRm(e.address)} disabled={busy}><Trash2 size={13} /></button>
 						</span>
