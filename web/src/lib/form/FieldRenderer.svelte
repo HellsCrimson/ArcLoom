@@ -7,6 +7,7 @@
 	import type { AttrValue, Field, ValueMode } from '$lib/types';
 	import PlainField from './PlainField.svelte';
 	import { ensureLiteralShape, isContainer } from './defaults';
+	import { secretGroups } from '$lib/secretPath';
 
 	let {
 		field,
@@ -92,10 +93,21 @@
 		<input class="{inputCls} mono" placeholder="raw HCL expression" bind:value={value.expr} />
 	{:else if value.mode === 'secret'}
 		{#if secrets.length > 0}
+			<!-- Grouped by the first `_` segment, matching the Secrets tree view. -->
 			<select class={inputCls} bind:value={value.secretRef}>
 				<option value="" disabled selected={!value.secretRef}>Select a secret…</option>
-				{#each secrets as name (name)}
-					<option value={name}>🔒 {name}</option>
+				{#each secretGroups(secrets) as g (g.group)}
+					{#if g.group === ''}
+						{#each g.names as name (name)}
+							<option value={name}>🔒 {name}</option>
+						{/each}
+					{:else}
+						<optgroup label={g.group}>
+							{#each g.names as name (name)}
+								<option value={name}>🔒 {name}</option>
+							{/each}
+						</optgroup>
+					{/if}
 				{/each}
 			</select>
 		{:else}
