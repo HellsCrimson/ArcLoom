@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -32,17 +33,17 @@ import (
 
 // Server holds shared dependencies for the HTTP handlers.
 type Server struct {
-	cfg      config.Config
-	runners  map[model.Engine]runner.Runner
-	store    store.Store
-	cache    *cache.SchemaCache
-	secrets  *secrets.Store
-	static   fs.FS // embedded SPA build (may be nil in dev)
-	auth     atomic.Pointer[auth.Authenticator]
-	sessions session.Store
-	users    user.Store
-	settings *settings.Store
-	license  *license.Manager
+	cfg       config.Config
+	runners   map[model.Engine]runner.Runner
+	store     store.Store
+	cache     *cache.SchemaCache
+	secrets   *secrets.Store
+	static    fs.FS // embedded SPA build (may be nil in dev)
+	auth      atomic.Pointer[auth.Authenticator]
+	sessions  session.Store
+	users     user.Store
+	settings  *settings.Store
+	license   *license.Manager
 	runs      runs.Store      // may be nil (history disabled, e.g. in tests)
 	audit     audit.Store     // may be nil (audit disabled, e.g. in tests)
 	approvals approvals.Store // may be nil (approval gate disabled, e.g. in tests)
@@ -52,6 +53,11 @@ type Server struct {
 	// password change) per IP / username / user to blunt brute force and the
 	// memory-DoS a burst of hashes would cause.
 	authLimiter *rateLimiter
+
+	// build + startedAt back the admin instance panel (what this binary is and
+	// how long it has been up).
+	build     BuildInfo
+	startedAt time.Time
 
 	// Drift scheduler state: latest check outcome per project (in-memory) and
 	// a nudge channel so config changes take effect without waiting a tick.
@@ -64,6 +70,8 @@ type Server struct {
 func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store, auditLog audit.Store, approvalStore approvals.Store) *Server {
 	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist, audit: auditLog, approvals: approvalStore,
 		registry:    registry.NewClient(),
+		startedAt:   time.Now(),
+		build:       BuildInfo{Version: "dev"},
 		authLimiter: newRateLimiter(loginBurst, loginRefill),
 		driftStates: map[string]driftStatus{}, driftKick: make(chan struct{}, 1)}
 	s.auth.Store(authn)
@@ -279,6 +287,7 @@ func (s *Server) Handler() http.Handler {
 				r.Put("/admin/settings/sso", s.handleSetSSO)
 				r.Put("/admin/settings/license", s.handleSetLicense)
 				r.Get("/admin/audit", s.handleListAudit)
+				r.Get("/admin/instance", s.handleInstanceInfo)
 				// ACL editing is admin-only and enforced in the handler (also
 				// gated behind the rbac license feature there).
 				r.Put("/projects/{id}/acl", s.handleSetACL)

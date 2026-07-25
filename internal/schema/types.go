@@ -3,6 +3,13 @@
 // shape that the frontend renders without any Terraform-specific knowledge.
 package schema
 
+// FormatVersion identifies the shape this package produces. Normalized schemas
+// are cached on disk, so a change in how a provider type maps to widgets/fields
+// would otherwise keep serving the old shape after an upgrade — the cache key
+// includes this, so **bump it whenever normalization output changes**.
+// 2: dynamic attributes map to WidgetDynamic (were WidgetText).
+const FormatVersion = 2
+
 // WidgetKind is the UI control used to edit a field. The frontend switches on
 // this value; it must never need to inspect a raw cty type.
 type WidgetKind string

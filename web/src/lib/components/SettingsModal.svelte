@@ -1,13 +1,13 @@
 <script lang="ts">
 	import Modal from '$lib/components/Modal.svelte';
-	import { api, type AdminUser, type SSOSettings, type LicenseStatus } from '$lib/api/client';
+	import { api, type AdminUser, type SSOSettings, type LicenseStatus, type InstanceInfo } from '$lib/api/client';
 	import type { AuditEntry } from '$lib/types';
 	import { auth } from '$lib/stores/auth.svelte';
-	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck, Award, ScrollText } from 'lucide-svelte';
+	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck, Award, ScrollText, Server, Check, X } from 'lucide-svelte';
 
 	let { open = $bindable(false) }: { open: boolean } = $props();
 
-	type Tab = 'users' | 'sso' | 'license' | 'audit';
+	type Tab = 'users' | 'sso' | 'license' | 'audit' | 'instance';
 	let tab = $state<Tab>('users');
 	let error = $state('');
 	let notice = $state('');
@@ -202,6 +202,31 @@
 		}
 	}
 
+	// --- Instance ---
+	let instance = $state<InstanceInfo | null>(null);
+	let loadingInstance = $state(false);
+
+	async function loadInstance() {
+		loadingInstance = true;
+		error = '';
+		try {
+			instance = await api.instanceInfo();
+		} catch (e) {
+			error = (e as Error).message;
+		} finally {
+			loadingInstance = false;
+		}
+	}
+
+	function uptime(seconds: number): string {
+		const d = Math.floor(seconds / 86400);
+		const h = Math.floor((seconds % 86400) / 3600);
+		const m = Math.floor((seconds % 3600) / 60);
+		if (d > 0) return `${d}d ${h}h`;
+		if (h > 0) return `${h}h ${m}m`;
+		return `${m}m ${Math.floor(seconds % 60)}s`;
+	}
+
 	// Load per-tab when the modal opens or the tab changes.
 	$effect(() => {
 		if (!open) return;
@@ -209,6 +234,7 @@
 		if (tab === 'sso' && sso === null) loadSSO();
 		if (tab === 'license' && license === null) loadLicense();
 		if (tab === 'audit' && auditEntries.length === 0) loadAudit();
+		if (tab === 'instance' && instance === null) loadInstance();
 	});
 
 	const field =
@@ -223,6 +249,7 @@
 		<button class={tabBtn(tab === 'sso')} onclick={() => (tab = 'sso')}>Single sign-on</button>
 		<button class={tabBtn(tab === 'license')} onclick={() => (tab = 'license')}>License</button>
 		<button class={tabBtn(tab === 'audit')} onclick={() => (tab = 'audit')}>Audit log</button>
+		<button class={tabBtn(tab === 'instance')} onclick={() => (tab = 'instance')}>Instance</button>
 	</div>
 
 	{#if error}<p class="mb-2 text-sm text-[var(--al-danger)]">{error}</p>{/if}
@@ -456,5 +483,90 @@
 				</tbody>
 			</table>
 		</div>
+	{:else if tab === 'instance'}
+		<div class="mb-3 flex items-center gap-2">
+			<Server size={15} class="text-[var(--al-muted)]" />
+			<span class="text-sm text-[var(--al-text)]">What this server is running, and what it can see.</span>
+			<button class="ml-auto rounded-md border border-[var(--al-border)] px-2.5 py-1 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)] disabled:opacity-40" onclick={loadInstance} disabled={loadingInstance}>
+				{#if loadingInstance}<Loader2 size={12} class="animate-spin" />{:else}Refresh{/if}
+			</button>
+		</div>
+
+		{#if instance}
+			{@const i = instance}
+			<div class="max-h-[52vh] space-y-3 overflow-y-auto">
+				<!-- Build -->
+				<div class="rounded-md border border-[var(--al-border)] p-2.5">
+					<div class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--al-muted)]">Build</div>
+					<div class="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1 text-xs">
+						<span class="text-[var(--al-muted)]">version</span><span class="mono text-[var(--al-text)]">{i.version}</span>
+						{#if i.commit}<span class="text-[var(--al-muted)]">commit</span><span class="mono text-[var(--al-text)]">{i.commit}</span>{/if}
+						{#if i.buildDate}<span class="text-[var(--al-muted)]">built</span><span class="mono text-[var(--al-text)]">{i.buildDate}</span>{/if}
+						<span class="text-[var(--al-muted)]">runtime</span><span class="mono text-[var(--al-text)]">{i.go} · {i.platform}</span>
+						<span class="text-[var(--al-muted)]">uptime</span><span class="mono text-[var(--al-text)]">{uptime(i.uptimeSeconds)} (since {new Date(i.startedAt).toLocaleString()})</span>
+						<span class="text-[var(--al-muted)]">memory</span><span class="mono text-[var(--al-text)]">{i.heapMB} MiB heap · {i.goroutines} goroutines</span>
+						<span class="text-[var(--al-muted)]">content</span><span class="mono text-[var(--al-text)]">{i.projects} project(s) · {i.users} user(s)</span>
+					</div>
+				</div>
+
+				<!-- Engines + tools -->
+				<div class="rounded-md border border-[var(--al-border)] p-2.5">
+					<div class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--al-muted)]">Engines &amp; tools</div>
+					{#each i.engines as e (e.name)}
+						<div class="flex items-center gap-2 py-0.5 text-xs">
+							<span class="mono w-20 text-[var(--al-text)]">{e.name}</span>
+							{#if e.error}
+								<span class="text-[var(--al-danger)]">{e.error}</span>
+							{:else}
+								<span class="mono text-[var(--al-text)]">{e.version}</span>
+							{/if}
+							{#if e.default}<span class="rounded bg-[var(--al-accent-weak)] px-1.5 py-0.5 text-[10px] text-[var(--al-accent)]">default</span>{/if}
+							<span class="mono ml-auto truncate text-[10px] text-[var(--al-muted)]" title={e.path}>{e.path}</span>
+						</div>
+					{/each}
+					{#each i.tools as t (t.name)}
+						<div class="flex items-center gap-2 py-0.5 text-xs">
+							<span class="mono w-20 text-[var(--al-text)]">{t.name}</span>
+							{#if t.available}
+								<Check size={12} class="text-[var(--al-ok,#3fb950)]" />
+								<span class="mono truncate text-[var(--al-muted)]">{t.version || 'installed'}</span>
+							{:else}
+								<X size={12} class="text-[var(--al-muted)]" />
+								<span class="text-[var(--al-muted)]">not installed — {t.feature} degrades</span>
+							{/if}
+						</div>
+					{/each}
+				</div>
+
+				<!-- Configuration -->
+				<div class="rounded-md border border-[var(--al-border)] p-2.5">
+					<div class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--al-muted)]">Configuration</div>
+					<div class="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1 text-xs">
+						<span class="text-[var(--al-muted)]">auth</span>
+						<span class="mono text-[var(--al-text)]">{i.authEnabled ? 'enabled' : 'DISABLED (open instance)'} · cookie {i.cookieSecure ? 'secure' : 'insecure (plain HTTP)'} · providers: {i.authProviders.join(', ') || 'local'}</span>
+						<span class="text-[var(--al-muted)]">secret store</span>
+						<span class="mono text-[var(--al-text)]">{i.secretStore ? 'local (encrypted)' : 'disabled — set ARCLOOM_SECRET_KEY'}</span>
+						<span class="text-[var(--al-muted)]">license</span>
+						<span class="mono text-[var(--al-text)]">{i.licenseTier}{i.licenseFeatures?.length ? ` · ${i.licenseFeatures.join(', ')}` : ''}</span>
+						<span class="text-[var(--al-muted)]">logging</span><span class="mono text-[var(--al-text)]">{i.logLevel} · {i.logFormat}</span>
+						<span class="text-[var(--al-muted)]">schema format</span>
+						<span class="mono text-[var(--al-text)]">v{i.schemaFormat} <span class="text-[var(--al-muted)]">(cached schemas from other versions are ignored)</span></span>
+					</div>
+				</div>
+
+				<!-- Paths -->
+				<div class="rounded-md border border-[var(--al-border)] p-2.5">
+					<div class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--al-muted)]">Paths</div>
+					<div class="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1 text-xs">
+						{#each Object.entries(i.paths) as [k, v] (k)}
+							<span class="text-[var(--al-muted)]">{k}</span>
+							<span class="mono truncate text-[var(--al-text)]" title={v}>{v || '—'}</span>
+						{/each}
+					</div>
+				</div>
+			</div>
+		{:else if !loadingInstance}
+			<p class="py-4 text-center text-xs text-[var(--al-muted)]">No instance information.</p>
+		{/if}
 	{/if}
 </Modal>

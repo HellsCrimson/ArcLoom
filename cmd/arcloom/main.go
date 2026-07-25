@@ -177,6 +177,7 @@ func main() {
 	// Initial Authenticator is local-only; ReloadAuth then adds OIDC from the
 	// persisted settings (bounded discovery; failure is non-fatal).
 	srv := api.New(cfg, runners, st, sc, sec, webui.FS(), auth.New(auth.NewLocalProvider(users)), sessions, users, set, runHist, auditLog, approvalStore)
+	srv.SetBuildInfo(api.BuildInfo{Version: version, Commit: commit, Date: date})
 	rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
 	if err := srv.ReloadAuth(rctx); err != nil {
 		slog.Warn("OIDC SSO disabled", "err", err)

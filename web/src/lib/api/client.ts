@@ -212,6 +212,8 @@ export const api = {
 			body: JSON.stringify(config)
 		}).then((r) => json<{ config: PolicyConfig }>(r)),
 
+	instanceInfo: () => fetch('/api/admin/instance').then((r) => json<InstanceInfo>(r)),
+
 	getNotify: (id: string) =>
 		fetch(`/api/projects/${id}/notify`).then((r) => json<{ config: NotifyConfig }>(r)),
 
@@ -671,6 +673,37 @@ export interface PolicyConfig {
 	enforce: boolean;
 	failOnWarn: boolean;
 	docs: PolicyDoc[];
+}
+
+// InstanceInfo describes the running server: what it was built from, which
+// engines and optional tools it resolved, where it stores things, and which
+// switches are on. Admin-only; it never carries secrets.
+export interface InstanceInfo {
+	version: string;
+	commit?: string;
+	buildDate?: string;
+	go: string;
+	platform: string;
+	startedAt: string;
+	uptimeSeconds: number;
+	goroutines: number;
+	heapMB: number;
+	defaultEngine: string;
+	engines: { name: string; path: string; version?: string; error?: string; default: boolean }[];
+	tools: { name: string; feature: string; available: boolean; path?: string; version?: string }[];
+	schemaFormat: number;
+	paths: Record<string, string>;
+	authEnabled: boolean;
+	cookieSecure: boolean;
+	authProviders: string[];
+	ssoEnabled: boolean;
+	secretStore: boolean;
+	logLevel: string;
+	logFormat: string;
+	licenseTier: string;
+	licenseFeatures?: string[];
+	projects: number;
+	users: number;
 }
 
 // NotifyKind is the destination a project's events are rendered for.

@@ -3,6 +3,16 @@ BINARY   := arcloom
 WEBDIR   := web
 EMBEDDIR := internal/webui/dist
 
+# Build metadata, surfaced by `arcloom version` and the admin Instance panel.
+# GoReleaser injects its own values for releases; this covers local builds.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w \
+	-X main.version=$(VERSION) \
+	-X main.commit=$(COMMIT) \
+	-X main.date=$(DATE)
+
 .PHONY: dev dev-web dev-api build-web build test tidy docker clean
 
 ## dev-api: run the Go server (serves API; frontend via Vite in dev)
@@ -22,7 +32,7 @@ build-web:
 
 ## build: build the single self-contained binary (frontend embedded)
 build: build-web
-	CGO_ENABLED=0 go build -o $(BINARY) ./cmd/arcloom
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/arcloom
 
 ## test: run Go tests
 test:

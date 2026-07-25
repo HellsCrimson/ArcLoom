@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -27,9 +28,13 @@ func New(dir string) *SchemaCache {
 
 // Key builds a stable cache key. version should be the version actually
 // resolved by init (not a "latest" constraint) so stale schemas are not served.
+// schema.FormatVersion is part of the key so an ArcLoom upgrade that changes
+// normalization does not keep serving schemas normalized by the old code —
+// entries written under a previous format are simply never looked up again.
 func Key(engine, source, version, resourceType string) string {
 	return strings.NewReplacer("/", "_", ":", "_").Replace(
-		engine + "|" + source + "|" + version + "|" + resourceType,
+		"v" + strconv.Itoa(schema.FormatVersion) + "|" +
+			engine + "|" + source + "|" + version + "|" + resourceType,
 	)
 }
 
