@@ -12,8 +12,15 @@
 		field,
 		entries = $bindable(),
 		references = [],
-		secrets = []
-	}: { field: Field; entries: AttrEntry[]; references?: string[]; secrets?: string[] } = $props();
+		secrets = [],
+		onCreateSecret
+	}: {
+		field: Field;
+		entries: AttrEntry[];
+		references?: string[];
+		secrets?: string[];
+		onCreateSecret?: (name: string, value: string) => Promise<void>;
+	} = $props();
 
 	const children = $derived((field.fields ?? []).filter((c) => !isReadOnly(c)));
 
@@ -47,7 +54,7 @@
 					{#if child.required}<span class="text-[var(--al-danger)]">*</span>{/if}
 					<span class="mono text-[10px] text-[var(--al-muted)]">{child.type}</span>
 				</div>
-				<FieldRenderer field={child} bind:value={entry.value} {references} {secrets} />
+				<FieldRenderer field={child} bind:value={entry.value} {references} {secrets} {onCreateSecret} />
 			</div>
 		{/if}
 	{/each}

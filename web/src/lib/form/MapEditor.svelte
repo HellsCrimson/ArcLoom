@@ -8,8 +8,15 @@
 		field,
 		entries = $bindable(),
 		references = [],
-		secrets = []
-	}: { field: Field; entries: AttrEntry[]; references?: string[]; secrets?: string[] } = $props();
+		secrets = [],
+		onCreateSecret
+	}: {
+		field: Field;
+		entries: AttrEntry[];
+		references?: string[];
+		secrets?: string[];
+		onCreateSecret?: (name: string, value: string) => Promise<void>;
+	} = $props();
 
 	// Always work with an array (the parent may bind an undefined slot).
 	$effect(() => {
@@ -38,7 +45,7 @@
 				bind:value={entry.key}
 			/>
 			<div class="flex-1">
-				<FieldRenderer field={elem} bind:value={entry.value} {references} {secrets} compact={compactVal} />
+				<FieldRenderer field={elem} bind:value={entry.value} {references} {secrets} {onCreateSecret} compact={compactVal} />
 			</div>
 			<button
 				type="button"

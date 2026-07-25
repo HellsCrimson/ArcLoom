@@ -31,14 +31,22 @@
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
 	// Right-panel geometry: the HCL/run-output column's width and how much of it
 	// the run output takes. Both are user-dragged and remembered per browser.
+	const SIDEBAR_WIDTH_KEY = 'arcloom.sidebarWidth';
 	const HCL_WIDTH_KEY = 'arcloom.hclWidth';
 	const RUN_HEIGHT_KEY = 'arcloom.runHeight';
 	const HCL_MIN_WIDTH = 320;
+	const SIDEBAR_MIN_WIDTH = 180;
 	const RUN_MIN_HEIGHT = 88;
 
+	let sidebarWidth = $state(256); // w-64, the previous fixed width
 	let hclWidth = $state(416); // 26rem, the previous fixed width
 	let runHeight = $state(280);
 	let asideHeight = $state(0); // measured, so the run pane can't be dragged past it
+
+	function clampSidebarWidth(px: number) {
+		const max = Math.max(SIDEBAR_MIN_WIDTH, window.innerWidth - 640);
+		sidebarWidth = Math.round(Math.min(Math.max(px, SIDEBAR_MIN_WIDTH), max));
+	}
 
 	function clampHclWidth(px: number) {
 		const max = Math.max(HCL_MIN_WIDTH, window.innerWidth - 520);
@@ -191,6 +199,16 @@
 		} finally {
 			busy = '';
 		}
+	}
+
+	// createSecretInline backs the "New" button inside a resource field: same store
+	// as the Secrets modal, but it throws so the field can show the failure in
+	// place (and keep the typed value) instead of it landing in the page banner.
+	async function createSecretInline(name: string, value: string) {
+		if (!project) throw new Error('no project selected');
+		await api.setSecret(project.id, name, value);
+		await loadSecrets();
+		await refreshHcl();
 	}
 
 	async function deleteSecret(name: string) {
@@ -417,6 +435,8 @@
 
 	onMount(async () => {
 		// Restore the dragged panel geometry before the first paint of the aside.
+		const savedSidebar = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+		if (savedSidebar) clampSidebarWidth(savedSidebar);
 		const savedWidth = Number(localStorage.getItem(HCL_WIDTH_KEY));
 		if (savedWidth) clampHclWidth(savedWidth);
 		const savedRun = Number(localStorage.getItem(RUN_HEIGHT_KEY));
@@ -1709,7 +1729,10 @@
 				onClose={() => (showEditor = false)}
 			/>
 		{:else}
-		<aside class="w-64 shrink-0 space-y-3 overflow-y-auto border-r border-[var(--al-border)] bg-[var(--al-panel)] p-3">
+		<aside
+			class="shrink-0 space-y-3 overflow-y-auto border-r border-[var(--al-border)] bg-[var(--al-panel)] p-3"
+			style="width:{sidebarWidth}px;"
+		>
 			{#if project}
 				<div>
 					<label for="provider-source" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Provider</label>
@@ -1865,6 +1888,12 @@
 				<p class="text-xs text-[var(--al-muted)]">Create a project to begin.</p>
 			{/if}
 		</aside>
+		<ResizeHandle
+			orientation="vertical"
+			label="Resize the structure panel"
+			onResize={(dx) => clampSidebarWidth(sidebarWidth + dx)}
+			onEnd={() => localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))}
+		/>
 
 		<main class="min-w-0 flex-1 overflow-y-auto p-5">
 			{#if !project}
@@ -1888,7 +1917,13 @@
 				{#if (schema.fields?.length ?? 0) === 0}
 					<p class="text-sm text-[var(--al-muted)]">This provider has no configurable arguments.</p>
 				{:else}
-					<SchemaForm {schema} bind:values {references} secrets={secretNames} />
+					<SchemaForm
+						{schema}
+						bind:values
+						{references}
+						secrets={secretNames}
+						onCreateSecret={secretsLocalEnabled && auth.can('resources') ? createSecretInline : undefined}
+					/>
 				{/if}
 			{:else if schema}
 				<div class="mb-4 flex items-end gap-3">
@@ -1922,7 +1957,13 @@
 						</button>
 					{/if}
 				</div>
-				<SchemaForm {schema} bind:values {references} secrets={secretNames} />
+				<SchemaForm
+						{schema}
+						bind:values
+						{references}
+						secrets={secretNames}
+						onCreateSecret={secretsLocalEnabled && auth.can('resources') ? createSecretInline : undefined}
+					/>
 			{:else}
 				<div class="grid h-full place-items-center text-center text-sm text-[var(--al-muted)]">
 					Add a provider and pick a resource type, select an existing resource to edit,<br />or import existing HCL / state.

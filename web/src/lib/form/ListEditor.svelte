@@ -8,8 +8,15 @@
 		field,
 		items = $bindable(),
 		references = [],
-		secrets = []
-	}: { field: Field; items: AttrValue[]; references?: string[]; secrets?: string[] } = $props();
+		secrets = [],
+		onCreateSecret
+	}: {
+		field: Field;
+		items: AttrValue[];
+		references?: string[];
+		secrets?: string[];
+		onCreateSecret?: (name: string, value: string) => Promise<void>;
+	} = $props();
 
 	// Always work with an array (the parent may bind an undefined slot).
 	$effect(() => {
@@ -32,7 +39,7 @@
 	{#each items ?? [] as _, i (i)}
 		<div class="flex items-start gap-2">
 			<div class="flex-1">
-				<FieldRenderer field={elem} bind:value={items[i]} {references} {secrets} compact={compactVal} />
+				<FieldRenderer field={elem} bind:value={items[i]} {references} {secrets} {onCreateSecret} compact={compactVal} />
 			</div>
 			<button
 				type="button"

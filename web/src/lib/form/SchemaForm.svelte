@@ -9,12 +9,15 @@
 		schema,
 		values = $bindable(),
 		references = [],
-		secrets = []
+		secrets = [],
+		onCreateSecret
 	}: {
 		schema: NormalizedSchema;
 		values: Record<string, AttrValue>;
 		references?: string[];
 		secrets?: string[];
+		/** Store a new secret and refresh the list; absent = creating is unavailable. */
+		onCreateSecret?: (name: string, value: string) => Promise<void>;
 	} = $props();
 
 	const required = $derived(schema.fields.filter((f) => f.required));
@@ -54,7 +57,7 @@
 							<p class="mb-1.5 text-xs leading-snug text-[var(--al-muted)]">{f.description}</p>
 						{/if}
 						{#if values[f.name]}
-							<FieldRenderer field={f} bind:value={values[f.name]} {references} {secrets} />
+							<FieldRenderer field={f} bind:value={values[f.name]} {references} {secrets} {onCreateSecret} />
 						{/if}
 					</div>
 				{/each}

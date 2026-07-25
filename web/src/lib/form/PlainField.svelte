@@ -13,8 +13,15 @@
 		field,
 		value = $bindable(),
 		references = [],
-		secrets = []
-	}: { field: Field; value: AttrValue; references?: string[]; secrets?: string[] } = $props();
+		secrets = [],
+		onCreateSecret
+	}: {
+		field: Field;
+		value: AttrValue;
+		references?: string[];
+		secrets?: string[];
+		onCreateSecret?: (name: string, value: string) => Promise<void>;
+	} = $props();
 
 	// Seed items/entries for container widgets (idempotent) before the structural
 	// editors bind. Also migrates legacy `literal` collections on first open.
@@ -53,11 +60,11 @@
 		>
 	</label>
 {:else if field.widget === 'list' || field.widget === 'block'}
-	<ListEditor {field} bind:items={value.items as AttrValue[]} {references} {secrets} />
+	<ListEditor {field} bind:items={value.items as AttrValue[]} {references} {secrets} {onCreateSecret} />
 {:else if field.widget === 'map'}
-	<MapEditor {field} bind:entries={value.entries!} {references} {secrets} />
+	<MapEditor {field} bind:entries={value.entries!} {references} {secrets} {onCreateSecret} />
 {:else if field.widget === 'object'}
-	<NestedBlock {field} bind:entries={value.entries!} {references} {secrets} />
+	<NestedBlock {field} bind:entries={value.entries!} {references} {secrets} {onCreateSecret} />
 {:else}
 	<input class={inputCls} type="text" bind:value={value.literal as string} />
 {/if}
