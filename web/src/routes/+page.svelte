@@ -17,6 +17,7 @@
 	import UserMenu from '$lib/components/UserMenu.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
 	import CommandPalette, { type PaletteItem } from '$lib/components/CommandPalette.svelte';
+	import ResizeHandle from '$lib/components/ResizeHandle.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { history } from '$lib/stores/history.svelte';
 	import EditorView from '$lib/editor/EditorView.svelte';
@@ -28,6 +29,26 @@
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
+	// Right-panel geometry: the HCL/run-output column's width and how much of it
+	// the run output takes. Both are user-dragged and remembered per browser.
+	const HCL_WIDTH_KEY = 'arcloom.hclWidth';
+	const RUN_HEIGHT_KEY = 'arcloom.runHeight';
+	const HCL_MIN_WIDTH = 320;
+	const RUN_MIN_HEIGHT = 88;
+
+	let hclWidth = $state(416); // 26rem, the previous fixed width
+	let runHeight = $state(280);
+	let asideHeight = $state(0); // measured, so the run pane can't be dragged past it
+
+	function clampHclWidth(px: number) {
+		const max = Math.max(HCL_MIN_WIDTH, window.innerWidth - 520);
+		hclWidth = Math.round(Math.min(Math.max(px, HCL_MIN_WIDTH), max));
+	}
+
+	function clampRunHeight(px: number) {
+		const max = Math.max(RUN_MIN_HEIGHT, (asideHeight || window.innerHeight) - 160);
+		runHeight = Math.round(Math.min(Math.max(px, RUN_MIN_HEIGHT), max));
+	}
 
 	let engines = $state<Engine[]>([]);
 	let defaultEngine = $state('tofu');
@@ -391,6 +412,11 @@
 	});
 
 	onMount(async () => {
+		// Restore the dragged panel geometry before the first paint of the aside.
+		const savedWidth = Number(localStorage.getItem(HCL_WIDTH_KEY));
+		if (savedWidth) clampHclWidth(savedWidth);
+		const savedRun = Number(localStorage.getItem(RUN_HEIGHT_KEY));
+		if (savedRun) clampRunHeight(savedRun);
 		try {
 			const e = await api.engines();
 			engines = e.engines;
@@ -1630,7 +1656,7 @@
 		<div class="border-b border-[var(--al-border)] bg-[var(--al-panel-2)] px-4 py-1.5 text-xs text-[var(--al-muted)]">{importMsg}</div>
 	{/if}
 
-	<div class="flex min-h-0 flex-1">
+	<div class="flex min-h-0 flex-1 overflow-hidden">
 		{#if showEditor && project}
 			<EditorView
 				{project}
@@ -1870,11 +1896,21 @@
 			{/if}
 		</main>
 
-		<aside class="flex w-[26rem] shrink-0 flex-col border-l" style="border-color:var(--al-border);">
+		<ResizeHandle
+			orientation="vertical"
+			label="Resize the generated-HCL panel"
+			onResize={(dx) => clampHclWidth(hclWidth - dx)}
+			onEnd={() => localStorage.setItem(HCL_WIDTH_KEY, String(hclWidth))}
+		/>
+		<aside
+			class="flex shrink-0 flex-col border-l"
+			style="width:{hclWidth}px;border-color:var(--al-border);"
+			bind:clientHeight={asideHeight}
+		>
 			<!-- Generated HCL — shares the graph editor's viewer for a consistent look -->
-			<div class="min-h-0 flex-[3]">
+			<div class="min-h-0 flex-1">
 				<HclView {hcl}>
-					{#snippet right()}
+					{#snippet actions()}
 						{#if auth.can('deploy')}
 						{@const running = busy === 'plan' || busy === 'validate' || busy === 'lint' || busy === 'apply' || busy === 'destroy' || busy === 'import' || busy === 'state-rm' || busy === 'state-mv'}
 						<button class={btnGhost} title="Validate the generated configuration" onclick={runValidate} disabled={!project || running}>
@@ -1916,8 +1952,14 @@
 					{/snippet}
 				</HclView>
 			</div>
+			<ResizeHandle
+				orientation="horizontal"
+				label="Resize the run-output pane"
+				onResize={(dy) => clampRunHeight(runHeight - dy)}
+				onEnd={() => localStorage.setItem(RUN_HEIGHT_KEY, String(runHeight))}
+			/>
 			<!-- Plan output -->
-			<div class="flex min-h-0 flex-[2] flex-col border-t" style="border-color:var(--al-code-border);background:var(--al-code-bg);">
+			<div class="flex min-h-0 flex-none flex-col border-t" style="height:{runHeight}px;border-color:var(--al-code-border);background:var(--al-code-bg);">
 				<div class="flex h-11 flex-none items-center border-b px-4" style="border-color:var(--al-code-border);">
 					<div class="font-mono" style="font-size:12.5px;font-weight:600;color:var(--al-code-text);">run output</div>
 					{#if planResult}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:{accentWeak};color:{accentHex};">{planResult}</span>{/if}

@@ -6,12 +6,17 @@
 		hcl = '',
 		title = 'main.tf',
 		placeholder = '// save a resource to preview HCL',
-		right
+		right,
+		actions
 	}: {
 		hcl?: string;
 		title?: string;
 		placeholder?: string;
+		/** Controls rendered inline in the title bar — for one or two small buttons. */
 		right?: Snippet;
+		/** Controls rendered on their own wrapping row below the title bar. A row of
+		 *  its own is what keeps a narrow panel from overflowing horizontally. */
+		actions?: Snippet;
 	} = $props();
 
 	const lines = $derived(highlightHcl(hcl || ''));
@@ -30,6 +35,14 @@
 		</div>
 		{#if right}{@render right()}{/if}
 	</div>
+	{#if actions}
+		<div
+			class="flex flex-none flex-wrap items-center gap-1.5 border-b px-4 py-2"
+			style="border-color:var(--al-code-border);"
+		>
+			{@render actions()}
+		</div>
+	{/if}
 	<div class="flex-1 overflow-auto px-[18px] py-4 font-mono" style="font-size:12.5px;line-height:1.7;">
 		{#if hcl}
 			{#each lines as line, i (i)}
