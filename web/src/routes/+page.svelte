@@ -995,23 +995,30 @@
 	// collections, and incomplete references/secrets/expressions collapse to
 	// undefined so they're dropped. Recurses into structural collections so a
 	// nested reference/secret is preserved but an empty nested slot is not.
-	function cleanAttr(v: AttrValue): AttrValue | undefined {
+	// cleanAttr prunes the untouched parts of a form value. `keyed` marks a value
+	// the user deliberately created a key for (an object/map entry): an empty
+	// string there is a real value — `avatarUrl = ""` in a provider's config
+	// object means something — so only unkeyed blanks are dropped.
+	function cleanAttr(v: AttrValue, keyed = false): AttrValue | undefined {
 		if (v.mode === 'reference') return v.ref ? { mode: 'reference', ref: v.ref } : undefined;
 		if (v.mode === 'expression') return v.expr ? { mode: 'expression', expr: v.expr } : undefined;
 		if (v.mode === 'secret') return v.secretRef ? { mode: 'secret', secretRef: v.secretRef } : undefined;
 		// literal
+		// An empty collection carries nothing and cannot round-trip (an empty slice
+		// is omitted on the wire, so `{}` would come back as an untyped scalar) —
+		// prune it like any other untouched row.
 		if (v.items !== undefined) {
-			const items = v.items.map(cleanAttr).filter((x): x is AttrValue => x !== undefined);
+			const items = v.items.map((it) => cleanAttr(it)).filter((x): x is AttrValue => x !== undefined);
 			return items.length ? { mode: 'literal', items } : undefined;
 		}
 		if (v.entries !== undefined) {
 			const entries = v.entries
-				.map((e) => ({ key: e.key.trim(), value: cleanAttr(e.value) }))
+				.map((e) => ({ key: e.key.trim(), value: cleanAttr(e.value, true) }))
 				.filter((e): e is { key: string; value: AttrValue } => e.key !== '' && e.value !== undefined);
 			return entries.length ? { mode: 'literal', entries } : undefined;
 		}
 		const lit = v.literal;
-		if (lit === undefined || lit === null || lit === '') return undefined;
+		if (lit === undefined || lit === null || (lit === '' && !keyed)) return undefined;
 		return { mode: 'literal', literal: lit };
 	}
 

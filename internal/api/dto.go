@@ -49,7 +49,15 @@ func (d attrValueDTO) toModel() (model.AttrValue, error) {
 			}
 		case d.Entries != nil:
 			av.Entries = make([]model.AttrEntry, len(d.Entries))
+			// Two entries with the same key render as one HCL object with a
+			// duplicated attribute, which the engine rejects — and the generated
+			// file would only fail at plan time, far from the edit that caused it.
+			seen := make(map[string]bool, len(d.Entries))
 			for i, e := range d.Entries {
+				if seen[e.Key] {
+					return av, fmt.Errorf("duplicate key %q", e.Key)
+				}
+				seen[e.Key] = true
 				m, err := e.Value.toModel()
 				if err != nil {
 					return av, fmt.Errorf("entry %q: %w", e.Key, err)

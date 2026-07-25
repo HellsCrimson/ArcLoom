@@ -36,7 +36,7 @@
 </script>
 
 <div class="space-y-2">
-	{#each items ?? [] as _, i (i)}
+	{#each items ?? [] as item, i (item)}
 		<div class="flex items-start gap-2">
 			<div class="flex-1">
 				<FieldRenderer field={elem} bind:value={items[i]} {references} {secrets} {onCreateSecret} compact={compactVal} />

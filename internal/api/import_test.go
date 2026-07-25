@@ -121,3 +121,44 @@ func TestImport_LocalModuleCallNoDuplicate(t *testing.T) {
 		t.Fatalf("manual create of existing module: status %d, want 400", rec.Code)
 	}
 }
+
+// Two entries with the same key would generate one HCL object with a duplicated
+// attribute, which the engine rejects at plan time — catch it at the edit.
+func TestAttrValueDTO_RejectsDuplicateKeys(t *testing.T) {
+	dto := attrValueDTO{
+		Mode: model.ModeLiteral,
+		Entries: []attrEntryDTO{
+			{Key: "a", Value: attrValueDTO{Mode: model.ModeLiteral, Literal: []byte(`"1"`)}},
+			{Key: "a", Value: attrValueDTO{Mode: model.ModeLiteral, Literal: []byte(`"2"`)}},
+		},
+	}
+	if _, err := dto.toModel(); err == nil || !strings.Contains(err.Error(), "duplicate key") {
+		t.Fatalf("expected a duplicate-key error, got %v", err)
+	}
+
+	// Nested objects are checked too, and distinct keys still pass.
+	ok := attrValueDTO{
+		Mode: model.ModeLiteral,
+		Entries: []attrEntryDTO{
+			{Key: "events", Value: attrValueDTO{Mode: model.ModeLiteral, Entries: []attrEntryDTO{
+				{Key: "x", Value: attrValueDTO{Mode: model.ModeLiteral, Literal: []byte(`true`)}},
+				{Key: "y", Value: attrValueDTO{Mode: model.ModeLiteral, Literal: []byte(`false`)}},
+			}}},
+		},
+	}
+	if _, err := ok.toModel(); err != nil {
+		t.Fatalf("distinct keys should convert: %v", err)
+	}
+	bad := attrValueDTO{
+		Mode: model.ModeLiteral,
+		Entries: []attrEntryDTO{
+			{Key: "events", Value: attrValueDTO{Mode: model.ModeLiteral, Entries: []attrEntryDTO{
+				{Key: "x", Value: attrValueDTO{Mode: model.ModeLiteral, Literal: []byte(`true`)}},
+				{Key: "x", Value: attrValueDTO{Mode: model.ModeLiteral, Literal: []byte(`false`)}},
+			}}},
+		},
+	}
+	if _, err := bad.toModel(); err == nil || !strings.Contains(err.Error(), "duplicate key") {
+		t.Fatalf("expected the nested duplicate to be caught, got %v", err)
+	}
+}

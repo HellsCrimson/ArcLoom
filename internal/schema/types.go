@@ -16,6 +16,11 @@ const (
 	WidgetMap      WidgetKind = "map"      // map(T) -> key/value editor
 	WidgetObject   WidgetKind = "object"   // object / single nested -> nested form
 	WidgetBlock    WidgetKind = "block"    // list/set nested block -> repeatable form
+	// WidgetDynamic is a value whose type the provider does not declare
+	// (cty.DynamicPseudoType — a framework DynamicAttribute). There are no child
+	// fields to render, so the UI offers a free-form editor: the user builds the
+	// object / list / scalar themselves, at any depth.
+	WidgetDynamic WidgetKind = "dynamic"
 )
 
 // Field describes one editable (or read-only computed) value in a resource.

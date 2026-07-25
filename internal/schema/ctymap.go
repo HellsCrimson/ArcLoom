@@ -19,7 +19,7 @@ func fieldFromType(name string, t cty.Type) Field {
 
 	// cty.NilType has no FriendlyName (it panics), so handle it up front.
 	if t == cty.NilType {
-		f.Widget = WidgetText
+		f.Widget = WidgetDynamic
 		f.Type = "dynamic"
 		return f
 	}
@@ -28,8 +28,10 @@ func fieldFromType(name string, t cty.Type) Field {
 
 	switch {
 	case t.Equals(cty.DynamicPseudoType):
-		// Dynamic: fall back to free-text (expression) editing.
-		f.Widget = WidgetText
+		// The provider declares no type at all, so there is nothing to derive
+		// child fields from: the UI renders a free-form editor where the value's
+		// shape (object / list / scalar) is chosen per node, at any depth.
+		f.Widget = WidgetDynamic
 
 	case t.IsPrimitiveType():
 		switch {

@@ -28,9 +28,16 @@ export function objectElem(f: Field): Field {
 	};
 }
 
-// isContainer reports whether a widget holds nested values (list/map/object).
+// isContainer reports whether a widget holds nested values (list/map/object,
+// or a dynamic value the user may shape into either).
 export function isContainer(f: Field): boolean {
-	return f.widget === 'list' || f.widget === 'block' || f.widget === 'map' || f.widget === 'object';
+	return (
+		f.widget === 'list' ||
+		f.widget === 'block' ||
+		f.widget === 'map' ||
+		f.widget === 'object' ||
+		f.widget === 'dynamic'
+	);
 }
 
 // elemField returns the element field of a list/set/block (the type of each
@@ -54,10 +61,29 @@ export function rawToAttr(field: Field, raw: unknown): AttrValue {
 	} else if (field.widget === 'object') {
 		const obj = isPlainObject(raw) ? raw : {};
 		av.entries = (field.fields ?? []).map((c) => ({ key: c.name, value: rawToAttr(c, obj[c.name]) }));
+	} else if (field.widget === 'dynamic') {
+		return rawToDynamic(raw);
 	} else {
 		av.literal = raw;
 	}
 	return av;
+}
+
+// rawToDynamic converts a raw JS value into the structural AttrValue shape, with
+// the layout taken from the VALUE (a dynamic attribute has no schema to consult).
+// This is what turns an imported `config = { events = { … } }` — stored as one
+// opaque literal object — into something the editor can walk.
+export function rawToDynamic(raw: unknown): AttrValue {
+	if (Array.isArray(raw)) {
+		return { mode: 'literal', items: raw.map(rawToDynamic) };
+	}
+	if (isPlainObject(raw)) {
+		return {
+			mode: 'literal',
+			entries: Object.entries(raw).map(([k, v]) => ({ key: k, value: rawToDynamic(v) }))
+		};
+	}
+	return { mode: 'literal', literal: raw === undefined || raw === null ? '' : raw };
 }
 
 // ensureLiteralShape makes a literal-mode container AttrValue editable by the
@@ -87,6 +113,18 @@ export function ensureLiteralShape(field: Field, av: AttrValue): void {
 			av.entries = (field.fields ?? []).map((c) => ({ key: c.name, value: rawToAttr(c, legacy[c.name]) }));
 		}
 		av.literal = undefined;
+	} else if (field.widget === 'dynamic') {
+		// A dynamic value keeps whichever shape it already has; only a legacy raw
+		// object/array literal needs lifting into the structural form (that is the
+		// value that used to render as "[object Object]" in a text input).
+		if (av.items === undefined && av.entries === undefined) {
+			if (Array.isArray(av.literal) || isPlainObject(av.literal)) {
+				const lifted = rawToDynamic(av.literal);
+				av.items = lifted.items;
+				av.entries = lifted.entries;
+				av.literal = undefined;
+			}
+		}
 	}
 }
 

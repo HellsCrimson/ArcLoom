@@ -37,7 +37,7 @@
 </script>
 
 <div class="space-y-2">
-	{#each entries ?? [] as entry, i (i)}
+	{#each entries ?? [] as entry, i (entry)}
 		<div class="flex items-start gap-2">
 			<input
 				class="w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]"

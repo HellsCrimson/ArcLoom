@@ -8,7 +8,9 @@ export type WidgetKind =
 	| 'list'
 	| 'map'
 	| 'object'
-	| 'block';
+	| 'block'
+	/** A provider-declared dynamic value: no child schema, edited free-form. */
+	| 'dynamic';
 
 export interface Field {
 	name: string;

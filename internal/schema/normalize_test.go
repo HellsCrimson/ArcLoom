@@ -67,12 +67,22 @@ func TestFieldFromType_TextareaHeuristic(t *testing.T) {
 }
 
 func TestFieldFromType_Unknown(t *testing.T) {
-	// Dynamic/unknown types must fall back to text, never panic.
-	if got := fieldFromType("x", cty.DynamicPseudoType).Widget; got != WidgetText {
-		t.Errorf("dynamic: got %q, want text", got)
+	// A type the provider does not declare gets the free-form editor (the user
+	// builds the object/list/scalar), never a text input it would render as
+	// "[object Object]" — and never a panic.
+	f := fieldFromType("config", cty.DynamicPseudoType)
+	if f.Widget != WidgetDynamic {
+		t.Errorf("dynamic: got %q, want %q", f.Widget, WidgetDynamic)
 	}
-	if got := fieldFromType("x", cty.NilType).Widget; got != WidgetText {
-		t.Errorf("nil type: got %q, want text", got)
+	if f.Type != "dynamic" {
+		t.Errorf("dynamic type name: got %q", f.Type)
+	}
+	if got := fieldFromType("x", cty.NilType).Widget; got != WidgetDynamic {
+		t.Errorf("nil type: got %q, want %q", got, WidgetDynamic)
+	}
+	// The textarea heuristic must not hijack it: "config" matches that regex.
+	if f.Widget == WidgetTextArea {
+		t.Error("a dynamic attribute named config must not become a textarea")
 	}
 }
 
@@ -150,9 +160,9 @@ func TestNormalize_Ordering(t *testing.T) {
 	s := &tfjson.Schema{
 		Block: &tfjson.SchemaBlock{
 			Attributes: map[string]*tfjson.SchemaAttribute{
-				"zzz_required":  {AttributeType: cty.String, Required: true},
-				"aaa_optional":  {AttributeType: cty.String, Optional: true},
-				"mmm_computed":  {AttributeType: cty.String, Computed: true},
+				"zzz_required": {AttributeType: cty.String, Required: true},
+				"aaa_optional": {AttributeType: cty.String, Optional: true},
+				"mmm_computed": {AttributeType: cty.String, Computed: true},
 			},
 		},
 	}

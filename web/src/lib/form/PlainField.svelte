@@ -7,6 +7,7 @@
 	import ListEditor from './ListEditor.svelte';
 	import MapEditor from './MapEditor.svelte';
 	import NestedBlock from './NestedBlock.svelte';
+	import DynamicEditor from './DynamicEditor.svelte';
 	import { ensureLiteralShape } from './defaults';
 
 	let {
@@ -65,6 +66,8 @@
 	<MapEditor {field} bind:entries={value.entries!} {references} {secrets} {onCreateSecret} />
 {:else if field.widget === 'object'}
 	<NestedBlock {field} bind:entries={value.entries!} {references} {secrets} {onCreateSecret} />
+{:else if field.widget === 'dynamic'}
+	<DynamicEditor bind:value {references} {secrets} {onCreateSecret} />
 {:else}
 	<input class={inputCls} type="text" bind:value={value.literal as string} />
 {/if}
