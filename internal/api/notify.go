@@ -267,8 +267,11 @@ func (s *Server) notifyDrift(p *model.Project, cur driftStatus) {
 	case cur.Drifted:
 		ev.Type, ev.Level = notify.TypeDriftDetected, notify.LevelWarn
 		ev.Summary = "drift detected"
-		ev.Detail = fmt.Sprintf("%d to add, %d to change, %d to destroy, %d to replace",
-			cur.Add, cur.Change, cur.Destroy, cur.Replace)
+		ev.Detail = fmt.Sprintf("a plan would make %d change(s): %d to add, %d to change, %d to destroy, %d to replace",
+			cur.Add+cur.Change+cur.Destroy+cur.Replace, cur.Add, cur.Change, cur.Destroy, cur.Replace)
+		if cur.OutOfBand > 0 {
+			ev.Detail += fmt.Sprintf("\n%d of them changed outside ArcLoom", cur.OutOfBand)
+		}
 		// Name a few of them: a bare count says nothing about what moved.
 		if len(cur.Addresses) > 0 {
 			shown := cur.Addresses

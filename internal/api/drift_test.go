@@ -28,7 +28,7 @@ import (
 )
 
 // fakeRunner implements runner.Runner for drift / approval / policy-gate tests;
-// only RefreshPlan, Plan, Apply(Plan) and Policy are meaningful.
+// only DriftPlan, Plan, Apply(Plan) and Policy are meaningful.
 type fakeRunner struct {
 	res runner.PlanResult
 	err error
@@ -78,7 +78,7 @@ func (f *fakeRunner) Plan(_ context.Context, dir string, _ map[string][]byte, _ 
 	}
 	return runner.PlanResult{}, nil
 }
-func (f *fakeRunner) RefreshPlan(context.Context, string, map[string][]byte, map[string]string, io.Writer) (runner.PlanResult, error) {
+func (f *fakeRunner) DriftPlan(context.Context, string, map[string][]byte, map[string]string, io.Writer) (runner.PlanResult, error) {
 	return f.res, f.err
 }
 func (f *fakeRunner) Apply(context.Context, string, map[string][]byte, map[string]string, io.Writer) error {
@@ -295,5 +295,39 @@ func TestAcceptDriftAbsorbsAndClearsStatus(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("accept-drift not recorded: %+v", list)
+	}
+}
+
+// The check reports what a plan would do, and separates infrastructure that
+// changed outside ArcLoom from configuration edits nobody applied yet.
+func TestDriftSeparatesOutOfBandFromPendingEdits(t *testing.T) {
+	fake := &fakeRunner{res: runner.PlanResult{
+		HasChanges: true, Change: 2,
+		Changes: []runner.PlanChange{
+			{Address: "null_resource.touched", Action: "update"},
+			{Address: "null_resource.edited", Action: "update"},
+		},
+		// Only the first one moved in the real world; the second is an unapplied
+		// config edit. A third resource drifted in values the config does not
+		// manage (a recomputed timestamp) — it must not count at all.
+		Drift: []runner.PlanChange{
+			{Address: "null_resource.touched", Action: "update"},
+			{Address: "null_resource.noisy", Action: "update"},
+		},
+	}}
+	srv, _ := driftTestServer(t, fake)
+	srv.runDriftCheck(context.Background(), "p1")
+
+	st := srv.driftStatuses()["p1"]
+	if !st.Drifted || st.Change != 2 {
+		t.Fatalf("status = %+v", st)
+	}
+	if st.OutOfBand != 1 {
+		t.Fatalf("outOfBand = %d, want 1 (only the resource in both sets)", st.OutOfBand)
+	}
+	for _, a := range st.Addresses {
+		if a == "null_resource.noisy" {
+			t.Fatal("a resource that only drifted in unmanaged values must not be reported")
+		}
 	}
 }

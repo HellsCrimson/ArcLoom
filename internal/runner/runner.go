@@ -33,6 +33,13 @@ type PlanResult struct {
 	// Nil when the structured plan could not be read (the raw log still
 	// streamed, so the plan itself is not lost).
 	Changes []PlanChange `json:"changes"`
+	// Drift lists what the refresh found had changed outside this workspace
+	// (the plan's resource_drift: recorded state vs reality). Informational —
+	// only Changes says what an apply would do. A resource in both changed
+	// out-of-band in a way the config cares about; one only in Drift moved in
+	// values the config does not manage (a provider recomputing a timestamp,
+	// status or hash on every read).
+	Drift   []PlanChange `json:"drift,omitempty"`
 	Add     int          `json:"add"`
 	Change  int          `json:"change"`
 	Destroy int          `json:"destroy"`
@@ -137,10 +144,11 @@ type Runner interface {
 	// injected as TF_VAR_<name> (used for secret values) and never written to
 	// disk. It returns whether changes are pending.
 	Plan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error)
-	// RefreshPlan is Plan with -refresh-only: it reports drift between the
-	// persisted state and the real infrastructure, ignoring config changes.
-	// Changes come from the plan's resource_drift set.
-	RefreshPlan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error)
+	// DriftPlan is the scheduled drift check: a normal plan saved to a throwaway
+	// artifact (never the workspace's own tfplan, which the approval/policy gates
+	// own). Its Changes are what an apply would do — the actionable signal —
+	// while Drift carries the refresh's resource_drift for context.
+	DriftPlan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error)
 	// Apply syncs the generated files into the persistent workspace at dir,
 	// initializes it, and applies the configuration. State is persisted in dir.
 	Apply(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error

@@ -53,13 +53,14 @@
 		if (!s) return 'not checked yet';
 		const at = new Date(s.checkedAt).toLocaleString();
 		if (s.error) return `check failed at ${at}`;
-		if (!s.drifted) return `no drift at ${at}`;
+		if (!s.drifted) return `matches the configuration at ${at}`;
 		const parts: string[] = [];
 		if (s.add) parts.push(`+${s.add}`);
 		if (s.change) parts.push(`~${s.change}`);
 		if (s.replace) parts.push(`±${s.replace}`);
 		if (s.destroy) parts.push(`−${s.destroy}`);
-		return `drift detected at ${at}${parts.length ? ` (${parts.join(' ')})` : ''}`;
+		const outOfBand = s.outOfBand ? `, ${s.outOfBand} changed outside ArcLoom` : '';
+		return `drift detected at ${at}${parts.length ? ` (${parts.join(' ')}${outOfBand})` : ''}`;
 	}
 
 	// Accepting drift rewrites state (never infrastructure), so the confirm spells
@@ -69,8 +70,8 @@
 			confirm(
 				'Update this project\'s state to match what the providers report?\n\n' +
 					'This runs apply -refresh-only: no infrastructure is created, changed or destroyed — ' +
-					'only the recorded state catches up. Use it when the reported drift is not something ' +
-					'you intend to revert (for example right after importing a state from another install).'
+					'only the recorded state catches up. Useful after importing a state from another install, ' +
+					'or when the state holds values the providers no longer report.'
 			)
 		)
 			onAcceptDrift?.();
@@ -154,34 +155,37 @@
 				{/if}
 			{/if}
 			<p class="mt-1 text-[11px] text-[var(--al-muted)]">
-				Periodically runs a refresh-only plan on the server to spot infrastructure that changed outside ArcLoom
-				— that compares the recorded <em>state</em> against reality, so it can flag resources a normal plan
-				shows as unchanged (values the config does not manage). Detected drift is badged in the project picker
-				and recorded in run history.
+				Periodically runs a plan on the server and reports what it would change — the same comparison as the
+				Plan button (configuration vs reality), so values a provider recomputes on every read (timestamps,
+				status, hashes) never raise a false alarm. Resources the refresh also saw changed outside ArcLoom are
+				counted separately from configuration edits you have not applied. Detected drift is badged in the
+				project picker and recorded in run history.
 			</p>
-			{#if canDeploy && onAcceptDrift && drift.status?.drifted}
-				<button
-					class="mt-1.5 flex items-center gap-1 rounded-md border border-[var(--al-border)] px-2 py-0.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel)] disabled:opacity-40"
-					onclick={askAcceptDrift}
-					disabled={busy}
-					title="Run apply -refresh-only: the state catches up to reality, no infrastructure changes"
-				>
-					<Check size={12} /> Accept refreshed state
-				</button>
-			{/if}
 		</div>
 	{/if}
 	<div class="mb-2 flex items-center justify-between">
 		<p class="text-xs text-[var(--al-muted)]">
 			Resources tracked in this project's persisted state. Output of state operations streams to the run pane.
 		</p>
-		<button
-			class="ml-3 flex flex-none items-center gap-1 rounded-md border border-[var(--al-border)] px-2 py-1 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)] disabled:opacity-40"
-			onclick={onRefresh}
-			disabled={loading || busy}
-		>
-			{#if loading}<Loader2 size={12} class="animate-spin" />{:else}<RefreshCw size={12} />{/if} Refresh
-		</button>
+		<span class="ml-3 flex flex-none items-center gap-1.5">
+			{#if canDeploy && onAcceptDrift}
+				<button
+					class="flex items-center gap-1 rounded-md border border-[var(--al-border)] px-2 py-1 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)] disabled:opacity-40"
+					onclick={askAcceptDrift}
+					disabled={busy}
+					title="Run apply -refresh-only: the recorded state catches up to reality, no infrastructure changes"
+				>
+					<Check size={12} /> Accept refreshed state
+				</button>
+			{/if}
+			<button
+				class="flex items-center gap-1 rounded-md border border-[var(--al-border)] px-2 py-1 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)] disabled:opacity-40"
+				onclick={onRefresh}
+				disabled={loading || busy}
+			>
+				{#if loading}<Loader2 size={12} class="animate-spin" />{:else}<RefreshCw size={12} />{/if} Refresh
+			</button>
+		</span>
 	</div>
 
 	{#if entries.length === 0}

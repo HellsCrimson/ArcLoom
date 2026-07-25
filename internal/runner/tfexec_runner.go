@@ -184,27 +184,43 @@ func isLockConstraintMismatch(err error) bool {
 // persistKeep, so the next workspace sync removes it.
 const planFileName = "tfplan"
 
+// driftPlanFileName is where a scheduled drift check saves its plan. It must NOT
+// be planFileName: that artifact belongs to the user's own plan (the approval
+// gate snapshots it, and the policy gate applies it), and a background check must
+// never substitute its own.
+const driftPlanFileName = "tfplan.drift"
+
 // Plan runs plan in the project's persistent workspace, so the diff is against
 // the state left by the last apply (empty state on a fresh project). The plan
 // is saved to a file and re-read as JSON to extract per-resource changes.
 func (t *TfExec) Plan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error) {
-	return t.plan(ctx, dir, files, tfVars, out, false)
+	return t.plan(ctx, dir, files, tfVars, out, planFileName)
 }
 
-// RefreshPlan runs plan -refresh-only: it only compares the persisted state
-// against the real infrastructure (drift), ignoring pending config changes.
-// HasChanges then means "state no longer matches reality".
-func (t *TfExec) RefreshPlan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error) {
-	return t.plan(ctx, dir, files, tfVars, out, true)
+// DriftPlan is the scheduled drift check. It runs a NORMAL plan, so what it
+// reports is what a plan (and an apply) would act on: the difference between the
+// configuration and reality. Comparing the recorded state against reality instead
+// — plan -refresh-only, which is what this used to do — flags every attribute a
+// provider recomputes on each read (timestamps, statuses, hashes), so a project
+// whose infrastructure matches its config perfectly would report drift forever.
+// The plan's own resource_drift set is carried in PlanResult.Drift so the caller
+// can still tell an out-of-band change from an unapplied config edit.
+func (t *TfExec) DriftPlan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error) {
+	return t.plan(ctx, dir, files, tfVars, out, driftPlanFileName)
 }
 
-func (t *TfExec) plan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer, refreshOnly bool) (PlanResult, error) {
+// plan runs a plan into outFile and reads it back. A plan saved anywhere other
+// than planFileName is a throwaway (the drift check) and is removed afterwards.
+func (t *TfExec) plan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer, outFile string) (PlanResult, error) {
 	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
 	defer cleanup()
 	if err != nil {
 		return PlanResult{}, err
 	}
-	hasChanges, err := tf.Plan(ctx, tfexec.Out(planFileName), tfexec.RefreshOnly(refreshOnly))
+	if outFile != planFileName {
+		defer os.Remove(filepath.Join(dir, outFile))
+	}
+	hasChanges, err := tf.Plan(ctx, tfexec.Out(outFile))
 	if err != nil {
 		return PlanResult{}, fmt.Errorf("plan: %w", err)
 	}
@@ -216,34 +232,29 @@ func (t *TfExec) plan(ctx context.Context, dir string, files map[string][]byte, 
 	// a log-only plan rather than failing the operation.
 	tf.SetStdout(io.Discard)
 	tf.SetStderr(io.Discard)
-	plan, err := tf.ShowPlanFile(ctx, planFileName)
+	plan, err := tf.ShowPlanFile(ctx, outFile)
 	if err != nil || plan == nil {
 		return res, nil
 	}
-	// In a refresh-only plan the interesting set is ResourceDrift (state vs
-	// reality); ResourceChanges is all no-ops there.
-	changes := plan.ResourceChanges
-	if refreshOnly {
-		changes = plan.ResourceDrift
+	// resource_drift is what the refresh found changed outside this workspace
+	// (state vs reality). It is informational: only ResourceChanges says what an
+	// apply would do.
+	for _, rd := range plan.ResourceDrift {
+		if rd.Change == nil {
+			continue
+		}
+		res.Drift = append(res.Drift, PlanChange{
+			Address: rd.Address, ModuleAddress: rd.ModuleAddress,
+			Mode: string(rd.Mode), Type: rd.Type, Name: rd.Name,
+			Action: actionName(rd.Change.Actions),
+		})
 	}
-	for _, rc := range changes {
+	for _, rc := range plan.ResourceChanges {
 		if rc.Change == nil {
 			continue
 		}
-		a := rc.Change.Actions
-		var action string
-		switch {
-		case a.Replace():
-			action = "replace"
-		case a.Create():
-			action = "create"
-		case a.Update():
-			action = "update"
-		case a.Delete():
-			action = "delete"
-		case a.Read():
-			action = "read"
-		default:
+		action := actionName(rc.Change.Actions)
+		if action == "" {
 			continue // no-op
 		}
 		res.Changes = append(res.Changes, PlanChange{
@@ -266,6 +277,23 @@ func (t *TfExec) plan(ctx context.Context, dir string, files map[string][]byte, 
 		}
 	}
 	return res, nil
+}
+
+// actionName normalizes a plan action set; "" means no-op.
+func actionName(a tfjson.Actions) string {
+	switch {
+	case a.Replace():
+		return "replace"
+	case a.Create():
+		return "create"
+	case a.Update():
+		return "update"
+	case a.Delete():
+		return "delete"
+	case a.Read():
+		return "read"
+	}
+	return ""
 }
 
 // Apply applies the configuration; state is persisted in dir for later plans,

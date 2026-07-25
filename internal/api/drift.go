@@ -23,6 +23,12 @@ import (
 // driftStatus is the outcome of the latest scheduled drift check for a project.
 // It lives in memory only: after a restart the badge is empty until the next
 // check repopulates it.
+//
+// "Drifted" means a plan would act: the counts are the plan's resource_changes
+// (configuration vs reality), NOT every attribute that moved in the recorded
+// state. Comparing against state instead flags values a provider recomputes on
+// every read (updated_at, status, hashes), which never converges and never needs
+// an apply.
 type driftStatus struct {
 	CheckedAt time.Time `json:"checkedAt"`
 	Drifted   bool      `json:"drifted"`
@@ -33,14 +39,18 @@ type driftStatus struct {
 	// Addresses names the drifted resources (capped at driftAddressCap) so a bare
 	// count like "75 to change" can be inspected without opening the run record.
 	Addresses []string `json:"addresses,omitempty"`
-	Error     string   `json:"error,omitempty"`
+	// OutOfBand is how many of those resources the refresh also found changed
+	// outside ArcLoom (they appear in the plan's resource_drift). The rest are
+	// configuration edits that have not been applied yet.
+	OutOfBand int    `json:"outOfBand,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // driftAddressCap bounds how many addresses a status carries: this lives in
 // memory for every project and is sent with the project list.
 const driftAddressCap = 25
 
-// driftAddresses lists the drifted resources from a refresh-only plan result.
+// driftAddresses lists the resources a plan would act on, capped.
 func driftAddresses(res runner.PlanResult) []string {
 	out := make([]string, 0, min(len(res.Changes), driftAddressCap))
 	for _, c := range res.Changes {
@@ -50,6 +60,26 @@ func driftAddresses(res runner.PlanResult) []string {
 		out = append(out, c.Address)
 	}
 	return out
+}
+
+// outOfBandCount is how many pending changes the refresh also saw as changed
+// outside ArcLoom — i.e. somebody touched the infrastructure — as opposed to a
+// configuration edit nobody has applied yet.
+func outOfBandCount(res runner.PlanResult) int {
+	if len(res.Drift) == 0 {
+		return 0
+	}
+	drifted := make(map[string]bool, len(res.Drift))
+	for _, d := range res.Drift {
+		drifted[d.Address] = true
+	}
+	n := 0
+	for _, c := range res.Changes {
+		if drifted[c.Address] {
+			n++
+		}
+	}
+	return n
 }
 
 // driftInterval clamps a stored interval to something sane; 0 (unset) falls
@@ -106,8 +136,7 @@ func (s *Server) runDueDriftChecks(ctx context.Context) {
 	}
 }
 
-// runDriftCheck runs one refresh-only plan for a project and stores the
-// outcome. A run-history entry is recorded only when the outcome changed since
+// runDriftCheck runs one plan for a project and stores the outcome. A run-history entry is recorded only when the outcome changed since
 // the previous check, so a steadily drifted (or steadily clean) project does
 // not flood the capped history.
 func (s *Server) runDriftCheck(ctx context.Context, projectID string) {
@@ -143,7 +172,7 @@ func (s *Server) runDriftCheck(ctx context.Context, projectID string) {
 				fmt.Fprintf(logW, "warning: secret %s is not set\n", ref)
 			})
 			if err == nil {
-				res, err = run.RefreshPlan(ctx, s.runDir(p.ID, ""), files, tfVars, logW)
+				res, err = run.DriftPlan(ctx, s.runDir(p.ID, ""), files, tfVars, logW)
 			}
 		}
 	}
@@ -157,6 +186,7 @@ func (s *Server) runDriftCheck(ctx context.Context, projectID string) {
 		cur.Drifted = res.HasChanges
 		cur.Add, cur.Change, cur.Destroy, cur.Replace = res.Add, res.Change, res.Destroy, res.Replace
 		cur.Addresses = driftAddresses(res)
+		cur.OutOfBand = outOfBandCount(res)
 	}
 
 	s.driftMu.Lock()
@@ -195,7 +225,7 @@ func driftOutcomeChanged(prev driftStatus, hadPrev bool, cur driftStatus) bool {
 	return prev.Drifted != cur.Drifted ||
 		prev.Add != cur.Add || prev.Change != cur.Change ||
 		prev.Destroy != cur.Destroy || prev.Replace != cur.Replace ||
-		prev.Error != cur.Error ||
+		prev.Error != cur.Error || prev.OutOfBand != cur.OutOfBand ||
 		strings.Join(prev.Addresses, ",") != strings.Join(cur.Addresses, ",")
 }
 

@@ -274,6 +274,8 @@ export interface DriftStatus {
 	replace: number;
 	/** The drifted resource addresses (capped server-side), so a count is inspectable. */
 	addresses?: string[];
+	/** How many of them the refresh also saw changed outside ArcLoom (the rest are unapplied config edits). */
+	outOfBand?: number;
 	error?: string;
 }
 
