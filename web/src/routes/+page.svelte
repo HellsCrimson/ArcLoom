@@ -116,6 +116,9 @@
 	let importId = $state('');
 	// Backend (remote state) modal
 	let showBackend = $state(false);
+	let bkRequiredVersion = $state('');
+	// Signature of the backend as opened, so saving only re-inits when it changed.
+	let bkOpenedSig = $state('');
 	let bkType = $state('');
 	let bkRows = $state<{ key: string; expr: string }[]>([]);
 	let bkMode = $state<'migrate' | 'reconfigure'>('migrate');
@@ -389,6 +392,7 @@
 				items.push({ id: 'cmd:cost', label: 'Cost estimation', group: 'commands', run: () => (showCost = true) });
 				items.push({ id: 'cmd:policy', label: 'Policy as code', group: 'commands', run: () => (showPolicy = true) });
 				items.push({ id: 'cmd:notify', label: 'Notifications', group: 'commands', run: () => (showNotify = true) });
+				items.push({ id: 'cmd:terraform', label: 'Terraform block (required_version, backend)', group: 'commands', run: openBackend });
 				items.push({ id: 'cmd:environments', label: 'Environments', group: 'commands', run: () => (showEnvironments = true) });
 				items.push({ id: 'cmd:import-hcl', label: 'Import HCL', group: 'commands', run: () => { importMsg = ''; showImportHcl = true; } });
 				items.push({ id: 'cmd:import-state', label: 'Import state', group: 'commands', run: () => { importMsg = ''; showImportState = true; } });
@@ -1437,30 +1441,49 @@
 		bkRows = project?.backend?.config
 			? Object.entries(project.backend.config).map(([key, av]) => ({ key, expr: attrToText(av) }))
 			: [];
+		bkRequiredVersion = project?.requiredVersion ?? '';
 		bkMode = 'migrate';
+		bkOpenedSig = backendSig();
 		showState = false;
 		showBackend = true;
 	}
 
-	// Saving the backend updates the model, then (with deploy permission)
-	// immediately re-initializes the workspace so the change takes effect —
-	// migrating the existing state or reconfiguring, per the chosen mode.
+	// backendSig fingerprints the edited backend so an unchanged one is not
+	// re-initialized just because the terraform block's version changed.
+	function backendSig(): string {
+		const rows = bkRows
+			.map((r) => `${r.key.trim()}=${r.expr.trim()}`)
+			.filter((r) => r !== '=')
+			.sort();
+		return `${bkType.trim()}|${rows.join('|')}`;
+	}
+
+	// Saves the terraform block: required_version (plain config) and, when it
+	// actually changed, the state backend — which (with deploy permission) is then
+	// re-initialized so the change takes effect, migrating the existing state or
+	// reconfiguring per the chosen mode.
 	async function saveBackend() {
 		if (!project) return;
 		busy = 'backend';
 		error = '';
 		try {
-			const config: Record<string, AttrValue> = {};
-			for (const row of bkRows) {
-				const k = row.key.trim();
-				const e = row.expr.trim();
-				if (k && e) config[k] = { mode: 'expression', expr: e };
+			if (bkRequiredVersion.trim() !== (project.requiredVersion ?? '')) {
+				project = await api.setTerraform(project.id, bkRequiredVersion.trim());
 			}
-			project = await api.setBackend(project.id, { type: bkType.trim(), config });
+			const backendChanged = backendSig() !== bkOpenedSig;
+			if (backendChanged) {
+				const config: Record<string, AttrValue> = {};
+				for (const row of bkRows) {
+					const k = row.key.trim();
+					const e = row.expr.trim();
+					if (k && e) config[k] = { mode: 'expression', expr: e };
+				}
+				project = await api.setBackend(project.id, { type: bkType.trim(), config });
+			}
 			await refreshHcl();
 			showBackend = false;
 			busy = '';
-			if (auth.can('deploy')) {
+			if (backendChanged && auth.can('deploy')) {
 				runStateOp('init-backend', { migrate: bkMode === 'migrate' ? 'true' : 'false' });
 			}
 		} catch (err) {
@@ -2190,9 +2213,26 @@
 		onAcceptDrift={auth.can('deploy') ? () => runStateOp('accept-drift', {}) : undefined}
 	/>
 
-	<!-- Backend (remote state) configuration -->
-	<Modal title="State backend" bind:open={showBackend}>
+	<!-- terraform block: required_version + state backend -->
+	<Modal title="Terraform block" bind:open={showBackend}>
 		<div class="space-y-3">
+			<div>
+				<label for="bk-required-version" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Required version</label>
+				<input
+					id="bk-required-version"
+					class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]"
+					placeholder={'>= 1.6.0  ·  ~> 1.12  ·  empty = unconstrained'}
+					bind:value={bkRequiredVersion}
+				/>
+				<p class="mt-1 text-xs text-[var(--al-muted)]">
+					Emitted as <span class="mono">required_version</span> in the terraform block — the engine
+					refuses to run outside the constraint, and tflint's
+					<span class="mono">terraform_required_version</span> rule expects it.
+				</p>
+			</div>
+			<div class="border-t border-[var(--al-border)] pt-3">
+				<span class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">State backend</span>
+			</div>
 			<p class="text-xs text-[var(--al-muted)]">
 				Where this project's state lives. Empty type = local state in the project workspace.
 				Values are raw HCL literals (no interpolation allowed by Terraform); put credentials in the
@@ -2242,7 +2282,7 @@
 		{#snippet footer()}
 			<button class={btnGhost} onclick={() => (showBackend = false)}>Cancel</button>
 			<button class={btnPrimary} onclick={saveBackend} disabled={busy === 'backend'}>
-				{#if busy === 'backend'}<Loader2 size={14} class="animate-spin" />{/if} Save backend
+				{#if busy === 'backend'}<Loader2 size={14} class="animate-spin" />{/if} Save
 			</button>
 		{/snippet}
 	</Modal>

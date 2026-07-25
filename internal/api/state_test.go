@@ -6,10 +6,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/config"
+	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/session"
 	"github.com/HellsCrimson/ArcLoom/internal/store"
@@ -73,5 +75,45 @@ func TestStateList(t *testing.T) {
 	}
 	if e, ok := byAddr[`data.null_data_source.cfg`]; !ok || len(e.Instances) != 1 || e.Instances[0] != `"x"` {
 		t.Errorf("data address wrong: %+v", e)
+	}
+}
+
+// The terraform endpoint stores the constraint, validates it, and the generated
+// HCL carries it — the whole point being tflint's terraform_required_version.
+func TestSetTerraformRequiredVersion(t *testing.T) {
+	srv, _ := driftTestServer(t, &fakeRunner{})
+	h := srv.Handler()
+
+	if rec := post(t, h, http.MethodPut, "/api/projects/p1/terraform", `{"requiredVersion":">= 1.6.0"}`); rec.Code != http.StatusOK {
+		t.Fatalf("PUT = %d (%s)", rec.Code, rec.Body.String())
+	}
+	p, _ := srv.store.Get("p1")
+	if p.RequiredVersion != ">= 1.6.0" {
+		t.Fatalf("stored = %q", p.RequiredVersion)
+	}
+	hcl, err := hclgen.Generate(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(hcl), `required_version = ">= 1.6.0"`) {
+		t.Fatalf("generated HCL lacks the constraint:\n%s", hcl)
+	}
+
+	// A malformed constraint is rejected here, not at plan time.
+	if rec := post(t, h, http.MethodPut, "/api/projects/p1/terraform", `{"requiredVersion":"totally bogus"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bogus constraint = %d, want 400", rec.Code)
+	}
+	if p, _ := srv.store.Get("p1"); p.RequiredVersion != ">= 1.6.0" {
+		t.Fatalf("rejected constraint must not overwrite: %q", p.RequiredVersion)
+	}
+	// Clearing is always allowed.
+	if rec := post(t, h, http.MethodPut, "/api/projects/p1/terraform", `{"requiredVersion":""}`); rec.Code != http.StatusOK {
+		t.Fatalf("clear = %d", rec.Code)
+	}
+	if p, _ := srv.store.Get("p1"); p.RequiredVersion != "" {
+		t.Fatalf("not cleared: %q", p.RequiredVersion)
+	}
+	if rec := post(t, h, http.MethodPut, "/api/projects/nope/terraform", `{"requiredVersion":">= 1.0"}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown project = %d, want 404", rec.Code)
 	}
 }

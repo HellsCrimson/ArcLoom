@@ -235,3 +235,42 @@ func TestGenerate_Deterministic(t *testing.T) {
 		}
 	}
 }
+
+// required_version leads the terraform block when set (tflint's
+// terraform_required_version rule wants it), and is absent when empty.
+func TestGenerate_RequiredVersion(t *testing.T) {
+	p := &model.Project{
+		RequiredVersion: ">= 1.6.0",
+		Backend:         &model.Backend{Type: "local"},
+		Providers:       []model.ProviderInstance{{Key: "random", Source: "hashicorp/random"}},
+	}
+	out, err := Generate(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `required_version = ">= 1.6.0"`) {
+		t.Fatalf("required_version not emitted:\n%s", s)
+	}
+	if i := strings.Index(s, "required_version"); i > strings.Index(s, `backend "local"`) || i > strings.Index(s, "required_providers") {
+		t.Errorf("required_version should lead the terraform block:\n%s", s)
+	}
+	// A schema fetch must not inherit the project's constraint: it runs on
+	// whatever CLI the server has.
+	pc, err := ProvidersConfig(p.Providers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(pc), "required_version") {
+		t.Errorf("ProvidersConfig leaked required_version:\n%s", pc)
+	}
+
+	p.RequiredVersion = ""
+	out, err = Generate(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "required_version") {
+		t.Errorf("empty constraint should omit the attribute:\n%s", out)
+	}
+}

@@ -21,7 +21,7 @@ func Generate(p *model.Project) ([]byte, error) {
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
 
-	if err := writeTerraformBlock(body, p.Providers, p.Backend); err != nil {
+	if err := writeTerraformBlock(body, p.Providers, p.Backend, p.RequiredVersion); err != nil {
 		return nil, err
 	}
 	for _, prov := range p.Providers {
@@ -100,7 +100,10 @@ func ProvidersConfig(providers []model.ProviderInstance) ([]byte, error) {
 	body := f.Body()
 	// No backend here: schema fetching must never touch (or initialize) the
 	// project's remote state.
-	if err := writeTerraformBlock(body, providers, nil); err != nil {
+	// No required_version either: the schema fetch runs on whatever CLI the server
+	// has, and a project constraint it doesn't satisfy would fail the fetch for no
+	// benefit.
+	if err := writeTerraformBlock(body, providers, nil, ""); err != nil {
 		return nil, err
 	}
 	for _, prov := range providers {
@@ -112,8 +115,13 @@ func ProvidersConfig(providers []model.ProviderInstance) ([]byte, error) {
 	return hclwrite.Format(f.Bytes()), nil
 }
 
-func writeTerraformBlock(body *hclwrite.Body, providers []model.ProviderInstance, backend *model.Backend) error {
+func writeTerraformBlock(body *hclwrite.Body, providers []model.ProviderInstance, backend *model.Backend, requiredVersion string) error {
 	tfBlock := body.AppendNewBlock("terraform", nil)
+	// required_version leads the block, as Terraform's own docs and every style
+	// guide (and tflint's terraform_required_version rule) put it.
+	if requiredVersion != "" {
+		tfBlock.Body().SetAttributeValue("required_version", cty.StringVal(requiredVersion))
+	}
 	if backend != nil && backend.Type != "" {
 		bb := tfBlock.Body().AppendNewBlock("backend", []string{backend.Type})
 		if err := writeAttrs(bb.Body(), backend.Config); err != nil {

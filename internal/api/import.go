@@ -99,6 +99,10 @@ func (s *Server) handleImportHCL(w http.ResponseWriter, r *http.Request) {
 			if parsed.Backend != nil && p.Backend == nil {
 				p.Backend = parsed.Backend
 			}
+			// Same rule for the terraform block's required_version.
+			if parsed.RequiredVersion != "" && p.RequiredVersion == "" {
+				p.RequiredVersion = parsed.RequiredVersion
+			}
 		}
 
 		resp.AddedResources = mergeResourcesInto(scope, parsed.Resources)

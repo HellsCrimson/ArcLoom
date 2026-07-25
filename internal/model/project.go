@@ -19,19 +19,22 @@ type Backend struct {
 
 // Project is the top-level container the UI edits.
 type Project struct {
-	ID          string             `json:"id" yaml:"id"`
-	Name        string             `json:"name" yaml:"name"`
-	Engine      Engine             `json:"engine" yaml:"engine"`
+	ID     string `json:"id" yaml:"id"`
+	Name   string `json:"name" yaml:"name"`
+	Engine Engine `json:"engine" yaml:"engine"`
+	// RequiredVersion is the terraform block's required_version constraint
+	// (e.g. ">= 1.6.0"). Empty omits the attribute.
+	RequiredVersion string `json:"requiredVersion,omitempty" yaml:"required_version,omitempty"`
 	// Backend is nil for the default local state in the run/ workspace.
-	Backend     *Backend           `json:"backend,omitempty" yaml:"backend,omitempty"`
-	Providers   []ProviderInstance `json:"providers" yaml:"providers"`
-	Variables   []Variable         `json:"variables,omitempty" yaml:"variables,omitempty"`
-	Locals      []Local            `json:"locals,omitempty" yaml:"locals,omitempty"`
-	DataSources []Resource         `json:"dataSources,omitempty" yaml:"dataSources,omitempty"`
-	Resources    []Resource     `json:"resources" yaml:"resources"`
-	Modules      []Module       `json:"modules,omitempty" yaml:"modules,omitempty"`
-	LocalModules []LocalModule  `json:"localModules,omitempty" yaml:"localModules,omitempty"`
-	Outputs      []Output       `json:"outputs,omitempty" yaml:"outputs,omitempty"`
+	Backend      *Backend           `json:"backend,omitempty" yaml:"backend,omitempty"`
+	Providers    []ProviderInstance `json:"providers" yaml:"providers"`
+	Variables    []Variable         `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Locals       []Local            `json:"locals,omitempty" yaml:"locals,omitempty"`
+	DataSources  []Resource         `json:"dataSources,omitempty" yaml:"dataSources,omitempty"`
+	Resources    []Resource         `json:"resources" yaml:"resources"`
+	Modules      []Module           `json:"modules,omitempty" yaml:"modules,omitempty"`
+	LocalModules []LocalModule      `json:"localModules,omitempty" yaml:"localModules,omitempty"`
+	Outputs      []Output           `json:"outputs,omitempty" yaml:"outputs,omitempty"`
 }
 
 // LocalModule is a child module authored in-project as a subfolder
@@ -39,12 +42,12 @@ type Project struct {
 // generates a `module "<name>" { source = "./modules/<name>" ... }` call whose
 // arguments come from Inputs.
 type LocalModule struct {
-	Name        string               `json:"name" yaml:"name"`
-	Variables   []Variable           `json:"variables,omitempty" yaml:"variables,omitempty"`
-	Locals      []Local              `json:"locals,omitempty" yaml:"locals,omitempty"`
-	DataSources []Resource           `json:"dataSources,omitempty" yaml:"dataSources,omitempty"`
-	Resources   []Resource           `json:"resources" yaml:"resources"`
-	Outputs     []Output             `json:"outputs,omitempty" yaml:"outputs,omitempty"`
+	Name        string     `json:"name" yaml:"name"`
+	Variables   []Variable `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Locals      []Local    `json:"locals,omitempty" yaml:"locals,omitempty"`
+	DataSources []Resource `json:"dataSources,omitempty" yaml:"dataSources,omitempty"`
+	Resources   []Resource `json:"resources" yaml:"resources"`
+	Outputs     []Output   `json:"outputs,omitempty" yaml:"outputs,omitempty"`
 	// Inputs are the values the root passes to this module (keyed by the
 	// module's variable names).
 	Inputs map[string]AttrValue `json:"inputs,omitempty" yaml:"inputs,omitempty"`

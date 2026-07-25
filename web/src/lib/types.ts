@@ -159,6 +159,8 @@ export interface Project {
 	id: string;
 	name: string;
 	engine: string;
+	/** terraform { required_version = … } — empty omits the attribute. */
+	requiredVersion?: string;
 	backend?: Backend;
 	providers: ProviderInstance[];
 	variables?: Variable[];

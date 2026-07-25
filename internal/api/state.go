@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	goversion "github.com/hashicorp/go-version"
 
 	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
@@ -18,6 +19,53 @@ import (
 )
 
 var backendTypeRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// maxRequiredVersion bounds the constraint string (it is a short expression like
+// ">= 1.6.0, < 2.0.0").
+const maxRequiredVersion = 128
+
+// handleSetTerraform saves the terraform block's own settings — today the
+// required_version constraint, which tflint's terraform_required_version rule
+// wants and which nothing else in the model could express. Kept separate from
+// the backend endpoint: this changes generated HCL only, while a backend change
+// has to be followed by an init.
+func (s *Server) handleSetTerraform(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req struct {
+		RequiredVersion string `json:"requiredVersion"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	req.RequiredVersion = strings.TrimSpace(req.RequiredVersion)
+	if len(req.RequiredVersion) > maxRequiredVersion {
+		writeErr(w, http.StatusBadRequest, "required_version constraint is too long")
+		return
+	}
+	// Reject a malformed constraint here rather than at plan time, where it
+	// surfaces as an engine error on every operation.
+	if req.RequiredVersion != "" {
+		if _, err := goversion.NewConstraint(req.RequiredVersion); err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid version constraint: "+err.Error())
+			return
+		}
+	}
+	err := s.store.Update(id, func(p *model.Project) error {
+		p.RequiredVersion = req.RequiredVersion
+		return nil
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	p, _ := s.store.Get(id)
+	writeJSON(w, http.StatusOK, p)
+}
 
 // handleSetBackend replaces (or clears, with an empty type) the project's
 // state backend. Saving only updates the model + generated HCL; the state

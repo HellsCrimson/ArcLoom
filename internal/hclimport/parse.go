@@ -18,6 +18,8 @@ import (
 
 // Result is what a parse produced, ready to merge into a project.
 type Result struct {
+	// RequiredVersion is the terraform block's required_version constraint, if set.
+	RequiredVersion string
 	// Backend is the terraform { backend "<type>" {...} } block, if present.
 	Backend      *model.Backend
 	Providers    []model.ProviderInstance
@@ -309,6 +311,12 @@ func ensureProviderInstance(res *Result, index map[string]int, key, alias string
 // importRequiredProviders reads terraform { required_providers { ... } } and,
 // when present, the backend block (source text preserved via importAttrs).
 func importRequiredProviders(tfBlock *hclsyntax.Block, src []byte, res *Result, index map[string]int) {
+	// required_version is an attribute of the terraform block, not a nested one.
+	if a, ok := tfBlock.Body.Attributes["required_version"]; ok && res.RequiredVersion == "" {
+		if val, diags := a.Expr.Value(nil); !diags.HasErrors() && val.Type() == cty.String {
+			res.RequiredVersion = val.AsString()
+		}
+	}
 	for _, inner := range tfBlock.Body.Blocks {
 		if inner.Type == "backend" && len(inner.Labels) == 1 && res.Backend == nil {
 			res.Backend = &model.Backend{Type: inner.Labels[0], Config: importAttrs(inner.Body, src)}

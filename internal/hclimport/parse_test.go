@@ -229,8 +229,8 @@ output "vpc_id" {
 }
 `
 	res, err := Parse(map[string][]byte{
-		"main.tf":               []byte(root),
-		"modules/vpc/main.tf":   []byte(child),
+		"main.tf":             []byte(root),
+		"modules/vpc/main.tf": []byte(child),
 	}, ids())
 	if err != nil {
 		t.Fatal(err)
@@ -319,5 +319,33 @@ resource "example_thing" "x" {
 	}
 	if r.Blocks["rule"][0].Attrs["action"].Literal.AsString() != "allow" {
 		t.Errorf("first rule action wrong: %+v", r.Blocks["rule"][0].Attrs["action"])
+	}
+}
+
+// required_version round-trips: importing HCL that sets it keeps the constraint
+// so regenerating does not silently drop it.
+func TestParse_RequiredVersion(t *testing.T) {
+	src := `
+terraform {
+  required_version = ">= 1.6.0, < 2.0.0"
+  required_providers {
+    random = { source = "hashicorp/random" }
+  }
+}
+`
+	res, err := Parse(map[string][]byte{"main.tf": []byte(src)}, ids())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if res.RequiredVersion != ">= 1.6.0, < 2.0.0" {
+		t.Fatalf("required_version = %q", res.RequiredVersion)
+	}
+	// Absent stays empty rather than inventing a constraint.
+	res, err = Parse(map[string][]byte{"main.tf": []byte("terraform {\n  required_providers {\n    random = { source = \"hashicorp/random\" }\n  }\n}\n")}, ids())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequiredVersion != "" {
+		t.Fatalf("expected no constraint, got %q", res.RequiredVersion)
 	}
 }

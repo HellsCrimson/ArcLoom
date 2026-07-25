@@ -163,6 +163,15 @@ export const api = {
 			body: JSON.stringify({ environments })
 		}).then((r) => json<Environment[]>(r)),
 
+	// setTerraform saves the terraform block's own settings (required_version).
+	// Generated-HCL only — unlike the backend it needs no re-init.
+	setTerraform: (id: string, requiredVersion: string) =>
+		fetch(`/api/projects/${id}/terraform`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ requiredVersion })
+		}).then((r) => json<Project>(r)),
+
 	setBackend: (id: string, body: { type: string; config: Record<string, AttrValue> }) =>
 		fetch(`/api/projects/${id}/backend`, {
 			method: 'PUT',
