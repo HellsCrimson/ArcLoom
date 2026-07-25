@@ -30,7 +30,26 @@ type driftStatus struct {
 	Change    int       `json:"change"`
 	Destroy   int       `json:"destroy"`
 	Replace   int       `json:"replace"`
-	Error     string    `json:"error,omitempty"`
+	// Addresses names the drifted resources (capped at driftAddressCap) so a bare
+	// count like "75 to change" can be inspected without opening the run record.
+	Addresses []string `json:"addresses,omitempty"`
+	Error     string   `json:"error,omitempty"`
+}
+
+// driftAddressCap bounds how many addresses a status carries: this lives in
+// memory for every project and is sent with the project list.
+const driftAddressCap = 25
+
+// driftAddresses lists the drifted resources from a refresh-only plan result.
+func driftAddresses(res runner.PlanResult) []string {
+	out := make([]string, 0, min(len(res.Changes), driftAddressCap))
+	for _, c := range res.Changes {
+		if len(out) == driftAddressCap {
+			break
+		}
+		out = append(out, c.Address)
+	}
+	return out
 }
 
 // driftInterval clamps a stored interval to something sane; 0 (unset) falls
@@ -137,6 +156,7 @@ func (s *Server) runDriftCheck(ctx context.Context, projectID string) {
 	} else {
 		cur.Drifted = res.HasChanges
 		cur.Add, cur.Change, cur.Destroy, cur.Replace = res.Add, res.Change, res.Destroy, res.Replace
+		cur.Addresses = driftAddresses(res)
 	}
 
 	s.driftMu.Lock()
@@ -175,7 +195,8 @@ func driftOutcomeChanged(prev driftStatus, hadPrev bool, cur driftStatus) bool {
 	return prev.Drifted != cur.Drifted ||
 		prev.Add != cur.Add || prev.Change != cur.Change ||
 		prev.Destroy != cur.Destroy || prev.Replace != cur.Replace ||
-		prev.Error != cur.Error
+		prev.Error != cur.Error ||
+		strings.Join(prev.Addresses, ",") != strings.Join(cur.Addresses, ",")
 }
 
 // driftStatuses returns a snapshot of every project's latest drift status.

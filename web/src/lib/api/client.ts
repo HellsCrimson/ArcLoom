@@ -852,7 +852,14 @@ export function streamPlan(
 }
 
 // StreamableOp covers every state-mutating streamed operation.
-export type StreamableOp = 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv' | 'init-backend';
+export type StreamableOp =
+	| 'apply'
+	| 'destroy'
+	| 'import'
+	| 'state-rm'
+	| 'state-mv'
+	| 'init-backend'
+	| 'accept-drift';
 
 const OP_PATH: Record<StreamableOp, string> = {
 	apply: 'apply',
@@ -860,7 +867,8 @@ const OP_PATH: Record<StreamableOp, string> = {
 	'import': 'state/import',
 	'state-rm': 'state/rm',
 	'state-mv': 'state/mv',
-	'init-backend': 'state/init-backend'
+	'init-backend': 'state/init-backend',
+	'accept-drift': 'state/accept-drift'
 };
 
 // streamOp runs a mutating operation (apply/destroy/state surgery) and streams

@@ -270,6 +270,8 @@ export interface DriftStatus {
 	change: number;
 	destroy: number;
 	replace: number;
+	/** The drifted resource addresses (capped server-side), so a count is inspectable. */
+	addresses?: string[];
 	error?: string;
 }
 

@@ -2,7 +2,7 @@
 	import Modal from './Modal.svelte';
 	import type { DriftInfo, StateEntry } from '$lib/api/client';
 	import type { DriftConfig } from '$lib/types';
-	import { Loader2, RefreshCw, PenLine, Trash2, Settings, AlertTriangle, CheckCircle2 } from 'lucide-svelte';
+	import { Loader2, RefreshCw, PenLine, Trash2, Settings, AlertTriangle, CheckCircle2, Check } from 'lucide-svelte';
 
 	let {
 		open = $bindable(false),
@@ -16,7 +16,8 @@
 		onConfigureBackend,
 		onRefresh,
 		onRm,
-		onMv
+		onMv,
+		onAcceptDrift
 	}: {
 		open: boolean;
 		entries: StateEntry[];
@@ -30,6 +31,8 @@
 		onRefresh: () => void;
 		onRm: (address: string) => void;
 		onMv: (from: string, to: string) => void;
+		/** Absorb the refreshed values into state (apply -refresh-only). */
+		onAcceptDrift?: () => void;
 	} = $props();
 
 	// Editable copy of the drift schedule, re-seeded whenever fresh info loads.
@@ -57,6 +60,20 @@
 		if (s.replace) parts.push(`±${s.replace}`);
 		if (s.destroy) parts.push(`−${s.destroy}`);
 		return `drift detected at ${at}${parts.length ? ` (${parts.join(' ')})` : ''}`;
+	}
+
+	// Accepting drift rewrites state (never infrastructure), so the confirm spells
+	// out exactly that.
+	function askAcceptDrift() {
+		if (
+			confirm(
+				'Update this project\'s state to match what the providers report?\n\n' +
+					'This runs apply -refresh-only: no infrastructure is created, changed or destroyed — ' +
+					'only the recorded state catches up. Use it when the reported drift is not something ' +
+					'you intend to revert (for example right after importing a state from another install).'
+			)
+		)
+			onAcceptDrift?.();
 	}
 
 	function askMv(from: string) {
@@ -124,9 +141,34 @@
 					<span class="ml-auto text-xs text-[var(--al-muted)]">every {drift.config.intervalMinutes || 60} min</span>
 				{/if}
 			</div>
+			{#if drift.status?.addresses?.length}
+				<ul class="mt-1.5 max-h-32 space-y-0.5 overflow-y-auto">
+					{#each drift.status.addresses as addr (addr)}
+						<li class="mono truncate text-[11px] text-[var(--al-muted)]" title={addr}>~ {addr}</li>
+					{/each}
+				</ul>
+				{#if (drift.status.add + drift.status.change + drift.status.destroy + drift.status.replace) > drift.status.addresses.length}
+					<p class="text-[11px] text-[var(--al-muted)]">
+						… and {drift.status.add + drift.status.change + drift.status.destroy + drift.status.replace - drift.status.addresses.length} more (see the run history entry)
+					</p>
+				{/if}
+			{/if}
 			<p class="mt-1 text-[11px] text-[var(--al-muted)]">
-				Periodically runs a refresh-only plan on the server to spot infrastructure that changed outside ArcLoom. Detected drift is badged in the project picker and recorded in run history.
+				Periodically runs a refresh-only plan on the server to spot infrastructure that changed outside ArcLoom
+				— that compares the recorded <em>state</em> against reality, so it can flag resources a normal plan
+				shows as unchanged (values the config does not manage). Detected drift is badged in the project picker
+				and recorded in run history.
 			</p>
+			{#if canDeploy && onAcceptDrift && drift.status?.drifted}
+				<button
+					class="mt-1.5 flex items-center gap-1 rounded-md border border-[var(--al-border)] px-2 py-0.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel)] disabled:opacity-40"
+					onclick={askAcceptDrift}
+					disabled={busy}
+					title="Run apply -refresh-only: the state catches up to reality, no infrastructure changes"
+				>
+					<Check size={12} /> Accept refreshed state
+				</button>
+			{/if}
 		</div>
 	{/if}
 	<div class="mb-2 flex items-center justify-between">

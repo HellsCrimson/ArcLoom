@@ -1393,7 +1393,10 @@
 	// runStateOp streams a state-surgery operation (import / rm / mv /
 	// init-backend) into the run pane and refreshes the state list when it
 	// settles.
-	function runStateOp(op: 'import' | 'state-rm' | 'state-mv' | 'init-backend', params: Record<string, string>) {
+	function runStateOp(
+		op: 'import' | 'state-rm' | 'state-mv' | 'init-backend' | 'accept-drift',
+		params: Record<string, string>
+	) {
 		if (!project) return;
 		error = '';
 		planLog = [];
@@ -1416,9 +1419,15 @@
 					op === 'import' ? 'Imported into state'
 					: op === 'state-rm' ? 'Removed from state'
 					: op === 'state-mv' ? 'State address moved'
+					: op === 'accept-drift' ? 'Drift absorbed into state'
 					: 'Backend initialized';
 				busy = '';
 				loadState();
+				// Accepting drift rewrote the state the drift status described.
+				if (op === 'accept-drift') {
+					loadDrift();
+					refreshProjects();
+				}
 			}
 		}, params, activeEnv);
 	}
@@ -2178,6 +2187,7 @@
 		onRefresh={() => { loadState(); loadDrift(); }}
 		onRm={(address) => runStateOp('state-rm', { address })}
 		onMv={(from, to) => runStateOp('state-mv', { from, to })}
+		onAcceptDrift={auth.can('deploy') ? () => runStateOp('accept-drift', {}) : undefined}
 	/>
 
 	<!-- Backend (remote state) configuration -->

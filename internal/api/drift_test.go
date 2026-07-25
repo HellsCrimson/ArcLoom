@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -40,7 +41,8 @@ type fakeRunner struct {
 	planCalled bool
 	// planFile, when set, is written as the saved plan by Plan (what the policy
 	// gate reads back to apply exactly what it checked).
-	planFile []byte
+	planFile          []byte
+	acceptDriftCalled bool
 	// State stubs: what StatePull reports and what StatePush received.
 	statePull    string
 	statePushed  []byte
@@ -104,6 +106,10 @@ func (f *fakeRunner) StateMv(context.Context, string, map[string][]byte, map[str
 	return nil
 }
 func (f *fakeRunner) InitBackend(context.Context, string, map[string][]byte, bool, io.Writer) error {
+	return nil
+}
+func (f *fakeRunner) AcceptDrift(context.Context, string, map[string][]byte, map[string]string, io.Writer) error {
+	f.acceptDriftCalled = true
 	return nil
 }
 func (f *fakeRunner) StatePull(context.Context, string) (string, error) { return f.statePull, nil }
@@ -232,5 +238,62 @@ func TestDriftCheckRecordsRunOnOutcomeChange(t *testing.T) {
 	srv.runDriftCheck(ctx, "gone")
 	if d := srv.settings.Drift("gone"); d.Enabled {
 		t.Fatalf("orphaned schedule kept: %+v", d)
+	}
+}
+
+// The status names the drifted resources (capped), so "75 to change" can be
+// inspected without opening the run record.
+func TestDriftStatusCarriesAddresses(t *testing.T) {
+	changes := make([]runner.PlanChange, 0, driftAddressCap+5)
+	for i := 0; i < driftAddressCap+5; i++ {
+		changes = append(changes, runner.PlanChange{Address: fmt.Sprintf("null_resource.r%d", i), Action: "update"})
+	}
+	fake := &fakeRunner{res: runner.PlanResult{HasChanges: true, Change: len(changes), Changes: changes}}
+	srv, _ := driftTestServer(t, fake)
+
+	srv.runDriftCheck(context.Background(), "p1")
+	st := srv.driftStatuses()["p1"]
+	if len(st.Addresses) != driftAddressCap {
+		t.Fatalf("addresses = %d, want the cap (%d)", len(st.Addresses), driftAddressCap)
+	}
+	if st.Addresses[0] != "null_resource.r0" || st.Change != driftAddressCap+5 {
+		t.Fatalf("status = %+v", st)
+	}
+}
+
+// Accepting drift persists the refreshed state (apply -refresh-only) and clears
+// the status the previous check left behind — otherwise the badge would keep
+// reporting drift that no longer exists.
+func TestAcceptDriftAbsorbsAndClearsStatus(t *testing.T) {
+	fake := &fakeRunner{res: runner.PlanResult{HasChanges: true, Change: 1,
+		Changes: []runner.PlanChange{{Address: "null_resource.a", Action: "update"}}}}
+	srv, rh := driftTestServer(t, fake)
+	h := srv.Handler()
+
+	srv.runDriftCheck(context.Background(), "p1")
+	if st := srv.driftStatuses()["p1"]; !st.Drifted {
+		t.Fatalf("expected a drifted status to start from: %+v", st)
+	}
+
+	rec := post(t, h, http.MethodPost, "/api/projects/p1/state/accept-drift", "")
+	if body := rec.Body.String(); !strings.Contains(body, "event: done") {
+		t.Fatalf("accept-drift stream = %s", body)
+	}
+	if !fake.acceptDriftCalled {
+		t.Fatal("expected the runner's refresh-only apply to run")
+	}
+	if _, ok := srv.driftStatuses()["p1"]; ok {
+		t.Fatal("stale drift status should be cleared after accepting")
+	}
+	// It lands in run history like the other state operations.
+	list, _ := rh.List("p1")
+	found := false
+	for _, r := range list {
+		if r.Op == "accept-drift" && r.Status == "success" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("accept-drift not recorded: %+v", list)
 	}
 }

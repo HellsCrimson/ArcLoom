@@ -224,6 +224,8 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/projects/{id}/state/rm", s.handleStateRm)
 				r.Post("/projects/{id}/state/mv", s.handleStateMv)
 				r.Post("/projects/{id}/state/init-backend", s.handleInitBackend)
+				// Absorb drift into the state (apply -refresh-only; no infra change).
+				r.Post("/projects/{id}/state/accept-drift", s.handleAcceptDrift)
 				// Drift schedule: enabling it makes the server run plans.
 				r.Put("/projects/{id}/drift", s.handleSetDrift)
 			})

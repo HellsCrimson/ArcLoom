@@ -73,6 +73,15 @@ func (s *Server) handleStateRm(w http.ResponseWriter, r *http.Request) {
 	s.streamOp(w, r, "state-rm")
 }
 
+// handleAcceptDrift persists the refreshed state (apply -refresh-only) so the
+// state catches up to reality. It changes no infrastructure, and it is the only
+// way to clear drift a refresh-only plan reports — that plan never writes back
+// what it refreshed, so provider-side differences (e.g. a state adopted from
+// another install, or a schema upgrade) would be reported on every check.
+func (s *Server) handleAcceptDrift(w http.ResponseWriter, r *http.Request) {
+	s.streamOp(w, r, "accept-drift")
+}
+
 // handleInitBackend applies a backend change to the workspace:
 // ?migrate=true copies the existing state into the new backend, otherwise the
 // workspace is reconfigured and starts from whatever the new backend holds.
@@ -257,6 +266,16 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 	case "destroy":
 		err = run.Destroy(r.Context(), dir, files, tfVars, logW)
 		logW.flush()
+	case "accept-drift":
+		err = run.AcceptDrift(r.Context(), dir, files, tfVars, logW)
+		logW.flush()
+		if err == nil {
+			// The stored drift status described the state we just refreshed away,
+			// so drop it: the badge should clear until the next scheduled check.
+			s.driftMu.Lock()
+			delete(s.driftStates, p.ID)
+			s.driftMu.Unlock()
+		}
 	case "import":
 		q := r.URL.Query()
 		err = run.Import(r.Context(), dir, files, tfVars, strings.TrimSpace(q.Get("address")), strings.TrimSpace(q.Get("id")), logW)

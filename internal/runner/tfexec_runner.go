@@ -410,6 +410,23 @@ func (t *TfExec) StatePull(ctx context.Context, dir string) (string, error) {
 	return state, nil
 }
 
+// AcceptDrift persists the refreshed state without touching any infrastructure
+// (apply -refresh-only): the state catches up to reality, which is the only way
+// to clear a refresh-only drift report — a plan -refresh-only never writes the
+// refreshed values back, so the same drift is reported on every check. Nothing
+// is created, updated or destroyed.
+func (t *TfExec) AcceptDrift(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+	defer cleanup()
+	if err != nil {
+		return err
+	}
+	if err := tf.Apply(ctx, tfexec.RefreshOnly(true)); err != nil {
+		return fmt.Errorf("apply -refresh-only: %w", err)
+	}
+	return nil
+}
+
 // StatePush writes a caller-supplied state into whatever backend the workspace
 // is configured for, so an existing project's state can be adopted. It goes
 // through prepare (sync + init) because a remote backend must be initialized

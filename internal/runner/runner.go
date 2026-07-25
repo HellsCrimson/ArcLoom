@@ -171,6 +171,12 @@ type Runner interface {
 	// (-force-copy, implies -migrate-state); otherwise the new backend is used
 	// as-is (-reconfigure) and the old state is left behind.
 	InitBackend(ctx context.Context, dir string, files map[string][]byte, migrate bool, out io.Writer) error
+	// AcceptDrift persists the refreshed state (apply -refresh-only) so the state
+	// catches up to reality without changing any infrastructure. Needed because a
+	// refresh-only plan never writes back what it refreshed, so drift it reports
+	// (e.g. provider-side normalization after adopting a foreign state) would
+	// otherwise be reported forever.
+	AcceptDrift(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error
 	// StatePull returns the raw state JSON as the configured backend sees it
 	// (works for both local and remote backends).
 	StatePull(ctx context.Context, dir string) (string, error)

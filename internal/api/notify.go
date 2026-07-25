@@ -269,6 +269,17 @@ func (s *Server) notifyDrift(p *model.Project, cur driftStatus) {
 		ev.Summary = "drift detected"
 		ev.Detail = fmt.Sprintf("%d to add, %d to change, %d to destroy, %d to replace",
 			cur.Add, cur.Change, cur.Destroy, cur.Replace)
+		// Name a few of them: a bare count says nothing about what moved.
+		if len(cur.Addresses) > 0 {
+			shown := cur.Addresses
+			if len(shown) > 5 {
+				shown = shown[:5]
+			}
+			ev.Detail += "\n" + strings.Join(shown, "\n")
+			if len(cur.Addresses) > len(shown) {
+				ev.Detail += fmt.Sprintf("\n… and %d more", cur.Change+cur.Add+cur.Destroy+cur.Replace-len(shown))
+			}
+		}
 	default:
 		ev.Type, ev.Level = notify.TypeDriftResolved, notify.LevelInfo
 		ev.Summary = "drift resolved — infrastructure matches state again"
