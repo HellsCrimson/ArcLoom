@@ -552,6 +552,8 @@ export interface LicenseStatus {
 
 export interface ImportResult {
 	addedResources: number;
+	/** State resources recognized as ones the model already had (matched, not duplicated). */
+	matchedResources?: number;
 	/** How many state resources were installed as the project's own state. */
 	adoptedState?: number;
 	addedProviders: number;

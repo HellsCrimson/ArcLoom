@@ -215,13 +215,18 @@ func TestImportStateHonoursEnvironment(t *testing.T) {
 	}
 }
 
-// A name already used in the model is imported under a new name, which breaks the
-// link to its state address — the response has to say so.
-func TestImportStateWarnsOnRename(t *testing.T) {
+// The usual adoption flow is "import the HCL, then import its state": a state
+// resource the model already describes must be MATCHED, not duplicated under a
+// new name — and the existing config (which may hold references and expressions
+// the state cannot express) is left untouched.
+func TestImportStateMatchesExistingResources(t *testing.T) {
 	fake := &fakeRunner{providerSchemas: nullSchemas()}
 	srv, _ := driftTestServer(t, fake)
 	if err := srv.store.Update("p1", func(p *model.Project) error {
-		p.Resources = []model.Resource{{ID: "r1", Type: "null_resource", Name: "one"}}
+		p.Resources = []model.Resource{{
+			ID: "from-hcl", Type: "null_resource", Name: "one",
+			Attrs: map[string]model.AttrValue{"triggers": {Mode: model.ModeExpression, Expr: "var.triggers"}},
+		}}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -232,13 +237,72 @@ func TestImportStateWarnsOnRename(t *testing.T) {
 	if *code != http.StatusOK {
 		t.Fatalf("import = %d", *code)
 	}
+	// one matched the HCL-imported resource, two was new.
+	if resp.MatchedResources != 1 || resp.AddedResources != 1 {
+		t.Fatalf("resp = %+v, want 1 matched / 1 added", resp)
+	}
+	p, _ := srv.store.Get("p1")
+	if len(p.Resources) != 2 {
+		t.Fatalf("expected 2 resources (no duplicate), got %d: %+v", len(p.Resources), p.Resources)
+	}
+	for _, r := range p.Resources {
+		if r.Name == "one_2" {
+			t.Fatal("state import duplicated a resource the model already had")
+		}
+	}
+	// The matched resource keeps its config, expression and identity.
+	kept := p.Resources[indexOfResource(p.Resources, "null_resource", "one")]
+	if kept.ID != "from-hcl" || kept.Attrs["triggers"].Expr != "var.triggers" {
+		t.Fatalf("matched resource should be left as-is, got %+v", kept)
+	}
+}
+
+// A state resource inside a module belongs to that module's scope, not the root.
+func TestImportStateMatchesInsideModules(t *testing.T) {
+	fake := &fakeRunner{providerSchemas: nullSchemas()}
+	srv, _ := driftTestServer(t, fake)
+	if err := srv.store.Update("p1", func(p *model.Project) error {
+		p.LocalModules = []model.LocalModule{{
+			Name:      "web",
+			Resources: []model.Resource{{ID: "m1", Type: "null_resource", Name: "inside"}},
+		}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := srv.Handler()
+
+	moduleState := `{"version":4,"resources":[
+	  {"module":"module.web","mode":"managed","type":"null_resource","name":"inside","provider":"provider[\"registry.opentofu.org/hashicorp/null\"]",
+	   "instances":[{"attributes":{"id":"1","triggers":{"msg":"a"}}}]},
+	  {"module":"module.web","mode":"managed","type":"null_resource","name":"fresh","provider":"provider[\"registry.opentofu.org/hashicorp/null\"]",
+	   "instances":[{"attributes":{"id":"2","triggers":{"msg":"b"}}}]},
+	  {"module":"module.gone","mode":"managed","type":"null_resource","name":"orphan","provider":"provider[\"registry.opentofu.org/hashicorp/null\"]",
+	   "instances":[{"attributes":{"id":"3"}}]}
+	]}`
+	code, resp := importState(t, h, "", moduleState)
+	if *code != http.StatusOK {
+		t.Fatalf("import = %d", *code)
+	}
+	if resp.MatchedResources != 1 || resp.AddedResources != 1 {
+		t.Fatalf("resp = %+v, want 1 matched / 1 added", resp)
+	}
+	p, _ := srv.store.Get("p1")
+	if len(p.Resources) != 0 {
+		t.Fatalf("module resources must not land in the root scope: %+v", p.Resources)
+	}
+	if len(p.LocalModules[0].Resources) != 2 {
+		t.Fatalf("module scope = %+v, want the matched one plus the new one", p.LocalModules[0].Resources)
+	}
+	// A module the project doesn't have can't be reconstructed; say so instead of
+	// inventing a root resource for it.
 	found := false
 	for _, w := range resp.Warnings {
-		if strings.Contains(w, "null_resource.one") && strings.Contains(w, "no longer matches") {
+		if strings.Contains(w, "module.gone.null_resource.orphan") && strings.Contains(w, "no local module") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected a rename warning, got %v", resp.Warnings)
+		t.Fatalf("expected a warning about the unknown module, got %v", resp.Warnings)
 	}
 }

@@ -14,8 +14,12 @@ import (
 
 // Resource is one managed resource read from a state file.
 type Resource struct {
-	Type         string
-	Name         string
+	Type string
+	Name string
+	// Module is the state's module path for the resource ("" = root,
+	// "module.web", "module.a.module.b"). It decides which scope the resource
+	// belongs to, so a module's resource is not imported as a root one.
+	Module       string
 	ProviderAddr string // e.g. provider["registry.terraform.io/hashicorp/aws"]
 	Attributes   map[string]any
 }
@@ -27,6 +31,7 @@ type stateFile struct {
 		Mode      string `json:"mode"` // "managed" | "data"
 		Type      string `json:"type"`
 		Name      string `json:"name"`
+		Module    string `json:"module"` // "" = root module
 		Provider  string `json:"provider"`
 		Instances []struct {
 			Attributes map[string]any `json:"attributes"`
@@ -56,6 +61,7 @@ func Parse(data []byte) ([]Resource, []string, error) {
 		out = append(out, Resource{
 			Type:         r.Type,
 			Name:         r.Name,
+			Module:       r.Module,
 			ProviderAddr: r.Provider,
 			Attributes:   r.Instances[0].Attributes,
 		})

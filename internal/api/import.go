@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -38,6 +39,9 @@ type importResponse struct {
 	AddedDataSources  int `json:"addedDataSources,omitempty"`
 	AddedModules      int `json:"addedModules,omitempty"`
 	AddedLocalModules int `json:"addedLocalModules,omitempty"`
+	// MatchedResources is how many state resources were recognized as resources
+	// the model already describes (state import only) — matched, not duplicated.
+	MatchedResources int `json:"matchedResources,omitempty"`
 	// AdoptedState is how many state resources were installed as the project's
 	// own state (state import only; 0 when the state was not adopted).
 	AdoptedState int      `json:"adoptedState,omitempty"`
@@ -180,7 +184,7 @@ func (s *Server) handleImportState(w http.ResponseWriter, r *http.Request) {
 	schemas, schemaWarnings := s.stateProviderSchemas(r.Context(), run, resources)
 	warnings = append(warnings, schemaWarnings...)
 
-	imported := make([]model.Resource, 0, len(resources))
+	imported := make([]scopedResource, 0, len(resources))
 	for _, sr := range resources {
 		ps := schemas[providerSourceFromState(sr.ProviderAddr, sr.Type)]
 		if ps == nil {
@@ -189,8 +193,9 @@ func (s *Server) handleImportState(w http.ResponseWriter, r *http.Request) {
 		rs := ps.ResourceSchemas[sr.Type]
 		attrs, w2 := state.SettableAttrs(rs, sr.Attributes)
 		warnings = append(warnings, w2...)
-		imported = append(imported, model.Resource{
-			ID: uuid.NewString(), Type: sr.Type, Name: sr.Name, Attrs: attrs,
+		imported = append(imported, scopedResource{
+			Module:   sr.Module,
+			Resource: model.Resource{ID: uuid.NewString(), Type: sr.Type, Name: sr.Name, Attrs: attrs},
 		})
 	}
 
@@ -210,11 +215,12 @@ func (s *Server) handleImportState(w http.ResponseWriter, r *http.Request) {
 	resp := importResponse{Warnings: warnings}
 	if err := s.store.Update(id, func(pr *model.Project) error {
 		resp.AddedProviders = mergeProviders(pr, provList)
-		// Renames break the link to the state (the address is what ties config to
-		// state), so they are reported rather than silently accepted.
-		before := renameTargets(pr.Resources, imported)
-		resp.AddedResources = mergeResources(pr, imported)
-		resp.Warnings = append(resp.Warnings, before...)
+		// State resources are matched to the config by address, never renamed: a
+		// state entry with the same address IS that config block (the usual flow
+		// is import HCL, then import its state).
+		added, matched, w2 := mergeStateResources(pr, imported)
+		resp.AddedResources, resp.MatchedResources = added, matched
+		resp.Warnings = append(resp.Warnings, w2...)
 		return nil
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -312,21 +318,82 @@ func (s *Server) adoptState(ctx context.Context, run runner.Runner, id, envName 
 	return os.WriteFile(filepath.Join(dir, "terraform.tfstate"), stateJSON, 0o600)
 }
 
-// renameTargets reports the resources whose (type, name) already exists, i.e.
-// the ones mergeResources will rename — their state address will no longer match
-// the config, so the user needs to know.
-func renameTargets(existing, incoming []model.Resource) []string {
-	taken := map[string]bool{}
-	for _, r := range existing {
-		taken[r.Type+"."+r.Name] = true
+// scopedResource is a resource read from a state file together with the module
+// scope its address puts it in ("" = root).
+type scopedResource struct {
+	Module string
+	model.Resource
+}
+
+// mergeStateResources merges resources read from a state file into the model,
+// matching them to the config by ADDRESS instead of renaming on collision — a
+// state entry and a config block with the same address are the same resource, so
+// the "import HCL, then import its state" flow must not produce duplicates. An
+// existing resource is left exactly as it is (the config, which can hold
+// references and expressions the state cannot express, wins) and counted as
+// matched. Resources whose module scope ArcLoom does not model are skipped with a
+// warning: the adopted state still tracks them, but their config lives elsewhere.
+func mergeStateResources(p *model.Project, incoming []scopedResource) (added, matched int, warnings []string) {
+	for _, sr := range incoming {
+		scope, err := stateScope(p, sr.Module)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s: %v", stateAddress(sr), err))
+			continue
+		}
+		if idx := indexOfResource(*scope, sr.Type, sr.Name); idx >= 0 {
+			matched++
+			continue
+		}
+		*scope = append(*scope, sr.Resource)
+		added++
 	}
-	var out []string
-	for _, r := range incoming {
-		if taken[r.Type+"."+r.Name] {
-			out = append(out, fmt.Sprintf("%s.%s already exists and was imported under a new name; its state address no longer matches the config (use State → move to fix)", r.Type, r.Name))
+	return added, matched, warnings
+}
+
+// stateScope resolves a state module path to the model slice that holds its
+// resources. Only the root and a single level of local module are addressable in
+// the model today.
+func stateScope(p *model.Project, module string) (*[]model.Resource, error) {
+	if module == "" {
+		return &p.Resources, nil
+	}
+	name, ok := localModuleName(module)
+	if !ok {
+		return nil, fmt.Errorf("nested module %q is not supported; its configuration was not imported", module)
+	}
+	if lm := findLocalModule(p, name); lm != nil {
+		return &lm.Resources, nil
+	}
+	return nil, fmt.Errorf("no local module %q in this project; its configuration was not imported (the adopted state still tracks it)", name)
+}
+
+// localModuleName extracts the module name from a single-level state module path
+// ("module.web" → "web"); a nested path returns ok=false.
+func localModuleName(module string) (string, bool) {
+	rest, ok := strings.CutPrefix(module, "module.")
+	if !ok || rest == "" || strings.Contains(rest, ".") {
+		return "", false
+	}
+	return rest, true
+}
+
+// indexOfResource finds a resource by (type, name) within one scope.
+func indexOfResource(scope []model.Resource, typ, name string) int {
+	for i := range scope {
+		if scope[i].Type == typ && scope[i].Name == name {
+			return i
 		}
 	}
-	return out
+	return -1
+}
+
+// stateAddress renders a scoped resource's address for messages.
+func stateAddress(sr scopedResource) string {
+	addr := sr.Type + "." + sr.Name
+	if sr.Module != "" {
+		return sr.Module + "." + addr
+	}
+	return addr
 }
 
 // mergeProviders adds provider instances not already present (by key + alias).

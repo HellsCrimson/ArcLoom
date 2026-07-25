@@ -1089,6 +1089,9 @@
 			planChanges = [];
 			planCounts = null;
 			const parts = [`${res.addedResources} resources`];
+			// Matched = the state described resources the model already had (the usual
+			// "import HCL, then import its state" flow), so nothing was duplicated.
+			if (res.matchedResources) parts.push(`${res.matchedResources} matched existing`);
 			if (res.adoptedState) parts.push(`state adopted (${res.adoptedState} tracked)`);
 			if (res.warnings?.length) parts.push(`${res.warnings.length} warning(s)`);
 			importMsg = `Imported ${parts.join(' · ')}`;
