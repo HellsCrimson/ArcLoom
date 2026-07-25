@@ -332,6 +332,9 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		rec.Status = "success"
 	}
 	s.recordRun(rec)
+	// Tell the outside world about an apply/destroy outcome (best-effort, in the
+	// background) — the run history alone is only visible in-app.
+	s.notifyRun(p, rec)
 
 	if err != nil {
 		sse.event("error", map[string]string{"error": err.Error()})

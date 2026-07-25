@@ -175,6 +175,66 @@ func TestGitCreds_RequiresKeyForSecret(t *testing.T) {
 	}
 }
 
+func TestNotify_RoundTripEncryptsURL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.yaml")
+	s, err := NewStore(path, "master-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const hook = "https://hooks.slack.com/services/T0/B0/SECRET-TOKEN"
+	if err := s.SetNotify("proj1", Notify{
+		Enabled: true, Kind: "slack", URL: hook, OnApplyFailure: true, OnDrift: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The URL is a credential: never on disk in plaintext.
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "SECRET-TOKEN") {
+		t.Fatal("webhook URL stored in plaintext on disk")
+	}
+
+	// A fresh store decrypts it back.
+	s2, err := NewStore(path, "master-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, ok := s2.Notify("proj1")
+	if !ok || !n.Notified() || n.URL != hook || n.Kind != "slack" || !n.OnApplyFailure || !n.OnDrift || n.OnApplySuccess {
+		t.Fatalf("round-trip lost data: %+v", n)
+	}
+
+	// A blank URL keeps the stored one (the UI never receives it back).
+	if err := s2.SetNotify("proj1", Notify{Enabled: true, Kind: "webhook", OnApplySuccess: true}); err != nil {
+		t.Fatal(err)
+	}
+	n, _ = s2.Notify("proj1")
+	if n.URL != hook || n.Kind != "webhook" || n.OnApplyFailure || !n.OnApplySuccess {
+		t.Fatalf("blank URL should keep the prior webhook: %+v", n)
+	}
+
+	if err := s2.DeleteNotify("proj1"); err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := s2.Notify("proj1"); ok || n.Enabled || n.URL != "" {
+		t.Fatalf("config should be gone after delete: %+v", n)
+	}
+}
+
+func TestNotify_RequiresKeyForURL(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "settings.yaml"), "") // no master key
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetNotify("p", Notify{Enabled: true, URL: "https://example.com/hook"}); err != ErrSecretKeyRequired {
+		t.Fatalf("want ErrSecretKeyRequired, got %v", err)
+	}
+	// The rest of the config is storable without a key (so it can be turned off).
+	if err := s.SetNotify("p", Notify{Kind: "webhook"}); err != nil {
+		t.Fatalf("storing without a URL should succeed: %v", err)
+	}
+}
+
 func TestProjectACL_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.yaml")

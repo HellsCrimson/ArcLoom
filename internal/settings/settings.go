@@ -71,6 +71,28 @@ type GitCredMeta struct {
 	HasPassphrase bool   `json:"hasPassphrase"`
 }
 
+// Notify is one project's outbound notification config: where operational
+// events (apply outcomes, scheduled drift) are posted and which of them are
+// sent. The webhook URL is treated as a credential — a Slack incoming-webhook
+// URL is bearer-equivalent — so it is held in memory only and lives encrypted
+// (URLEnc) on disk, like the git credentials. Kept here (not on the model) so it
+// stays out of HCL/Git/undo, like drift/cost/policy.
+type Notify struct {
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Kind    string `yaml:"kind" json:"kind"` // "slack" | "webhook"
+
+	URL string `yaml:"-" json:"-"` // webhook endpoint (in memory only)
+
+	URLEnc string `yaml:"url_enc,omitempty" json:"-"`
+
+	OnApplyFailure bool `yaml:"on_apply_failure" json:"onApplyFailure"`
+	OnApplySuccess bool `yaml:"on_apply_success" json:"onApplySuccess"`
+	OnDrift        bool `yaml:"on_drift" json:"onDrift"`
+}
+
+// Notified reports whether the config can actually deliver an event.
+func (n Notify) Notified() bool { return n.Enabled && n.URL != "" }
+
 // CostOverride assigns a flat monthly price (USD) to a resource, keyed by
 // Target which is either a resource type ("proxmox_vm") or a full resource
 // address ("proxmox_vm.web"). An address match takes precedence over a type
@@ -155,6 +177,9 @@ type document struct {
 	// Policy maps project ID -> policy-as-code config (Rego documents + whether
 	// a failing check blocks an apply). Kept here for the same reason as Cost.
 	Policy map[string]Policy `yaml:"policy,omitempty"`
+	// Notify maps project ID -> outbound notification config (webhook URL
+	// encrypted). Kept here for the same reason as Cost and Policy.
+	Notify map[string]Notify `yaml:"notify,omitempty"`
 	// Environments maps project ID -> ordered deployment environments. Kept here
 	// (not on the model) so per-env backend config / var overrides stay out of
 	// HCL/Git/undo.
@@ -251,6 +276,11 @@ func (s *Store) hasEncryptedFields() bool {
 			return true
 		}
 	}
+	for _, n := range s.doc.Notify {
+		if n.URLEnc != "" {
+			return true
+		}
+	}
 	return false
 }
 
@@ -268,6 +298,10 @@ func (s *Store) migrateLegacy() {
 		c.SSHKeyEnc = s.reseal(c.SSHKeyEnc)
 		c.PassphraseEnc = s.reseal(c.PassphraseEnc)
 		s.doc.GitCreds[id] = c
+	}
+	for id, n := range s.doc.Notify {
+		n.URLEnc = s.reseal(n.URLEnc)
+		s.doc.Notify[id] = n
 	}
 }
 
@@ -464,6 +498,60 @@ func (s *Store) DeletePolicy(projectID string) error {
 		return nil
 	}
 	delete(s.doc.Policy, projectID)
+	return s.persist()
+}
+
+// Notify returns a project's notification config with the webhook URL decrypted
+// in memory. ok=false means the project has never been configured (the caller
+// decides what the defaults are), not that notifications are off.
+func (s *Store) Notify(projectID string) (Notify, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, ok := s.doc.Notify[projectID]
+	if !ok {
+		return Notify{}, false
+	}
+	n.URL = s.decryptSecret(n.URLEnc)
+	n.URLEnc = ""
+	return n, true
+}
+
+// SetNotify persists a project's notification config. A non-empty URL is
+// encrypted; an empty URL keeps the previously stored one (so the UI, which
+// never receives it back, need not resend it). Requires a master key when
+// introducing a URL.
+func (s *Store) SetNotify(projectID string, in Notify) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	enc := s.doc.Notify[projectID].URLEnc // keep existing by default
+	if in.URL != "" {
+		if s.key == nil {
+			return ErrSecretKeyRequired
+		}
+		blob, err := secrets.Encrypt(s.key, []byte(in.URL))
+		if err != nil {
+			return err
+		}
+		enc = base64.StdEncoding.EncodeToString(blob)
+	}
+	in.URL = ""
+	in.URLEnc = enc
+	if s.doc.Notify == nil {
+		s.doc.Notify = map[string]Notify{}
+	}
+	s.doc.Notify[projectID] = in
+	return s.persist()
+}
+
+// DeleteNotify removes a project's notification config (also on project delete).
+func (s *Store) DeleteNotify(projectID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.doc.Notify[projectID]; !ok {
+		return nil
+	}
+	delete(s.doc.Notify, projectID)
 	return s.persist()
 }
 

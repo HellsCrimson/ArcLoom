@@ -35,7 +35,9 @@ type fakeRunner struct {
 	applyPlanBytes  []byte
 	applyPlanCalled bool
 	applyCalled     bool
-	planCalled      bool
+	// applyErr, when set, makes Apply fail (used by the notification tests).
+	applyErr   error
+	planCalled bool
 	// planFile, when set, is written as the saved plan by Plan (what the policy
 	// gate reads back to apply exactly what it checked).
 	planFile []byte
@@ -70,7 +72,7 @@ func (f *fakeRunner) RefreshPlan(context.Context, string, map[string][]byte, map
 }
 func (f *fakeRunner) Apply(context.Context, string, map[string][]byte, map[string]string, io.Writer) error {
 	f.applyCalled = true
-	return nil
+	return f.applyErr
 }
 func (f *fakeRunner) ApplyPlan(_ context.Context, _ string, _ map[string][]byte, _ map[string]string, planBytes []byte, _ io.Writer) error {
 	f.applyPlanCalled = true

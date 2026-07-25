@@ -365,6 +365,7 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		_ = s.settings.DeleteEnvironments(id)
 		_ = s.settings.DeleteApprovalPolicy(id)
 		_ = s.settings.DeletePolicy(id)
+		_ = s.settings.DeleteNotify(id)
 	}
 	if s.approvals != nil {
 		_ = s.approvals.DeleteProject(id)

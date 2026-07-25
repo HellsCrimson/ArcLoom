@@ -12,6 +12,7 @@
 	import AclModal from '$lib/components/AclModal.svelte';
 	import CostPanel from '$lib/components/CostPanel.svelte';
 	import PolicyPanel from '$lib/components/PolicyPanel.svelte';
+	import NotifyPanel from '$lib/components/NotifyPanel.svelte';
 	import EnvironmentsPanel from '$lib/components/EnvironmentsPanel.svelte';
 	import UserMenu from '$lib/components/UserMenu.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
@@ -23,7 +24,7 @@
 	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck, AlertTriangle, Search, ArrowUp, Ruler, DollarSign, CheckCircle2, Lock, LockOpen
+		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck, AlertTriangle, Search, ArrowUp, Ruler, DollarSign, CheckCircle2, Lock, LockOpen, Bell
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
@@ -131,6 +132,7 @@
 	let showAcl = $state(false);
 	let showCost = $state(false);
 	let showPolicy = $state(false);
+	let showNotify = $state(false);
 
 	// Secrets
 	let showSecrets = $state(false);
@@ -362,6 +364,7 @@
 			if (auth.can('resources')) {
 				items.push({ id: 'cmd:cost', label: 'Cost estimation', group: 'commands', run: () => (showCost = true) });
 				items.push({ id: 'cmd:policy', label: 'Policy as code', group: 'commands', run: () => (showPolicy = true) });
+				items.push({ id: 'cmd:notify', label: 'Notifications', group: 'commands', run: () => (showNotify = true) });
 				items.push({ id: 'cmd:environments', label: 'Environments', group: 'commands', run: () => (showEnvironments = true) });
 				items.push({ id: 'cmd:import-hcl', label: 'Import HCL', group: 'commands', run: () => { importMsg = ''; showImportHcl = true; } });
 				items.push({ id: 'cmd:import-state', label: 'Import state', group: 'commands', run: () => { importMsg = ''; showImportState = true; } });
@@ -1545,6 +1548,9 @@
 					<button class={hdrBtn} onclick={() => (showPolicy = true)} title="Policy as code (conftest/OPA)">
 						<ShieldCheck size={14} /> Policy
 					</button>
+					<button class={hdrBtn} onclick={() => (showNotify = true)} title="Webhook / Slack notifications for applies and drift">
+						<Bell size={14} /> Notify
+					</button>
 				{/if}
 				{#if environments.length > 0}
 					<div class="flex items-center gap-1" title="Active deployment environment (scopes plan / apply / state)">
@@ -2089,6 +2095,8 @@
 	<CostPanel bind:open={showCost} projectId={project.id} />
 
 	<PolicyPanel bind:open={showPolicy} projectId={project.id} />
+
+	<NotifyPanel bind:open={showNotify} projectId={project.id} />
 
 	<EnvironmentsPanel
 		bind:open={showEnvironments}

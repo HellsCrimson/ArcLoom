@@ -193,6 +193,21 @@ export const api = {
 			body: JSON.stringify(config)
 		}).then((r) => json<{ config: PolicyConfig }>(r)),
 
+	getNotify: (id: string) =>
+		fetch(`/api/projects/${id}/notify`).then((r) => json<{ config: NotifyConfig }>(r)),
+
+	setNotify: (id: string, config: NotifyUpdate) =>
+		fetch(`/api/projects/${id}/notify`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(config)
+		}).then((r) => json<{ config: NotifyConfig }>(r)),
+
+	// testNotify delivers a test event through the stored webhook; the error
+	// message carries the delivery failure (502) when the webhook rejects it.
+	testNotify: (id: string) =>
+		fetch(`/api/projects/${id}/notify/test`, { method: 'POST' }).then((r) => json<{ ok: boolean }>(r)),
+
 	deleteProject: async (id: string, force = false) => {
 		const res = await fetch(`/api/projects/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' });
 		if (res.status === 409) {
@@ -620,6 +635,34 @@ export interface PolicyConfig {
 	enforce: boolean;
 	failOnWarn: boolean;
 	docs: PolicyDoc[];
+}
+
+// NotifyKind is the destination a project's events are rendered for.
+export type NotifyKind = 'webhook' | 'slack' | 'discord' | 'fluxer' | 'teams' | 'matrix' | 'ntfy';
+
+// NotifyConfig is a project's outbound notification config as the server
+// reports it: the webhook URL is never returned (it is a credential), only
+// whether one is stored (urlSet) plus a masked hint. storable=false means the
+// server has no ARCLOOM_SECRET_KEY to encrypt a URL with.
+export interface NotifyConfig {
+	enabled: boolean;
+	kind: NotifyKind;
+	urlSet: boolean;
+	urlHint?: string;
+	onApplyFailure: boolean;
+	onApplySuccess: boolean;
+	onDrift: boolean;
+	storable: boolean;
+}
+
+// NotifyUpdate is the editable shape; an empty url keeps the stored one.
+export interface NotifyUpdate {
+	enabled: boolean;
+	kind: NotifyKind;
+	url: string;
+	onApplyFailure: boolean;
+	onApplySuccess: boolean;
+	onDrift: boolean;
 }
 
 // CostOverride assigns a flat monthly price to a resource type or address.

@@ -147,6 +147,9 @@ func (s *Server) runDriftCheck(ctx context.Context, projectID string) {
 	if !driftOutcomeChanged(prev, hadPrev, cur) {
 		return
 	}
+	// News: record it and tell the outside world (a scheduled check has no user
+	// watching a stream).
+	s.notifyDrift(p, cur)
 	rec := &runs.Run{
 		ID: uuid.NewString(), ProjectID: projectID, Op: "drift",
 		StartedAt: started, FinishedAt: time.Now(), Log: logBuf.String(),

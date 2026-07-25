@@ -157,6 +157,7 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/projects/{id}/drift", s.handleGetDrift)
 				r.Get("/projects/{id}/cost", s.handleGetCost)
 				r.Get("/projects/{id}/policy", s.handleGetPolicy)
+				r.Get("/projects/{id}/notify", s.handleGetNotify)
 				r.Get("/projects/{id}/provider-updates", s.handleProviderUpdates)
 				r.Get("/projects/{id}/acl", s.handleGetACL)
 				r.Get("/projects/{id}/environments", s.handleGetEnvironments)
@@ -196,6 +197,10 @@ func (s *Server) Handler() http.Handler {
 				r.Post("/projects/{id}/import/state", s.handleImportState)
 				r.Put("/projects/{id}/cost", s.handleSetCost)
 				r.Put("/projects/{id}/policy", s.handleSetPolicy)
+				r.Put("/projects/{id}/notify", s.handleSetNotify)
+				// Sends a test event through the stored webhook so a setup can
+				// be verified without waiting for a real failure.
+				r.Post("/projects/{id}/notify/test", s.handleTestNotify)
 				r.Put("/projects/{id}/environments", s.handleSetEnvironments)
 				r.Put("/projects/{id}/approval", s.handleSetApprovalPolicy)
 			})
