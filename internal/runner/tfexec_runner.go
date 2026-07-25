@@ -410,6 +410,40 @@ func (t *TfExec) StatePull(ctx context.Context, dir string) (string, error) {
 	return state, nil
 }
 
+// StatePush writes a caller-supplied state into whatever backend the workspace
+// is configured for, so an existing project's state can be adopted. It goes
+// through prepare (sync + init) because a remote backend must be initialized
+// first, and pushes with -force: an imported state always has a different
+// lineage than the (usually empty) one the workspace holds, which the engine
+// would otherwise refuse. Guarding against overwriting a live state is the
+// caller's job.
+func (t *TfExec) StatePush(ctx context.Context, dir string, files map[string][]byte, stateJSON []byte, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, nil, out)
+	defer cleanup()
+	if err != nil {
+		return err
+	}
+	// The state is staged next to the workspace (not inside it, where a sync
+	// would wipe it and the engine might read it as its own state file).
+	f, err := os.CreateTemp("", "arcloom-state-*.tfstate")
+	if err != nil {
+		return fmt.Errorf("stage state: %w", err)
+	}
+	path := f.Name()
+	defer os.Remove(path)
+	if _, err := f.Write(stateJSON); err != nil {
+		f.Close()
+		return fmt.Errorf("stage state: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("stage state: %w", err)
+	}
+	if err := tf.StatePush(ctx, path, tfexec.Force(true)); err != nil {
+		return fmt.Errorf("state push: %w", err)
+	}
+	return nil
+}
+
 // Validate runs config validation in the persistent workspace (same prepare
 // path as plan: sync + init). The streaming writers are detached before the
 // validate call itself — tfexec merges its JSON capture buffer with the

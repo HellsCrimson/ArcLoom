@@ -36,6 +36,16 @@ export class DeleteBlockedError extends Error {
 	}
 }
 
+// StateImportBlockedError signals that a state import was refused because the
+// target workspace already tracks resources (replacing it would orphan them).
+export class StateImportBlockedError extends Error {
+	tracked: number;
+	constructor(message: string, tracked: number) {
+		super(message);
+		this.tracked = tracked;
+	}
+}
+
 async function json<T>(res: Response): Promise<T> {
 	if (!res.ok) {
 		on401(res.status);
@@ -327,12 +337,25 @@ export const api = {
 			body: JSON.stringify({ files, module: module ?? '' })
 		}).then((r) => json<ImportResult>(r)),
 
-	importState: (id: string, stateJSON: string) =>
-		fetch(`/api/projects/${id}/import/state`, {
+	// importState rebuilds the config from a state file AND adopts the state into
+	// the environment's workspace. The server refuses (409) when that workspace
+	// already tracks resources — replacing it would orphan them — unless force.
+	importState: async (id: string, stateJSON: string, env = '', force = false) => {
+		const q = new URLSearchParams();
+		if (env) q.set('env', env);
+		if (force) q.set('force', 'true');
+		const qs = q.toString();
+		const res = await fetch(`/api/projects/${id}/import/state${qs ? `?${qs}` : ''}`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ state: stateJSON })
-		}).then((r) => json<ImportResult>(r)),
+		});
+		if (res.status === 409) {
+			const body = await res.json().catch(() => ({}) as { error?: string; state?: number });
+			throw new StateImportBlockedError(body.error ?? 'this project already has state', body.state ?? 0);
+		}
+		return json<ImportResult>(res);
+	},
 
 	graph: (id: string) => fetch(`/api/projects/${id}/graph`).then((r) => json<GraphData>(r)),
 
@@ -529,6 +552,8 @@ export interface LicenseStatus {
 
 export interface ImportResult {
 	addedResources: number;
+	/** How many state resources were installed as the project's own state. */
+	adoptedState?: number;
 	addedProviders: number;
 	addedVariables?: number;
 	addedLocals?: number;

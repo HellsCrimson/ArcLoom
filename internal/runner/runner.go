@@ -174,6 +174,12 @@ type Runner interface {
 	// StatePull returns the raw state JSON as the configured backend sees it
 	// (works for both local and remote backends).
 	StatePull(ctx context.Context, dir string) (string, error)
+	// StatePush installs a caller-supplied state as the workspace's own (used to
+	// adopt an existing project's state on import). It syncs + initializes like
+	// the other state ops and pushes with -force, since an imported state never
+	// shares the workspace's lineage; refusing to clobber a live state is the
+	// caller's responsibility.
+	StatePush(ctx context.Context, dir string, files map[string][]byte, stateJSON []byte, out io.Writer) error
 	// Validate syncs the generated files into the persistent workspace,
 	// initializes it, and runs the engine's config validation, returning the
 	// structured diagnostics.

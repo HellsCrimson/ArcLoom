@@ -41,6 +41,14 @@ type fakeRunner struct {
 	// planFile, when set, is written as the saved plan by Plan (what the policy
 	// gate reads back to apply exactly what it checked).
 	planFile []byte
+	// State stubs: what StatePull reports and what StatePush received.
+	statePull    string
+	statePushed  []byte
+	statePushErr error
+	// providerSchemas is what ProvidersSchema returns; schemaCalls counts how
+	// often it was asked (the state import must batch, not fetch per resource).
+	providerSchemas *tfjson.ProviderSchemas
+	schemaCalls     int
 	// Policy-gate stubs: the result/error Policy returns and what it was given.
 	policyRes       runner.PolicyResult
 	policyErr       error
@@ -54,7 +62,8 @@ func (f *fakeRunner) Version(context.Context) (string, error) {
 	return "0.0.0", nil
 }
 func (f *fakeRunner) ProvidersSchema(context.Context, []model.ProviderInstance) (*tfjson.ProviderSchemas, error) {
-	return nil, nil
+	f.schemaCalls++
+	return f.providerSchemas, nil
 }
 func (f *fakeRunner) Plan(_ context.Context, dir string, _ map[string][]byte, _ map[string]string, _ io.Writer) (runner.PlanResult, error) {
 	f.planCalled = true
@@ -97,7 +106,11 @@ func (f *fakeRunner) StateMv(context.Context, string, map[string][]byte, map[str
 func (f *fakeRunner) InitBackend(context.Context, string, map[string][]byte, bool, io.Writer) error {
 	return nil
 }
-func (f *fakeRunner) StatePull(context.Context, string) (string, error) { return "", nil }
+func (f *fakeRunner) StatePull(context.Context, string) (string, error) { return f.statePull, nil }
+func (f *fakeRunner) StatePush(_ context.Context, _ string, _ map[string][]byte, stateJSON []byte, _ io.Writer) error {
+	f.statePushed = stateJSON
+	return f.statePushErr
+}
 func (f *fakeRunner) Validate(context.Context, string, map[string][]byte, map[string]string, io.Writer) (*tfjson.ValidateOutput, error) {
 	return nil, nil
 }

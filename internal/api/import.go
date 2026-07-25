@@ -1,16 +1,23 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	tfjson "github.com/hashicorp/terraform-json"
 
+	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
 	"github.com/HellsCrimson/ArcLoom/internal/hclimport"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
+	"github.com/HellsCrimson/ArcLoom/internal/runner"
+	"github.com/HellsCrimson/ArcLoom/internal/settings"
 	"github.com/HellsCrimson/ArcLoom/internal/state"
 	"github.com/HellsCrimson/ArcLoom/internal/store"
 )
@@ -23,15 +30,18 @@ type importHCLRequest struct {
 }
 
 type importResponse struct {
-	AddedResources   int      `json:"addedResources"`
-	AddedProviders   int      `json:"addedProviders"`
-	AddedVariables   int      `json:"addedVariables,omitempty"`
-	AddedLocals      int      `json:"addedLocals,omitempty"`
-	AddedOutputs     int      `json:"addedOutputs,omitempty"`
-	AddedDataSources  int      `json:"addedDataSources,omitempty"`
-	AddedModules      int      `json:"addedModules,omitempty"`
-	AddedLocalModules int      `json:"addedLocalModules,omitempty"`
-	Warnings          []string `json:"warnings,omitempty"`
+	AddedResources    int `json:"addedResources"`
+	AddedProviders    int `json:"addedProviders"`
+	AddedVariables    int `json:"addedVariables,omitempty"`
+	AddedLocals       int `json:"addedLocals,omitempty"`
+	AddedOutputs      int `json:"addedOutputs,omitempty"`
+	AddedDataSources  int `json:"addedDataSources,omitempty"`
+	AddedModules      int `json:"addedModules,omitempty"`
+	AddedLocalModules int `json:"addedLocalModules,omitempty"`
+	// AdoptedState is how many state resources were installed as the project's
+	// own state (state import only; 0 when the state was not adopted).
+	AdoptedState int      `json:"adoptedState,omitempty"`
+	Warnings     []string `json:"warnings,omitempty"`
 }
 
 // handleImportHCL parses submitted .tf files and merges the result into the
@@ -109,9 +119,15 @@ func (s *Server) handleImportHCL(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// handleImportState reads a Terraform/OpenTofu state file and imports its
-// managed resources into the model, using each resource's schema to keep only
-// user-settable (non computed-only) attributes so the generated config is valid.
+// handleImportState reads a Terraform/OpenTofu state file and adopts the project
+// it describes: its managed resources become model resources (keeping only
+// user-settable attributes, per each resource's schema, so the generated config
+// stays valid) AND the state itself is installed as the target workspace's
+// state. Both halves matter — with the config alone, the next plan would propose
+// creating everything the state already tracks a second time.
+//
+// Adopting the state is refused with 409 when the workspace already tracks
+// managed resources (overwriting would orphan them), unless ?force=true.
 func (s *Server) handleImportState(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var req struct {
@@ -131,6 +147,13 @@ func (s *Server) handleImportState(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "unknown engine")
 		return
 	}
+	// The state lands in the selected environment's workspace, like every other
+	// state operation.
+	envName, env, err := s.resolveEnv(id, r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	resources, warnings, err := state.Parse([]byte(req.State))
 	if err != nil {
@@ -138,21 +161,30 @@ func (s *Server) handleImportState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For each state resource, fetch its schema and keep only settable attrs.
+	// Refuse before touching anything: replacing a state that still tracks
+	// resources would orphan them (same rule as the project delete guard).
+	force := r.URL.Query().Get("force") == "true"
+	dir := s.runDir(id, envName)
+	if !force {
+		if n := s.managedCountIn(r.Context(), p, dir); n > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": fmt.Sprintf("this project's state already tracks %d resource(s); importing would replace it and orphan them — tick \"replace the existing state\" to do it anyway", n),
+				"state": n,
+			})
+			return
+		}
+	}
+
+	// Resolve the provider schemas once for the whole state (a single engine
+	// init), not once per resource.
+	schemas, schemaWarnings := s.stateProviderSchemas(r.Context(), run, resources)
+	warnings = append(warnings, schemaWarnings...)
+
 	imported := make([]model.Resource, 0, len(resources))
 	for _, sr := range resources {
-		source := providerSourceFromState(sr.ProviderAddr, sr.Type)
-		schemas, serr := run.ProvidersSchema(r.Context(), []model.ProviderInstance{{
-			Key: model.ProviderLocalName(sr.Type), Source: source,
-		}})
-		if serr != nil {
-			warnings = append(warnings, fmt.Sprintf("%s.%s: schema unavailable (%v)", sr.Type, sr.Name, serr))
-			continue
-		}
-		_, ps := findProviderSchema(schemas, source)
+		ps := schemas[providerSourceFromState(sr.ProviderAddr, sr.Type)]
 		if ps == nil {
-			warnings = append(warnings, fmt.Sprintf("%s.%s: provider schema not found", sr.Type, sr.Name))
-			continue
+			continue // already reported by stateProviderSchemas
 		}
 		rs := ps.ResourceSchemas[sr.Type]
 		attrs, w2 := state.SettableAttrs(rs, sr.Attributes)
@@ -178,13 +210,123 @@ func (s *Server) handleImportState(w http.ResponseWriter, r *http.Request) {
 	resp := importResponse{Warnings: warnings}
 	if err := s.store.Update(id, func(pr *model.Project) error {
 		resp.AddedProviders = mergeProviders(pr, provList)
+		// Renames break the link to the state (the address is what ties config to
+		// state), so they are reported rather than silently accepted.
+		before := renameTargets(pr.Resources, imported)
 		resp.AddedResources = mergeResources(pr, imported)
+		resp.Warnings = append(resp.Warnings, before...)
 		return nil
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	// Install the state itself, so the State panel lists these resources and the
+	// next plan diffs against them.
+	if err := s.adoptState(r.Context(), run, id, envName, env, []byte(req.State)); err != nil {
+		// The model was imported; say plainly that the state half failed rather
+		// than pretending the whole import worked.
+		resp.Warnings = append(resp.Warnings, "state not adopted: "+firstLine(err.Error()))
+	} else {
+		resp.AdoptedState = len(resources)
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// stateProviderSchemas resolves the provider schema for every distinct provider
+// referenced by a state, batching them into ONE engine call (each call installs
+// and runs the provider plugins, so per-resource fetches made a modest state
+// take tens of seconds). If the batch fails — one bad source sinks it — each
+// provider is retried alone so the rest still import.
+func (s *Server) stateProviderSchemas(ctx context.Context, run runner.Runner, resources []state.Resource) (map[string]*tfjson.ProviderSchema, []string) {
+	out := map[string]*tfjson.ProviderSchema{}
+	var warnings []string
+
+	sources := map[string]string{} // source -> local name
+	for _, sr := range resources {
+		src := providerSourceFromState(sr.ProviderAddr, sr.Type)
+		if _, ok := sources[src]; !ok {
+			sources[src] = model.ProviderLocalName(sr.Type)
+		}
+	}
+	instances := make([]model.ProviderInstance, 0, len(sources))
+	for src, key := range sources {
+		instances = append(instances, model.ProviderInstance{Key: key, Source: src})
+	}
+	if len(instances) == 0 {
+		return out, nil
+	}
+
+	if schemas, err := run.ProvidersSchema(ctx, instances); err == nil {
+		for src := range sources {
+			if _, ps := findProviderSchema(schemas, src); ps != nil {
+				out[src] = ps
+			}
+		}
+	}
+	// Anything the batch didn't resolve (whole call failed, or one provider
+	// missing) gets one more chance on its own.
+	for src, key := range sources {
+		if out[src] != nil {
+			continue
+		}
+		schemas, err := run.ProvidersSchema(ctx, []model.ProviderInstance{{Key: key, Source: src}})
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s: schema unavailable (%v) — its resources were skipped", src, err))
+			continue
+		}
+		if _, ps := findProviderSchema(schemas, src); ps != nil {
+			out[src] = ps
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf("%s: provider schema not found — its resources were skipped", src))
+	}
+	return out, warnings
+}
+
+// adoptState installs an imported state as the workspace's own. With the default
+// local backend that is a file write (the engine picks it up on the next op,
+// terraform.tfstate being one of the persisted workspace entries); with a
+// configured backend it has to go through the CLI so the remote receives it.
+func (s *Server) adoptState(ctx context.Context, run runner.Runner, id, envName string, env settings.Environment, stateJSON []byte) error {
+	p, err := s.store.Get(id)
+	if err != nil {
+		return err
+	}
+	dir := s.runDir(id, envName)
+	if p.Backend != nil {
+		files, err := hclgen.GenerateFiles(p)
+		if err != nil {
+			return err
+		}
+		if bc := backendConfigFileContents(env); bc != nil {
+			files[".arcloom.tfbackend"] = bc
+		}
+		return run.StatePush(ctx, dir, files, stateJSON, nil)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	// 0600: a state file carries resource attributes, including values a provider
+	// marked sensitive.
+	return os.WriteFile(filepath.Join(dir, "terraform.tfstate"), stateJSON, 0o600)
+}
+
+// renameTargets reports the resources whose (type, name) already exists, i.e.
+// the ones mergeResources will rename — their state address will no longer match
+// the config, so the user needs to know.
+func renameTargets(existing, incoming []model.Resource) []string {
+	taken := map[string]bool{}
+	for _, r := range existing {
+		taken[r.Type+"."+r.Name] = true
+	}
+	var out []string
+	for _, r := range incoming {
+		if taken[r.Type+"."+r.Name] {
+			out = append(out, fmt.Sprintf("%s.%s already exists and was imported under a new name; its state address no longer matches the config (use State → move to fix)", r.Type, r.Name))
+		}
+	}
+	return out
 }
 
 // mergeProviders adds provider instances not already present (by key + alias).

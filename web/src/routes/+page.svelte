@@ -112,6 +112,9 @@
 	let importHclFiles = $state<Record<string, string>>({});
 	let showImportState = $state(false);
 	let importStateText = $state('');
+	// replaceState allows a state import to overwrite a workspace that already
+	// tracks resources (the server refuses otherwise — it would orphan them).
+	let replaceState = $state(false);
 	let importMsg = $state('');
 	let showEditor = $state(false);
 
@@ -1076,13 +1079,22 @@
 		importMsg = '';
 		try {
 			if (!importStateText.trim()) throw new Error('provide a state file');
-			const res = await api.importState(project.id, importStateText);
+			const res = await api.importState(project.id, importStateText, activeEnv, replaceState);
 			project = await api.getProject(project.id);
 			await refreshProjects();
 			await refreshHcl();
-			importMsg = `Imported ${res.addedResources} resources${res.warnings?.length ? ` · ${res.warnings.length} warning(s)` : ''}`;
+			// The import also adopted the state, so the State panel / plan overlay
+			// must not keep showing the pre-import picture.
+			await loadState();
+			planChanges = [];
+			planCounts = null;
+			const parts = [`${res.addedResources} resources`];
+			if (res.adoptedState) parts.push(`state adopted (${res.adoptedState} tracked)`);
+			if (res.warnings?.length) parts.push(`${res.warnings.length} warning(s)`);
+			importMsg = `Imported ${parts.join(' · ')}`;
 			showImportState = false;
 			importStateText = '';
+			replaceState = false;
 		} catch (err) {
 			importMsg = 'Error: ' + (err as Error).message;
 		} finally {
@@ -2386,9 +2398,19 @@
 
 <!-- Import state modal -->
 <Modal title="Import local state" bind:open={showImportState}>
-	<p class="mb-2 text-xs text-[var(--al-muted)]">Select a <span class="mono">terraform.tfstate</span> file or paste its JSON. Managed resources are imported; computed/sensitive values are dropped so the generated config stays valid.</p>
+	<p class="mb-2 text-xs text-[var(--al-muted)]">
+		Select a <span class="mono">terraform.tfstate</span> file or paste its JSON. Managed resources become
+		editable configuration (computed/sensitive values are dropped so the generated config stays valid),
+		<strong class="text-[var(--al-text)]">and the state itself is adopted</strong> as this project's state
+		{#if activeEnv}for environment <span class="mono">{activeEnv}</span>{/if} — so a plan diffs against
+		what already exists instead of proposing to create it all again.
+	</p>
 	<input type="file" accept=".tfstate,.json" class="mb-2 text-xs" onchange={(e) => readFiles(e.currentTarget.files, 'state')} />
 	<textarea class={ta} rows="12" placeholder={'{ "version": 4, "resources": [...] }'} bind:value={importStateText}></textarea>
+	<label class="mt-2 flex items-center gap-2 text-xs text-[var(--al-muted)]">
+		<input type="checkbox" checked={replaceState} onchange={() => (replaceState = !replaceState)} class="accent-[var(--al-accent)]" />
+		Replace the existing state (needed only when this project already tracks resources)
+	</label>
 	{#snippet footer()}
 		<button class={btnGhost} onclick={() => (showImportState = false)}>Cancel</button>
 		<button class={btnPrimary} onclick={doImportState} disabled={busy === 'import'}>
