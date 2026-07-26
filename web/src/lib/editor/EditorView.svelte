@@ -99,6 +99,13 @@
 	);
 	const providerFooter = $derived((activeProvider || 'no') + ' provider');
 
+	// One pill per provider KEY, not per instance: instance identity is
+	// (key, alias), so an aliased instance repeats its key and browses the very
+	// same schema. Keying the pills by p.key over the raw list made Svelte throw
+	// each_key_duplicate the moment a project had an alias, which aborted the
+	// whole canvas render — the Editor button lit up and no graph appeared.
+	const providerKeys = $derived([...new Set(project.providers.map((p) => p.key))]);
+
 	const localModules = $derived(project.localModules ?? []);
 	const registryModules = $derived(project.modules ?? []);
 	const rootDataSources = $derived(project.dataSources ?? []);
@@ -861,15 +868,15 @@
 		<!-- provider pills + close -->
 		<div class="absolute right-4 top-3.5 z-[5] flex items-center gap-2">
 			<div class="flex gap-0.5" style="background:rgba(13,17,23,0.85);backdrop-filter:blur(8px);padding:4px;border-radius:10px;border:1px solid rgba(255,255,255,0.08);">
-				{#each project.providers as p (p.key)}
+				{#each providerKeys as key (key)}
 					<button
 						class="rounded-md px-2.5 py-1.5 text-[11px] font-bold"
-						style="background:{p.key === activeProvider ? accent : 'transparent'};color:{p.key === activeProvider ? '#0a0e15' : '#8b95a5'};"
-						onclick={() => switchProvider(p.key)}
-						title="Browse {p.key} resources to add"
-					>{p.key}</button>
+						style="background:{key === activeProvider ? accent : 'transparent'};color:{key === activeProvider ? '#0a0e15' : '#8b95a5'};"
+						onclick={() => switchProvider(key)}
+						title="Browse {key} resources to add"
+					>{key}</button>
 				{/each}
-				{#if project.providers.length === 0}
+				{#if providerKeys.length === 0}
 					<span class="px-2 py-1.5 text-[11px] text-white/30">no providers</span>
 				{/if}
 			</div>
@@ -1109,8 +1116,10 @@
 		</div>
 	{/if}
 
-	<!-- Live HCL panel -->
-	<div class="w-[440px] flex-none" style="border-left:1px solid rgba(255,255,255,0.08);min-height:0;">
+	<!-- Live HCL panel. max-w caps it on a narrow window: at a fixed 440px it ate
+	     the whole row and the canvas (flex-1) collapsed to zero width, so opening
+	     the editor showed the HCL pane and no graph at all. -->
+	<div class="w-[440px] max-w-[45%] flex-none" style="border-left:1px solid rgba(255,255,255,0.08);min-height:0;">
 		<HclView {hcl}>
 			{#snippet right()}
 				{#if onPlan}
