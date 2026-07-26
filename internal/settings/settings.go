@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -368,41 +369,17 @@ func (s *Store) initKey(masterKey string) error {
 }
 
 // hasEncryptedFields reports whether any at-rest secret is stored.
-func (s *Store) hasEncryptedFields() bool {
-	if s.doc.SSO.ClientSecretEnc != "" {
-		return true
-	}
-	for _, c := range s.doc.GitCreds {
-		if c.TokenEnc != "" || c.SSHKeyEnc != "" || c.PassphraseEnc != "" {
-			return true
-		}
-	}
-	for _, n := range s.doc.Notify {
-		if n.URLEnc != "" {
-			return true
-		}
-	}
-	return false
-}
+func (s *Store) hasEncryptedFields() bool { return len(encFields(&s.doc)) > 0 }
 
-// migrateLegacy re-seals every encrypted field (SSO client secret + git creds)
-// from the legacy sha256 key to the new argon2id key. Best-effort per field: one
-// that can't be read is left as-is (decryptSecret still handles it via the
-// legacy-key fallback).
+// migrateLegacy re-seals every encrypted field from the legacy sha256 key to the
+// new argon2id key. Best-effort per field: one that can't be read is left as-is
+// (decryptSecret still handles it via the legacy-key fallback).
 func (s *Store) migrateLegacy() {
 	if s.legacyKey == nil {
 		return
 	}
-	s.doc.SSO.ClientSecretEnc = s.reseal(s.doc.SSO.ClientSecretEnc)
-	for id, c := range s.doc.GitCreds {
-		c.TokenEnc = s.reseal(c.TokenEnc)
-		c.SSHKeyEnc = s.reseal(c.SSHKeyEnc)
-		c.PassphraseEnc = s.reseal(c.PassphraseEnc)
-		s.doc.GitCreds[id] = c
-	}
-	for id, n := range s.doc.Notify {
-		n.URLEnc = s.reseal(n.URLEnc)
-		s.doc.Notify[id] = n
+	for _, f := range encFields(&s.doc) {
+		f.set(&s.doc, s.reseal(f.get(&s.doc)))
 	}
 }
 
@@ -867,29 +844,62 @@ func (s *Store) DeleteProjectACL(projectID string) error {
 	return s.SetProjectACL(projectID, nil)
 }
 
+// persist writes the whole document atomically (temp + rename), so a crash
+// mid-write can never leave a half-written settings file — and a key rotation,
+// which rewrites every encrypted field together with the salt that opens them,
+// is all-or-nothing.
 func (s *Store) persist() error {
 	data, err := yaml.Marshal(s.doc)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
-func (s *Store) decryptSecret(enc string) string {
-	if enc == "" || s.key == nil {
-		return ""
+// ErrUndecryptable means a stored field exists but no available key opens it —
+// almost always a changed ARCLOOM_SECRET_KEY.
+var ErrUndecryptable = errors.New("stored value cannot be decrypted with the current key")
+
+// openSecret decrypts an at-rest field, distinguishing "not set" (empty string,
+// no error) from "set but unreadable" (ErrUndecryptable). Callers that only
+// want the value use decryptSecret; rotation and the health check need the
+// difference, because collapsing the two is what makes a wrong key look like an
+// unconfigured feature.
+func (s *Store) openSecret(enc string) (string, error) {
+	if enc == "" {
+		return "", nil
+	}
+	if s.key == nil {
+		return "", ErrUndecryptable
 	}
 	blob, err := base64.StdEncoding.DecodeString(enc)
 	if err != nil {
-		return ""
+		return "", ErrUndecryptable
 	}
-	plain, err := secrets.Decrypt(s.key, blob)
-	if err != nil && s.legacyKey != nil {
-		// Fall back to the pre-KDF key for a field not yet migrated.
-		plain, err = secrets.Decrypt(s.legacyKey, blob)
+	plain, ok := openWith(blob, s.key, s.legacyKey)
+	if !ok {
+		return "", ErrUndecryptable
 	}
+	return string(plain), nil
+}
+
+// decryptSecret returns a stored field's plaintext, or "" when it is absent or
+// unreadable. An unreadable field is LOGGED rather than passed over in silence:
+// it means the key changed, and the symptom would otherwise surface much later
+// as an SSO login rejected on a wrong client secret.
+func (s *Store) decryptSecret(enc string) string {
+	v, err := s.openSecret(enc)
 	if err != nil {
+		slog.Warn("settings: stored secret could not be decrypted (wrong ARCLOOM_SECRET_KEY?)", "path", s.path)
 		return ""
 	}
-	return string(plain)
+	return v
 }

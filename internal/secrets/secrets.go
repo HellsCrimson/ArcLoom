@@ -48,6 +48,10 @@ type Store struct {
 	// legacyKey is the pre-KDF (bare sha256) key, kept so .enc files written
 	// before the argon2id KDF landed can still be decrypted and migrated.
 	legacyKey []byte
+	// prevKey is the previous generation's key during a master-key rotation,
+	// kept as a decrypt fallback until every blob verifies under the new one —
+	// so an interrupted rotation reads as mixed, not as lost.
+	prevKey []byte
 	// remote is the optional external backend; when set it replaces the local
 	// files as the writable store (guarded by mu, swappable at runtime).
 	remote Backend
@@ -65,7 +69,7 @@ func NewStore(dir, masterKey string) *Store {
 		return s // local backend disabled
 	}
 	s.legacyKey = LegacyKey(masterKey)
-	salt, created, err := loadOrCreateSalt(dir)
+	meta, created, err := loadOrCreateKDF(dir)
 	if err != nil {
 		// Can't establish the argon2id salt (disk error): fall back to the legacy
 		// derivation so existing secrets stay readable. Migration is retried on
@@ -74,7 +78,17 @@ func NewStore(dir, masterKey string) *Store {
 		s.key = s.legacyKey
 		return s
 	}
-	s.key = DeriveKey(masterKey, salt)
+	s.key = DeriveKey(masterKey, meta.Salt)
+	if meta.Rotating && len(meta.PrevSalt) > 0 {
+		// A master-key rotation was interrupted: some files may still be sealed
+		// under the previous generation. Deriving that generation from THIS
+		// passphrase only helps when the server was restarted with the old one,
+		// which is exactly the case where nothing would otherwise open — the
+		// other half is finished by re-running the rotation.
+		s.prevKey = DeriveKey(masterKey, meta.PrevSalt)
+		slog.Warn("secrets: an interrupted master-key rotation was found; re-run the rotation with the old and new keys to finish it",
+			"dir", dir)
+	}
 	if created {
 		s.migrateLegacy() // re-encrypt any pre-KDF files under the new key
 	}
@@ -222,16 +236,13 @@ func (s *Store) loadLocal(projectID string) (map[string]string, error) {
 		}
 		return nil, err
 	}
-	plain, err := decrypt(s.key, data)
-	if err != nil && s.legacyKey != nil {
-		// Fall back to the pre-KDF key for a file not yet migrated (e.g. after an
-		// interrupted migration).
-		if p, e2 := decrypt(s.legacyKey, data); e2 == nil {
-			plain, err = p, nil
-		}
-	}
-	if err != nil {
-		return nil, fmt.Errorf("decrypt secrets (wrong ARCLOOM_SECRET_KEY?): %w", err)
+	// Fall back to the previous generation's key (an unfinished rotation) and to
+	// the pre-KDF key (an unfinished sha256 → argon2id migration) so a file the
+	// current key can't open is still served rather than reported as lost.
+	plain, ok := tryDecrypt(data, s.decryptKeys())
+	if !ok {
+		// Names the project, not the file path: this reaches the API response.
+		return nil, fmt.Errorf("decrypt secrets for project %s (wrong ARCLOOM_SECRET_KEY?)", projectID)
 	}
 	if err := json.Unmarshal(plain, &m); err != nil {
 		return nil, err
@@ -275,7 +286,7 @@ func (s *Store) migrateLegacy() {
 		if err != nil {
 			continue
 		}
-		_ = os.WriteFile(s.path(id), enc, 0o600)
+		_ = writeFileAtomic(s.path(id), enc, 0o600)
 	}
 }
 
@@ -294,7 +305,7 @@ func (s *Store) saveLocal(projectID string, m map[string]string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path(projectID), enc, 0o600)
+	return writeFileAtomic(s.path(projectID), enc, 0o600)
 }
 
 // argon2id KDF parameters for stretching the master passphrase into the AES
@@ -317,6 +328,13 @@ const kdfFile = "kdf.json"
 type kdfMeta struct {
 	Version int    `json:"version"`
 	Salt    []byte `json:"salt"` // json encodes []byte as base64
+	// PrevSalt is the previous generation's salt, recorded while a master-key
+	// rotation is in flight so the old key stays derivable (from the old
+	// passphrase) and the rotation can be resumed rather than half-lost.
+	PrevSalt []byte `json:"prev_salt,omitempty"`
+	// Rotating marks a rotation that has not finished verifying. Salt is then
+	// the NEW generation's salt and PrevSalt the one blobs may still be under.
+	Rotating bool `json:"rotating,omitempty"`
 }
 
 // DeriveKey stretches a master passphrase into a 32-byte AES key with argon2id
@@ -349,39 +367,72 @@ func NewSalt() ([]byte, error) {
 	return salt, nil
 }
 
-// loadOrCreateSalt reads the store's KDF salt from <dir>/kdf.json, minting and
-// persisting a fresh one on first use. created is true only when a new salt was
-// generated, signalling the caller to migrate any pre-KDF ciphertext.
-func loadOrCreateSalt(dir string) (salt []byte, created bool, err error) {
-	path := filepath.Join(dir, kdfFile)
-	data, rerr := os.ReadFile(path)
-	if rerr == nil {
-		var m kdfMeta
-		if jerr := json.Unmarshal(data, &m); jerr != nil || len(m.Salt) == 0 {
-			return nil, false, fmt.Errorf("corrupt KDF metadata in %s", kdfFile)
+// readKDF reads <dir>/kdf.json. ok is false when the store has no record yet
+// (a fresh install, or one written before the argon2id KDF landed).
+func readKDF(dir string) (m kdfMeta, ok bool, err error) {
+	data, rerr := os.ReadFile(filepath.Join(dir, kdfFile))
+	if rerr != nil {
+		if os.IsNotExist(rerr) {
+			return kdfMeta{}, false, nil
 		}
-		return m.Salt, false, nil
+		return kdfMeta{}, false, rerr
 	}
-	if !os.IsNotExist(rerr) {
-		return nil, false, rerr
+	if jerr := json.Unmarshal(data, &m); jerr != nil || len(m.Salt) == 0 {
+		return kdfMeta{}, false, fmt.Errorf("corrupt KDF metadata in %s", kdfFile)
+	}
+	return m, true, nil
+}
+
+// writeKDF persists the key-derivation record, replacing it atomically so a
+// crash mid-write can never leave a store with no salt at all.
+func writeKDF(dir string, m kdfMeta) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	blob, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(dir, kdfFile), blob, 0o600)
+}
+
+// loadOrCreateKDF reads the store's key-derivation record, minting and
+// persisting a fresh salt on first use. created is true only when a new salt was
+// generated, signalling the caller to migrate any pre-KDF ciphertext.
+func loadOrCreateKDF(dir string) (m kdfMeta, created bool, err error) {
+	m, ok, err := readKDF(dir)
+	if err != nil {
+		return kdfMeta{}, false, err
+	}
+	if ok {
+		return m, false, nil
 	}
 	// First use: mint and persist a salt before any data is sealed with the key
 	// derived from it, so a crash can never orphan already-encrypted files.
-	salt, err = NewSalt()
+	salt, err := NewSalt()
 	if err != nil {
-		return nil, false, err
+		return kdfMeta{}, false, err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, false, err
+	m = kdfMeta{Version: 1, Salt: salt}
+	if err := writeKDF(dir, m); err != nil {
+		return kdfMeta{}, false, err
 	}
-	blob, err := json.Marshal(kdfMeta{Version: 1, Salt: salt})
-	if err != nil {
-		return nil, false, err
+	return m, true, nil
+}
+
+// writeFileAtomic writes data to a temporary sibling and renames it into place,
+// so a reader never observes a half-written file and a crash leaves either the
+// old content or the new one.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
 	}
-	if err := os.WriteFile(path, blob, 0o600); err != nil {
-		return nil, false, err
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
 	}
-	return salt, true, nil
+	return nil
 }
 
 // Encrypt/Decrypt expose the AES-256-GCM primitives for app-level encrypted

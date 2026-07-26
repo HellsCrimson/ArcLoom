@@ -62,6 +62,7 @@ var auditActions = map[string]string{
 	"PUT /admin/settings/sso":                        "settings.sso",
 	"PUT /admin/settings/secret-store":               "settings.secret_store.set",
 	"POST /admin/settings/secret-store/test":         "settings.secret_store.test",
+	"POST /admin/settings/secret-key/rotate":         "settings.secret_key.rotate",
 	"PUT /admin/settings/license":                    "settings.license",
 }
 

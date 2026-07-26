@@ -158,6 +158,9 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		writeErr(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
+	// From here on the engine is running with resolved secrets in hand; a
+	// master-key rotation must wait rather than re-seal the store underneath it.
+	defer s.beginEngineOp()()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

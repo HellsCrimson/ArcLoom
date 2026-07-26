@@ -8,11 +8,13 @@
 		type SecretStoreSettings,
 		type SecretStoreUpdate,
 		type LicenseStatus,
-		type InstanceInfo
+		type InstanceInfo,
+		type SecretKeyStatus,
+		type RotateKeyResult
 	} from '$lib/api/client';
 	import type { AuditEntry } from '$lib/types';
 	import { auth } from '$lib/stores/auth.svelte';
-	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck, Award, ScrollText, Server, Check, X, Users, Plus } from 'lucide-svelte';
+	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck, Award, ScrollText, Server, Check, X, Users, Plus, TriangleAlert, RefreshCw } from 'lucide-svelte';
 
 	// --- SSO group mapping helpers ---
 	// These take the null check off the markup: `sso` is only non-null inside the
@@ -35,7 +37,7 @@
 
 	let { open = $bindable(false) }: { open: boolean } = $props();
 
-	type Tab = 'users' | 'sso' | 'secrets' | 'license' | 'audit' | 'instance';
+	type Tab = 'users' | 'sso' | 'secrets' | 'license' | 'audit' | 'instance' | 'danger';
 	let tab = $state<Tab>('users');
 	let error = $state('');
 	let notice = $state('');
@@ -305,6 +307,64 @@
 		}
 	}
 
+	// --- Danger zone: master-key rotation ---
+	// Re-seals both encrypted stores (the per-project secret files and the
+	// settings document's encrypted fields) under a new ARCLOOM_SECRET_KEY. The
+	// current key is required by the server, so this is never started on a guess.
+	let secretKey = $state<SecretKeyStatus | null>(null);
+	let rkCurrent = $state('');
+	let rkNew = $state('');
+	let rkRepeat = $state('');
+	let rkConfirm = $state('');
+	let rotating = $state(false);
+	let rotateResult = $state<RotateKeyResult | null>(null);
+
+	const ROTATE_WORD = 'ROTATE';
+	// Anything that would make the rotation pointless or unsafe to start.
+	let rotateBlocked = $derived(
+		!secretKey?.keySet ||
+			secretKey.busy ||
+			rkNew.length < 12 ||
+			rkNew !== rkRepeat ||
+			rkNew === rkCurrent ||
+			rkCurrent === '' ||
+			rkConfirm !== ROTATE_WORD
+	);
+
+	async function loadSecretKey() {
+		error = '';
+		try {
+			secretKey = await api.admin.getSecretKey();
+		} catch (e) {
+			error = (e as Error).message;
+		}
+	}
+
+	async function rotateSecretKey() {
+		rotating = true;
+		error = '';
+		notice = '';
+		rotateResult = null;
+		try {
+			rotateResult = await api.admin.rotateSecretKey(rkCurrent, rkNew);
+			secretKey = rotateResult.status;
+			// Keep the new key in the "current" field: a follow-up rotation (or a
+			// re-run of an incomplete one) needs it, and retyping invites a typo.
+			rkCurrent = rkNew;
+			rkNew = '';
+			rkRepeat = '';
+			rkConfirm = '';
+		} catch (e) {
+			// Refresh first, then report: loadSecretKey clears `error` on entry, so
+			// setting it before the reload would wipe the very message that explains
+			// the refusal.
+			await loadSecretKey();
+			error = (e as Error).message;
+		} finally {
+			rotating = false;
+		}
+	}
+
 	// --- Instance ---
 	let instance = $state<InstanceInfo | null>(null);
 	let loadingInstance = $state(false);
@@ -339,6 +399,7 @@
 		if (tab === 'license' && license === null) loadLicense();
 		if (tab === 'audit' && auditEntries.length === 0) loadAudit();
 		if (tab === 'instance' && instance === null) loadInstance();
+		if (tab === 'danger' && secretKey === null) loadSecretKey();
 	});
 
 	const field =
@@ -355,6 +416,12 @@
 		<button class={tabBtn(tab === 'license')} onclick={() => (tab = 'license')}>License</button>
 		<button class={tabBtn(tab === 'audit')} onclick={() => (tab = 'audit')}>Audit log</button>
 		<button class={tabBtn(tab === 'instance')} onclick={() => (tab = 'instance')}>Instance</button>
+		<button
+			class="ml-auto rounded-md px-3 py-1.5 text-sm font-medium {tab === 'danger'
+				? 'bg-[var(--al-danger)]/15 text-[var(--al-danger)]'
+				: 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}"
+			onclick={() => (tab = 'danger')}
+		>Danger zone</button>
 	</div>
 
 	{#if error}<p class="mb-2 text-sm text-[var(--al-danger)]">{error}</p>{/if}
@@ -877,6 +944,146 @@
 			</div>
 		{:else if !loadingInstance}
 			<p class="py-4 text-center text-xs text-[var(--al-muted)]">No instance information.</p>
+		{/if}
+	{:else if tab === 'danger'}
+		<!-- Master-key rotation. Kept out of the ordinary settings tabs because it
+		     is the one operation here that can make credentials unrecoverable. -->
+		{#if secretKey === null}
+			<div class="flex items-center gap-2 py-6 text-sm text-[var(--al-muted)]"><Loader2 size={14} class="animate-spin" /> Loading…</div>
+		{:else}
+			{@const sk = secretKey}
+			<div class="mb-3 flex items-center gap-2 rounded-lg border border-[var(--al-danger)]/40 bg-[var(--al-danger)]/10 px-3 py-2">
+				<TriangleAlert size={15} class="text-[var(--al-danger)]" />
+				<span class="text-sm font-semibold text-[var(--al-text)]">Rotate the master key</span>
+				<button
+					class="ml-auto rounded-md border border-[var(--al-border)] px-2.5 py-1 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]"
+					onclick={loadSecretKey}
+				>Refresh</button>
+			</div>
+
+			<div class="max-h-[56vh] space-y-3 overflow-y-auto pr-1">
+				{#if !sk.keySet}
+					<p class="rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-3 py-2 text-xs text-[var(--al-muted)]">
+						<span class="mono">ARCLOOM_SECRET_KEY</span> is not configured, so nothing is encrypted with it
+						and there is nothing to rotate.
+					</p>
+				{/if}
+
+				<!-- What the key currently seals, and what it can still open. A field
+				     that fails to decrypt used to be indistinguishable from one that
+				     was never set; this is where that difference becomes visible. -->
+				<div class="rounded-md border border-[var(--al-border)] p-2.5">
+					<div class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--al-muted)]">What this key seals</div>
+					<div class="grid grid-cols-[10rem_1fr] gap-x-3 gap-y-1 text-xs">
+						<span class="text-[var(--al-muted)]">secret files</span>
+						<span class="mono text-[var(--al-text)]">
+							{sk.secretFiles} project file(s) · {sk.secretValues} value(s)
+							{#if sk.unreadableSecrets?.length}
+								<span class="text-[var(--al-danger)]"> · {sk.unreadableSecrets.length} unreadable: {sk.unreadableSecrets.join(', ')}</span>
+							{/if}
+						</span>
+						<span class="text-[var(--al-muted)]">settings fields</span>
+						<span class="mono text-[var(--al-text)]">
+							{sk.settingsFields.length} field(s)
+							{#if sk.unreadableFields > 0}
+								<span class="text-[var(--al-danger)]"> · {sk.unreadableFields} unreadable</span>
+							{/if}
+						</span>
+					</div>
+					{#if sk.settingsFields.length > 0}
+						<div class="mt-1.5 flex flex-wrap gap-1">
+							{#each sk.settingsFields as f (f.field)}
+								<span
+									class="mono rounded px-1.5 py-0.5 text-[10px] {f.readable
+										? 'bg-[var(--al-panel-2)] text-[var(--al-muted)]'
+										: 'bg-[var(--al-danger)]/15 text-[var(--al-danger)]'}"
+									title={f.readable ? 'readable with the current key' : 'cannot be decrypted with the current key'}
+								>{f.field}</span>
+							{/each}
+						</div>
+					{/if}
+					{#if sk.unreadableFields > 0 || sk.unreadableSecrets?.length}
+						<p class="mt-1.5 text-[10px] text-[var(--al-danger)]">
+							Some values do not open with the key this server is running. Rotating with the current key
+							will not fix them — restore the key they were sealed with, or the backup.
+						</p>
+					{/if}
+				</div>
+
+				<!-- Blast radius, stated so it does not read larger than it is. -->
+				<div class="rounded-md border border-[var(--al-border)] p-2.5 text-xs text-[var(--al-muted)]">
+					<div class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide">Not affected</div>
+					User passwords (hashed, not sealed with this key), login sessions, Terraform state, the license
+					token (signed, not secret), <span class="mono">ARCLOOM_SECRET_&lt;name&gt;</span> environment secrets{#if sk.externalStore},
+					and the values held in <span class="mono">{sk.externalStore}</span> — only its access token is sealed here{/if}.
+					<div class="mt-1.5">
+						Back up the secrets directory and <span class="mono">settings.yaml</span> before rotating. With the
+						server stopped you can run <span class="mono">arcloom rekey -old … -new …</span> instead, which has
+						no window where the process and the environment disagree.
+					</div>
+				</div>
+
+				<div class="grid grid-cols-2 gap-3">
+					<div class="space-y-1">
+						<span class="block text-xs font-medium text-[var(--al-muted)]">Current key</span>
+						<input class={field} type="password" bind:value={rkCurrent} autocomplete="off" placeholder="ARCLOOM_SECRET_KEY in use" />
+					</div>
+					<div class="space-y-1">
+						<span class="block text-xs font-medium text-[var(--al-muted)]">New key (min 12 chars)</span>
+						<input class={field} type="password" bind:value={rkNew} autocomplete="new-password" />
+					</div>
+					<div class="space-y-1">
+						<span class="block text-xs font-medium text-[var(--al-muted)]">Repeat new key</span>
+						<input class={field} type="password" bind:value={rkRepeat} autocomplete="new-password" />
+					</div>
+					<div class="space-y-1">
+						<span class="block text-xs font-medium text-[var(--al-muted)]">Type {ROTATE_WORD} to confirm</span>
+						<input class="{field} mono" bind:value={rkConfirm} placeholder={ROTATE_WORD} autocapitalize="characters" spellcheck="false" />
+					</div>
+				</div>
+				{#if rkNew && rkRepeat && rkNew !== rkRepeat}
+					<p class="text-xs text-[var(--al-danger)]">The two new keys do not match.</p>
+				{/if}
+				{#if sk.busy}
+					<p class="text-xs text-[var(--al-danger)]">
+						A plan, apply or drift check is running. Rotation waits for it to finish.
+					</p>
+				{/if}
+
+				<div class="flex justify-end">
+					<button
+						class="inline-flex items-center gap-1.5 rounded-md bg-[var(--al-danger)] px-3 py-1.5 text-sm font-medium text-white hover:brightness-110 disabled:opacity-40"
+						disabled={rotating || rotateBlocked}
+						onclick={rotateSecretKey}
+					>
+						{#if rotating}<Loader2 size={14} class="animate-spin" />{:else}<RefreshCw size={14} />{/if} Rotate key
+					</button>
+				</div>
+
+				{#if rotateResult}
+					{@const rr = rotateResult}
+					<div class="rounded-md border {rr.complete ? 'border-[var(--al-accent)]/50' : 'border-[var(--al-danger)]/50'} p-2.5 text-xs">
+						<div class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide {rr.complete ? 'text-[var(--al-accent)]' : 'text-[var(--al-danger)]'}">
+							{rr.complete ? 'Rotation complete' : 'Rotation incomplete'}
+						</div>
+						<div class="grid grid-cols-[10rem_1fr] gap-x-3 gap-y-1">
+							<span class="text-[var(--al-muted)]">secret files</span>
+							<span class="mono text-[var(--al-text)]">{rr.secrets.rekeyed} re-keyed · {rr.secrets.verified} verified · {rr.secrets.values} value(s)</span>
+							<span class="text-[var(--al-muted)]">settings fields</span>
+							<span class="mono text-[var(--al-text)]">{rr.settings.rekeyed} re-keyed · {rr.settings.verified} verified</span>
+						</div>
+						{#each rr.warnings ?? [] as w (w)}
+							<p class="mt-1.5 rounded bg-[var(--al-danger)]/10 px-2 py-1 text-[var(--al-danger)]">{w}</p>
+						{/each}
+						{#if !rr.complete}
+							<p class="mt-1.5 text-[var(--al-danger)]">
+								Re-run the rotation with the same keys to finish it, or restore your backup. The items
+								still under the old key are listed above.
+							</p>
+						{/if}
+					</div>
+				{/if}
+			</div>
 		{/if}
 	{/if}
 </Modal>

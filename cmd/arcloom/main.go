@@ -54,6 +54,10 @@ func main() {
 			}
 			fmt.Println()
 			return
+		case "rekey":
+			// Offline master-key rotation (see rekey.go). Runs instead of the
+			// server, so nothing is reading the stores while they are re-sealed.
+			os.Exit(rekeyCmd(os.Args[2:]))
 		}
 	}
 

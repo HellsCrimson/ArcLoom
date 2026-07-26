@@ -54,6 +54,11 @@ type Server struct {
 	// memory-DoS a burst of hashes would cause.
 	authLimiter *rateLimiter
 
+	// engineOps counts engine operations currently running (plan/apply/state/
+	// drift). The master-key rotation refuses to start while any is in flight,
+	// because those runs hold resolved secrets and the workspace lock.
+	engineOps atomic.Int64
+
 	// build + startedAt back the admin instance panel (what this binary is and
 	// how long it has been up).
 	build     BuildInfo
@@ -85,6 +90,17 @@ func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Sto
 	}
 	return s
 }
+
+// beginEngineOp marks an engine run as in flight and returns its release
+// function; defer it. Used to keep disruptive admin operations (master-key
+// rotation) from starting mid-run.
+func (s *Server) beginEngineOp() func() {
+	s.engineOps.Add(1)
+	return func() { s.engineOps.Add(-1) }
+}
+
+// engineBusy reports whether any plan/apply/state/drift run is in flight.
+func (s *Server) engineBusy() bool { return s.engineOps.Load() > 0 }
 
 // authn returns the current Authenticator (swapped atomically when SSO settings
 // change at runtime).
@@ -289,6 +305,10 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/admin/settings/secret-store", s.handleGetSecretStore)
 				r.Put("/admin/settings/secret-store", s.handleSetSecretStore)
 				r.Post("/admin/settings/secret-store/test", s.handleTestSecretStore)
+				// Master-key health + rotation (the Danger zone): re-keys the
+				// encrypted secret files and the settings document together.
+				r.Get("/admin/settings/secret-key", s.handleGetSecretKey)
+				r.Post("/admin/settings/secret-key/rotate", s.handleRotateSecretKey)
 				r.Put("/admin/settings/license", s.handleSetLicense)
 				r.Get("/admin/audit", s.handleListAudit)
 				r.Get("/admin/instance", s.handleInstanceInfo)

@@ -432,6 +432,21 @@ export const api = {
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(body)
 			}).then((r) => json<{ status: string; target: string }>(r)),
+		// What the master key seals and what it can still open (counts + field
+		// names only; never a value).
+		getSecretKey: () =>
+			fetch('/api/admin/settings/secret-key', { credentials: 'same-origin' }).then((r) =>
+				json<SecretKeyStatus>(r)
+			),
+		// Re-keys both encrypted stores. The current key is required so a rotation
+		// is never started on a guess.
+		rotateSecretKey: (currentKey: string, newKey: string) =>
+			fetch('/api/admin/settings/secret-key/rotate', {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ currentKey, newKey })
+			}).then((r) => json<RotateKeyResult>(r)),
 		setLicense: (token: string) =>
 			fetch('/api/admin/settings/license', {
 				method: 'PUT',
@@ -632,6 +647,45 @@ export interface SecretStoreUpdate {
 	token?: string;
 	insecureSkipVerify?: boolean;
 	migrate?: boolean;
+}
+
+/** One at-rest encrypted settings field and whether the current key opens it. */
+export interface EncryptedField {
+	field: string;
+	readable: boolean;
+}
+
+/** What the master key (ARCLOOM_SECRET_KEY) seals, and what it currently opens. */
+export interface SecretKeyStatus {
+	keySet: boolean;
+	secretFiles: number;
+	secretValues: number;
+	/** Project ids whose encrypted secret file no available key opens. */
+	unreadableSecrets?: string[];
+	settingsFields: EncryptedField[];
+	unreadableFields: number;
+	/** External secret backend, when active — its VALUES are not sealed with this key. */
+	externalStore?: string;
+	/** True while a plan/apply/drift run is in flight; rotation refuses to start. */
+	busy: boolean;
+}
+
+/** One store's half of a rotation (secret files / settings fields). */
+export interface RotateReport {
+	items: number;
+	rekeyed: number;
+	verified: number;
+	values: number;
+	unreadable?: string[];
+	complete: boolean;
+}
+
+export interface RotateKeyResult {
+	secrets: RotateReport;
+	settings: RotateReport;
+	complete: boolean;
+	warnings?: string[];
+	status: SecretKeyStatus;
 }
 
 export interface LicenseStatus {

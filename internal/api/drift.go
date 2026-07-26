@@ -152,6 +152,7 @@ func (s *Server) runDriftCheck(ctx context.Context, projectID string) {
 
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
+	defer s.beginEngineOp()() // a scheduled check counts as a run in flight
 
 	started := time.Now()
 	var logBuf strings.Builder
