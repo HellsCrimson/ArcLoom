@@ -249,6 +249,8 @@ func (t *TfExec) plan(ctx context.Context, dir string, files map[string][]byte, 
 			Action: actionName(rd.Change.Actions),
 		})
 	}
+	// diffBudget bounds the attribute-level diffs across the whole plan.
+	diffBudget := maxPlanDiffs
 	for _, rc := range plan.ResourceChanges {
 		if rc.Change == nil {
 			continue
@@ -257,14 +259,19 @@ func (t *TfExec) plan(ctx context.Context, dir string, files map[string][]byte, 
 		if action == "" {
 			continue // no-op
 		}
-		res.Changes = append(res.Changes, PlanChange{
+		ch := PlanChange{
 			Address:       rc.Address,
 			ModuleAddress: rc.ModuleAddress,
 			Mode:          string(rc.Mode),
 			Type:          rc.Type,
 			Name:          rc.Name,
 			Action:        action,
-		})
+		}
+		if action == "update" || action == "replace" {
+			ch.Diffs, ch.DiffsTruncated = attributeDiffs(rc.Change, min(maxAttrDiffs, diffBudget))
+			diffBudget -= len(ch.Diffs)
+		}
+		res.Changes = append(res.Changes, ch)
 		switch action {
 		case "create":
 			res.Add++

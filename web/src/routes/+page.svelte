@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type PlanChange, type RunOutput, type StateEntry, type CostSummary, type LintSummary, type PolicySummary, type Environment, type Approval } from '$lib/api/client';
+	import { api, streamPlan, streamOp, DeleteBlockedError, type AttrDiff, type DriftInfo, type PlanChange, type RunOutput, type StateEntry, type CostSummary, type LintSummary, type PolicySummary, type Environment, type Approval } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
 	import StatePanel from '$lib/components/StatePanel.svelte';
 	import type { AttrValue, DriftConfig, Engine, Module, NormalizedSchema, Project, ProjectSummary, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
@@ -17,6 +17,8 @@
 	import UserMenu from '$lib/components/UserMenu.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
 	import CommandPalette, { type PaletteItem } from '$lib/components/CommandPalette.svelte';
+	import PlanDiffPanel from '$lib/components/PlanDiffPanel.svelte';
+	import PlanDiffList from '$lib/components/PlanDiffList.svelte';
 	import ResizeHandle from '$lib/components/ResizeHandle.svelte';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { history } from '$lib/stores/history.svelte';
@@ -1313,6 +1315,7 @@
 			else if (ev.kind === 'result') {
 				planResult = ev.hasChanges ? 'Changes pending' : 'No changes';
 				planChanges = ev.changes ?? [];
+				dismissedDiffAddress = null; // a fresh plan re-shows the form banner
 				planCounts = ev.hasChanges
 					? { add: ev.add ?? 0, change: ev.change ?? 0, destroy: ev.destroy ?? 0, replace: ev.replace ?? 0 }
 					: null;
@@ -1526,6 +1529,42 @@
 	const importAddress = $derived(
 		`${activeModule ? `module.${activeModule}.` : ''}${selectedType}.${resourceName}`
 	);
+
+	// --- Plan overlay in the form: which attributes the last plan touches. ---
+	// The canvas and the run pane point AT a resource; the form is where the user
+	// then looks for what actually changes, so the plan's per-attribute diff is
+	// surfaced here instead of only in the streamed log.
+	const stripIndex = (addr: string) => addr.replace(/\[[^\]]*\]/g, '');
+	// Dismissal is remembered per address (not a bare flag) so it neither leaks to
+	// the next resource the user opens nor survives the next plan, which resets it.
+	let dismissedDiffAddress = $state<string | null>(null);
+	// Full address of the open form, matching plan addresses (data sources carry
+	// the "data." prefix there).
+	const formAddress = $derived(
+		`${activeModule ? `module.${activeModule}.` : ''}${resourceKind === 'data' ? 'data.' : ''}${selectedType}.${resourceName}`
+	);
+	// Instances of the open resource with a pending action. A counted resource
+	// plans per instance ("x.y[0]"), so several changes can match one form.
+	const formPlanChanges = $derived(
+		formKind === 'resource' && editingId && dismissedDiffAddress !== formAddress
+			? planChanges.filter((c) => stripIndex(c.address) === formAddress)
+			: []
+	);
+	// Flattened for the per-field markers, deduped by path across instances (they
+	// usually change identically; a path forcing replacement wins).
+	const formPlanDiffs = $derived.by(() => {
+		const byPath = new Map<string, AttrDiff>();
+		for (const c of formPlanChanges) {
+			for (const d of c.diffs ?? []) {
+				const prev = byPath.get(d.path);
+				if (!prev || (d.forcesReplace && !prev.forcesReplace)) byPath.set(d.path, d);
+			}
+		}
+		return [...byPath.values()];
+	});
+	// Which run-pane change rows have their attribute diff expanded (by address;
+	// an expansion survives the next plan, so re-planning keeps the same row open).
+	let expandedDiffs = $state<Record<string, boolean>>({});
 
 	function runImport() {
 		showImportResource = false;
@@ -1964,12 +2003,19 @@
 						</button>
 					{/if}
 				</div>
+				{#if formPlanChanges.length > 0}
+					<PlanDiffPanel
+						changes={formPlanChanges}
+						onDismiss={() => (dismissedDiffAddress = formAddress)}
+					/>
+				{/if}
 				<SchemaForm
 						{schema}
 						bind:values
 						{references}
 						secrets={secretNames}
 						onCreateSecret={secretsLocalEnabled && auth.can('resources') ? createSecretInline : undefined}
+						planDiffs={formPlanDiffs}
 					/>
 			{:else}
 				<div class="grid h-full place-items-center text-center text-sm text-[var(--al-muted)]">
@@ -2082,16 +2128,39 @@
 				{#if planChanges.length > 0}
 					<div class="max-h-[45%] flex-none overflow-auto border-b py-1" style="border-color:var(--al-code-border);">
 						{#each planChanges as c (c.address)}
-							<button
-								class="flex w-full items-center gap-2 px-[18px] py-0.5 text-left font-mono hover:bg-[var(--al-panel-2)]"
-								style="font-size:11.5px;line-height:1.6;"
-								title="{c.address} — click to open"
-								onclick={() => jumpToAddress(c.address)}
-							>
-								<span class="w-3 flex-none text-center font-bold" style="color:{ACTION_COLOR[c.action]}">{ACTION_SYMBOL[c.action]}</span>
-								<span class="truncate" style="color:var(--al-code-text);">{c.address}</span>
-								<span class="ml-auto flex-none text-[10px]" style="color:{ACTION_COLOR[c.action]}">{c.action}</span>
-							</button>
+							<div class="flex items-center gap-1 px-[18px]">
+								{#if (c.diffs?.length ?? 0) > 0}
+									<!-- Expand the attribute diff in place, so finding out WHAT changes
+									     never means scrolling the raw log below. -->
+									<button
+										class="flex-none font-mono text-[10px]"
+										style="color:var(--al-code-comment);"
+										title={expandedDiffs[c.address] ? 'Hide changed attributes' : 'Show changed attributes'}
+										aria-expanded={expandedDiffs[c.address] ?? false}
+										onclick={() => (expandedDiffs[c.address] = !expandedDiffs[c.address])}
+									>{expandedDiffs[c.address] ? '▾' : '▸'}</button>
+								{:else}
+									<span class="flex-none font-mono text-[10px]" style="color:transparent;">▸</span>
+								{/if}
+								<button
+									class="flex min-w-0 flex-1 items-center gap-2 py-0.5 text-left font-mono hover:bg-[var(--al-panel-2)]"
+									style="font-size:11.5px;line-height:1.6;"
+									title="{c.address} — click to open"
+									onclick={() => jumpToAddress(c.address)}
+								>
+									<span class="w-3 flex-none text-center font-bold" style="color:{ACTION_COLOR[c.action]}">{ACTION_SYMBOL[c.action]}</span>
+									<span class="truncate" style="color:var(--al-code-text);">{c.address}</span>
+									{#if (c.diffs?.length ?? 0) > 0}
+										<span class="flex-none text-[10px]" style="color:var(--al-code-comment);">{c.diffs?.length} attr</span>
+									{/if}
+									<span class="ml-auto flex-none text-[10px]" style="color:{ACTION_COLOR[c.action]}">{c.action}</span>
+								</button>
+							</div>
+							{#if expandedDiffs[c.address]}
+								<div class="mb-1 ml-[34px] mr-[18px] border-l pl-2" style="border-color:var(--al-code-border);">
+									<PlanDiffList diffs={c.diffs ?? []} truncated={c.diffsTruncated} compact />
+								</div>
+							{/if}
 						{/each}
 					</div>
 				{/if}

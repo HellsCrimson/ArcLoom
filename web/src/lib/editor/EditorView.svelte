@@ -134,6 +134,29 @@
 		}
 		return m;
 	});
+	// Changed attribute paths per node address, for the plan badge's tooltip: the
+	// card can say WHICH properties move, not just that something does. The full
+	// diff lives in the resource form (PlanDiffPanel) and the run pane.
+	const diffPathsByAddr = $derived.by(() => {
+		const m = new Map<string, string[]>();
+		for (const c of planChanges) {
+			if (!c.diffs?.length) continue;
+			const key = stripIndex(c.address);
+			const paths = m.get(key) ?? [];
+			for (const d of c.diffs) if (!paths.includes(d.path)) paths.push(d.path);
+			m.set(key, paths);
+		}
+		return m;
+	});
+	const DIFF_HINT_MAX = 6;
+	function planAttrHint(scope: string | undefined, kind: ResourceKind, type: string, name: string) {
+		const addr = `${scope ? `module.${scope}.` : ''}${kind === 'data' ? 'data.' : ''}${type}.${name}`;
+		const paths = diffPathsByAddr.get(addr);
+		if (!paths?.length) return '';
+		const shown = paths.slice(0, DIFF_HINT_MAX).join(', ');
+		return `\n${paths.length} attribute${paths.length === 1 ? '' : 's'}: ${shown}${paths.length > DIFF_HINT_MAX ? ', …' : ''}\nOpen the resource for the full diff`;
+	}
+
 	// Planned deletes at root scope have no model node left to color; render
 	// them as non-interactive ghost cards so the disappearance is visible.
 	// Instance addresses of a counted resource collapse into ONE ghost.
@@ -724,7 +747,7 @@
 		>✕</button>
 		{#if change}
 			<div
-				title="planned: {change}"
+				title="planned: {change}{planAttrHint(scope, kind, type, name)}"
 				style="position:absolute;left:-7px;top:-7px;width:16px;height:16px;border-radius:50%;background:{ACTION_COLOR[change]};color:#0a0e15;font-size:11px;font-weight:800;line-height:1;display:flex;align-items:center;justify-content:center;z-index:4;"
 			>{ACTION_SYMBOL[change]}</div>
 		{/if}

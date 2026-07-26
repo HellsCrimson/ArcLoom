@@ -24,6 +24,14 @@ type PlanChange struct {
 	Name          string `json:"name"`
 	// Action is the normalized action: create | update | replace | delete | read.
 	Action string `json:"action"`
+	// Diffs lists the attributes this change touches (which field changes, from
+	// what to what, and which one forces a replacement) so a caller does not
+	// have to read the raw CLI log to find out. Populated for update/replace
+	// only — see attributeDiffs.
+	Diffs []AttrDiff `json:"diffs,omitempty"`
+	// DiffsTruncated reports that the attribute list hit the size cap and is
+	// partial; the streamed log remains the complete record.
+	DiffsTruncated bool `json:"diffsTruncated,omitempty"`
 }
 
 // PlanResult summarizes a completed plan.

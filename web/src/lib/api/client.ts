@@ -583,6 +583,22 @@ export interface GraphData {
 	dot: string;
 }
 
+// AttrDiff is one attribute a planned change touches. `path` is relative to the
+// resource ("tags.Name", "network_interface[0].subnet_id"); `before`/`after` are
+// pre-rendered by the server (strings quoted, sensitive values redacted).
+export interface AttrDiff {
+	path: string;
+	action: 'add' | 'update' | 'remove';
+	before?: string;
+	after?: string;
+	/** The value is only known after apply. */
+	unknown?: boolean;
+	/** Redacted — the provider marked the attribute sensitive. */
+	sensitive?: boolean;
+	/** This attribute is what forces the resource to be replaced. */
+	forcesReplace?: boolean;
+}
+
 // PlanChange is one resource's pending action from the structured plan.
 export interface PlanChange {
 	address: string;
@@ -591,6 +607,10 @@ export interface PlanChange {
 	type: string;
 	name: string;
 	action: 'create' | 'update' | 'replace' | 'delete' | 'read';
+	/** Attributes this change touches; server-side populated for update/replace. */
+	diffs?: AttrDiff[];
+	/** The attribute list hit the size cap — the run log holds the rest. */
+	diffsTruncated?: boolean;
 }
 
 export interface PlanSummary {

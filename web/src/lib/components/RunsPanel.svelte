@@ -2,6 +2,7 @@
 	import Modal from './Modal.svelte';
 	import { api, type RunRecord } from '$lib/api/client';
 	import { ACTION_COLOR } from '$lib/editor/graph';
+	import PlanDiffList from './PlanDiffList.svelte';
 	import { ArrowLeft, CheckCircle2, XCircle, Loader2 } from 'lucide-svelte';
 
 	let { open = $bindable(false), projectId }: { open: boolean; projectId: string } = $props();
@@ -100,6 +101,13 @@
 						<span class="truncate text-[var(--al-text)]">{c.address}</span>
 						<span class="ml-auto flex-none text-[10px]" style="color:{ACTION_COLOR[c.action]}">{c.action}</span>
 					</div>
+					{#if c.diffs?.length}
+						<!-- Which attributes the run planned to change — recorded with the run,
+						     so an old run stays readable without re-reading its raw log. -->
+						<div class="mb-1 ml-8 mr-3 border-l border-[var(--al-border)] pl-2">
+							<PlanDiffList diffs={c.diffs} truncated={c.diffsTruncated} compact />
+						</div>
+					{/if}
 				{/each}
 			</div>
 		{/if}
