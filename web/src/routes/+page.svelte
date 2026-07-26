@@ -1509,12 +1509,15 @@
 			<div class="min-h-0 flex-1">
 				<HclView {hcl}>
 					{#snippet actions()}
-						{#if auth.can('deploy')}
+						<!-- approve is its own permission: a user who may sign a plan off but
+						     not run one still needs this row (it renders only the Approve button). -->
+						{#if auth.can('deploy') || auth.can('approve')}
 							<DeployActions
 								{busy}
 								hasProject={!!project}
 								{approvalRequired}
 								{approvalReady}
+								canDeploy={auth.can('deploy')}
 								canApprove={auth.can('approve')}
 								hasPlan={runPane.counts !== null || planPending !== null}
 								onValidate={runValidate}
