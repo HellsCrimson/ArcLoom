@@ -33,7 +33,29 @@ type SSO struct {
 	RedirectURL  string `yaml:"redirect_url"`
 	Scopes       string `yaml:"scopes"`
 
+	// GroupsClaim is the ID-token claim carrying the user's groups; empty means
+	// "groups" (Keycloak, Authentik, Okta, Google Workspace all use that name;
+	// Entra ID typically needs "roles").
+	GroupsClaim string `yaml:"groups_claim,omitempty"`
+	// GroupRoles maps an IdP group to ArcLoom access, applied when an SSO user is
+	// provisioned — so an IdP group can land its members as admins instead of the
+	// read-only default. Configuring any mapping also makes ArcLoom request the
+	// "groups" scope.
+	GroupRoles []GroupRole `yaml:"group_roles,omitempty"`
+	// SyncGroupsOnLogin re-applies GroupRoles on every SSO login, so the IdP stays
+	// the source of truth. OFF by default: it overwrites admin/permission edits
+	// made in the Users tab, which is a surprise if the mapping is incomplete.
+	SyncGroupsOnLogin bool `yaml:"sync_groups_on_login,omitempty"`
+
 	ClientSecretEnc string `yaml:"client_secret_enc,omitempty"`
+}
+
+// GroupRole grants ArcLoom access to the members of one IdP group. Admin implies
+// every permission (user.Can), so Perms is ignored when Admin is set.
+type GroupRole struct {
+	Group string   `yaml:"group" json:"group"`
+	Admin bool     `yaml:"admin,omitempty" json:"admin,omitempty"`
+	Perms []string `yaml:"perms,omitempty" json:"perms,omitempty"`
 }
 
 // Drift is one project's drift-detection schedule: a periodic refresh-only

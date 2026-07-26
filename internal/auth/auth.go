@@ -28,11 +28,15 @@ var (
 // LocalProvider fills it from a user record; a future OIDCProvider fills it
 // from verified ID-token claims.
 type Identity struct {
-	Subject     string            // stable unique id within the provider
-	Provider    string            // ProviderLocal | ProviderOIDC
+	Subject     string // stable unique id within the provider
+	Provider    string // ProviderLocal | ProviderOIDC
 	Email       string
 	DisplayName string
-	Claims      map[string]string // optional extras (groups, roles) for future authz
+	// Groups is the IdP's group membership for this identity, read from the
+	// configured groups claim. Consumed to derive admin/permissions when the SSO
+	// config maps groups to roles; empty when the claim is absent.
+	Groups []string
+	Claims map[string]string // optional extras (roles, ...) for future authz
 }
 
 // Provider is the base type every auth mechanism implements.

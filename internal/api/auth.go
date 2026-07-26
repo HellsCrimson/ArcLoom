@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
+	"github.com/HellsCrimson/ArcLoom/internal/settings"
 	"github.com/HellsCrimson/ArcLoom/internal/user"
 )
 
@@ -435,25 +438,115 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 
 // linkOrProvision finds the user previously linked to this SSO subject, or
 // creates one on first login. Disabled accounts are rejected.
+//
+// A provisioned user is read-only by default; the SSO config's group→role
+// mapping is what can make them an admin (or grant permissions) from the start,
+// so an IdP group is enough to onboard someone. An existing user is left alone
+// unless SyncGroupsOnLogin is on, in which case the IdP is the source of truth
+// and the mapping is re-applied on every login.
 func (s *Server) linkOrProvision(id auth.Identity) (*user.User, error) {
+	sso := s.settings.SSO()
 	if u, err := s.users.BySubject(id.Provider, id.Subject); err == nil {
 		if u.Disabled {
 			return nil, user.ErrNotFound
 		}
+		if !sso.SyncGroupsOnLogin {
+			return u, nil
+		}
+		admin, perms := rolesForGroups(id.Groups, sso.GroupRoles)
+		if u.Admin == admin && slices.Equal(u.Permissions, perms) {
+			return u, nil
+		}
+		if err := s.users.Update(u.ID, func(stored *user.User) error {
+			stored.Admin = admin
+			stored.Permissions = perms
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+		u, err = s.users.Get(u.ID)
+		if err != nil {
+			return nil, err
+		}
+		s.recordAuditAs(u.Username, "user.sso.sync", ssoAuditDetail(u, id, admin, perms))
 		return u, nil
 	}
+	admin, perms := rolesForGroups(id.Groups, sso.GroupRoles)
 	u := &user.User{
-		ID:        uuid.NewString(),
-		Username:  s.uniqueUsername(id),
-		Email:     id.Email,
-		Provider:  id.Provider,
-		Subject:   id.Subject,
-		CreatedAt: time.Now(),
+		ID:          uuid.NewString(),
+		Username:    s.uniqueUsername(id),
+		Email:       id.Email,
+		Provider:    id.Provider,
+		Subject:     id.Subject,
+		CreatedAt:   time.Now(),
+		Admin:       admin,
+		Permissions: perms,
 	}
 	if err := s.users.Create(u); err != nil {
 		return nil, err
 	}
+	// Account creation is an administrative event even though nobody clicked it,
+	// and it is not covered by auditMiddleware (the SSO callback is in the public
+	// route group, which the middleware does not wrap).
+	s.recordAuditAs(u.Username, "user.sso.provision", ssoAuditDetail(u, id, admin, perms))
 	return u, nil
+}
+
+// rolesForGroups resolves an identity's IdP groups against the configured
+// mapping, unioning every matching row: admin wins outright (it implies all
+// permissions), otherwise the granted permissions accumulate. No match leaves
+// the user read-only, which is the pre-existing default.
+func rolesForGroups(groups []string, roles []settings.GroupRole) (admin bool, perms []string) {
+	for _, gr := range roles {
+		if !matchesGroup(groups, gr.Group) {
+			continue
+		}
+		if gr.Admin {
+			admin = true
+		}
+		for _, p := range gr.Perms {
+			if !slices.Contains(perms, p) {
+				perms = append(perms, p)
+			}
+		}
+	}
+	if admin {
+		return true, nil // Admin implies everything; storing perms too would be noise
+	}
+	return false, perms
+}
+
+// matchesGroup compares an IdP group against a configured name, case-insensitively
+// and ignoring a leading "/" — Keycloak reports groups as paths ("/platform-admins")
+// while admins naturally type the bare name.
+func matchesGroup(groups []string, want string) bool {
+	want = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(want), "/"))
+	if want == "" {
+		return false
+	}
+	for _, g := range groups {
+		if strings.ToLower(strings.TrimPrefix(strings.TrimSpace(g), "/")) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// ssoAuditDetail describes what the IdP produced, without inventing a subject
+// value that could identify more than the username already does.
+func ssoAuditDetail(u *user.User, id auth.Identity, admin bool, perms []string) string {
+	role := "read-only"
+	switch {
+	case admin:
+		role = "admin"
+	case len(perms) > 0:
+		role = strings.Join(perms, "+")
+	}
+	detail := fmt.Sprintf("%s via %s → %s", u.Username, id.Provider, role)
+	if len(id.Groups) > 0 {
+		detail += " (groups: " + strings.Join(id.Groups, ", ") + ")"
+	}
+	return detail
 }
 
 // uniqueUsername derives a login handle from the identity, appending a short

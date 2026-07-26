@@ -24,6 +24,7 @@ type mockIdP struct {
 	nonce    string // nonce to embed in the minted id_token
 	sub      string
 	email    string
+	extra    map[string]any // additional claims (e.g. groups) to mint
 }
 
 func newMockIdP(t *testing.T, clientID string) *mockIdP {
@@ -39,10 +40,10 @@ func newMockIdP(t *testing.T, clientID string) *mockIdP {
 
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		writeJSONRaw(w, map[string]any{
-			"issuer":                 idp.server.URL,
-			"authorization_endpoint": idp.server.URL + "/auth",
-			"token_endpoint":         idp.server.URL + "/token",
-			"jwks_uri":               idp.server.URL + "/jwks",
+			"issuer":                                idp.server.URL,
+			"authorization_endpoint":                idp.server.URL + "/auth",
+			"token_endpoint":                        idp.server.URL + "/token",
+			"jwks_uri":                              idp.server.URL + "/jwks",
 			"id_token_signing_alg_values_supported": []string{"RS256"},
 		})
 	})
@@ -81,6 +82,9 @@ func (idp *mockIdP) mintIDToken(t *testing.T) string {
 		"email":              idp.email,
 		"preferred_username": "alice",
 	}
+	for k, v := range idp.extra {
+		claims[k] = v
+	}
 	payload, _ := json.Marshal(claims)
 	obj, err := signer.Sign(payload)
 	if err != nil {
@@ -104,7 +108,7 @@ func TestOIDCProvider_RealExchange(t *testing.T) {
 	idp.nonce = "n-42"
 
 	ctx := context.Background()
-	p, err := NewOIDCProvider(ctx, idp.server.URL, "my-client", "secret", "https://app/callback", []string{"email"})
+	p, err := NewOIDCProvider(ctx, idp.server.URL, "my-client", "secret", "https://app/callback", []string{"email"}, "")
 	if err != nil {
 		t.Fatalf("NewOIDCProvider: %v", err)
 	}
@@ -133,7 +137,7 @@ func TestOIDCProvider_NonceMismatchRejected(t *testing.T) {
 	defer idp.server.Close()
 	idp.nonce = "server-nonce"
 
-	p, err := NewOIDCProvider(context.Background(), idp.server.URL, "my-client", "secret", "https://app/callback", nil)
+	p, err := NewOIDCProvider(context.Background(), idp.server.URL, "my-client", "secret", "https://app/callback", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,4 +145,66 @@ func TestOIDCProvider_NonceMismatchRejected(t *testing.T) {
 	if _, err := p.Exchange(context.Background(), "code", "expected-different"); err == nil {
 		t.Fatal("expected nonce mismatch to be rejected")
 	}
+}
+
+// TestOIDCProvider_GroupsClaim checks group extraction against a real signed ID
+// token: the default "groups" claim, a provider-specific claim name, and an
+// absent claim (which must not fail the login).
+func TestOIDCProvider_GroupsClaim(t *testing.T) {
+	t.Run("default groups claim", func(t *testing.T) {
+		idp := newMockIdP(t, "my-client")
+		defer idp.server.Close()
+		idp.nonce = "n"
+		idp.extra = map[string]any{"groups": []any{"/platform-admins", "devs"}}
+
+		p, err := NewOIDCProvider(context.Background(), idp.server.URL, "my-client", "s", "https://app/cb", nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := p.Exchange(context.Background(), "code", "n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(id.Groups) != 2 || id.Groups[0] != "/platform-admins" || id.Groups[1] != "devs" {
+			t.Fatalf("groups = %v", id.Groups)
+		}
+	})
+
+	t.Run("custom claim name", func(t *testing.T) {
+		idp := newMockIdP(t, "my-client")
+		defer idp.server.Close()
+		idp.nonce = "n"
+		// Entra ID-style: roles rather than groups, and the default claim is empty.
+		idp.extra = map[string]any{"roles": []any{"ops"}, "groups": []any{"ignored"}}
+
+		p, err := NewOIDCProvider(context.Background(), idp.server.URL, "my-client", "s", "https://app/cb", nil, "roles")
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := p.Exchange(context.Background(), "code", "n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(id.Groups) != 1 || id.Groups[0] != "ops" {
+			t.Fatalf("groups = %v (should come from the configured claim only)", id.Groups)
+		}
+	})
+
+	t.Run("absent claim still logs in", func(t *testing.T) {
+		idp := newMockIdP(t, "my-client")
+		defer idp.server.Close()
+		idp.nonce = "n"
+
+		p, err := NewOIDCProvider(context.Background(), idp.server.URL, "my-client", "s", "https://app/cb", nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := p.Exchange(context.Background(), "code", "n")
+		if err != nil {
+			t.Fatalf("a missing groups claim must not break authentication: %v", err)
+		}
+		if len(id.Groups) != 0 {
+			t.Fatalf("groups = %v, want none", id.Groups)
+		}
+	})
 }

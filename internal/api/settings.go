@@ -3,13 +3,16 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/settings"
+	"github.com/HellsCrimson/ArcLoom/internal/user"
 )
 
 // ReloadAuth rebuilds the Authenticator from the persisted settings: always the
@@ -24,7 +27,7 @@ func (s *Server) ReloadAuth(ctx context.Context) error {
 	// SSO is an enterprise feature: only stand up the OIDC provider when the
 	// license grants it, so an unlicensed install never advertises or accepts it.
 	if sso.Enabled && sso.Issuer != "" && sso.ClientID != "" && s.license.Has(license.FeatureSSO) {
-		p, err := auth.NewOIDCProvider(ctx, sso.Issuer, sso.ClientID, sso.ClientSecret, sso.RedirectURL, strings.Fields(sso.Scopes))
+		p, err := auth.NewOIDCProvider(ctx, sso.Issuer, sso.ClientID, sso.ClientSecret, sso.RedirectURL, ssoScopes(sso), sso.GroupsClaim)
 		if err != nil {
 			oidcErr = err
 		} else {
@@ -35,6 +38,18 @@ func (s *Server) ReloadAuth(ctx context.Context) error {
 	return oidcErr
 }
 
+// ssoScopes is the scope list to request: the admin's extra scopes, plus
+// "groups" once any group→role mapping exists (most IdPs only put the groups
+// claim in the ID token when that scope is asked for). Adding no mapping leaves
+// the request byte-identical to before, so existing installs are unaffected.
+func ssoScopes(sso settings.SSO) []string {
+	scopes := strings.Fields(sso.Scopes)
+	if len(sso.GroupRoles) == 0 || slices.Contains(scopes, auth.DefaultGroupsClaim) {
+		return scopes
+	}
+	return append(scopes, auth.DefaultGroupsClaim)
+}
+
 // ssoDTO is the SSO settings payload. The client secret is never returned; the
 // UI only learns whether one is set.
 type ssoDTO struct {
@@ -43,7 +58,12 @@ type ssoDTO struct {
 	ClientID    string `json:"clientId"`
 	RedirectURL string `json:"redirectUrl"`
 	Scopes      string `json:"scopes"`
-	HasSecret   bool   `json:"hasSecret"`
+	// GroupsClaim / GroupRoles / SyncGroupsOnLogin drive group→role mapping for
+	// provisioned SSO users.
+	GroupsClaim       string               `json:"groupsClaim"`
+	GroupRoles        []settings.GroupRole `json:"groupRoles"`
+	SyncGroupsOnLogin bool                 `json:"syncGroupsOnLogin"`
+	HasSecret         bool                 `json:"hasSecret"`
 	// SecretStorable is false when ARCLOOM_SECRET_KEY is unset (no encryption).
 	SecretStorable bool `json:"secretStorable"`
 	// Active reports whether the OIDC provider is currently live.
@@ -53,15 +73,22 @@ type ssoDTO struct {
 func (s *Server) ssoResponse() ssoDTO {
 	sso := s.settings.SSO()
 	_, active := s.authn().Redirect(auth.ProviderOIDC)
+	roles := sso.GroupRoles
+	if roles == nil {
+		roles = []settings.GroupRole{} // the UI binds a table to this; never null
+	}
 	return ssoDTO{
-		Enabled:        sso.Enabled,
-		Issuer:         sso.Issuer,
-		ClientID:       sso.ClientID,
-		RedirectURL:    sso.RedirectURL,
-		Scopes:         sso.Scopes,
-		HasSecret:      s.settings.HasSecret(),
-		SecretStorable: s.settings.SecretStorable(),
-		Active:         active,
+		Enabled:           sso.Enabled,
+		Issuer:            sso.Issuer,
+		ClientID:          sso.ClientID,
+		RedirectURL:       sso.RedirectURL,
+		Scopes:            sso.Scopes,
+		GroupsClaim:       sso.GroupsClaim,
+		GroupRoles:        roles,
+		SyncGroupsOnLogin: sso.SyncGroupsOnLogin,
+		HasSecret:         s.settings.HasSecret(),
+		SecretStorable:    s.settings.SecretStorable(),
+		Active:            active,
 	}
 }
 
@@ -76,6 +103,10 @@ type ssoUpdateRequest struct {
 	ClientSecret string `json:"clientSecret"` // omit/empty to keep the stored one
 	RedirectURL  string `json:"redirectUrl"`
 	Scopes       string `json:"scopes"`
+
+	GroupsClaim       string               `json:"groupsClaim"`
+	GroupRoles        []settings.GroupRole `json:"groupRoles"`
+	SyncGroupsOnLogin bool                 `json:"syncGroupsOnLogin"`
 }
 
 // handleSetSSO validates the OIDC config (by attempting discovery when enabled),
@@ -93,6 +124,14 @@ func (s *Server) handleSetSSO(w http.ResponseWriter, r *http.Request) {
 	req.Issuer = strings.TrimSpace(req.Issuer)
 	req.ClientID = strings.TrimSpace(req.ClientID)
 
+	// Reject unknown permissions here rather than silently storing a mapping that
+	// grants nothing (the perms become user.Permissions entries verbatim).
+	roles, err := normalizeGroupRoles(req.GroupRoles)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	if req.Enabled {
 		if !s.license.Has(license.FeatureSSO) {
 			writeErr(w, http.StatusForbidden, "SSO (OIDC) requires an ArcLoom Enterprise license")
@@ -109,7 +148,7 @@ func (s *Server) handleSetSSO(w http.ResponseWriter, r *http.Request) {
 			secret = s.settings.SSO().ClientSecret
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-		_, err := auth.NewOIDCProvider(ctx, req.Issuer, req.ClientID, secret, req.RedirectURL, strings.Fields(req.Scopes))
+		_, err = auth.NewOIDCProvider(ctx, req.Issuer, req.ClientID, secret, req.RedirectURL, strings.Fields(req.Scopes), req.GroupsClaim)
 		cancel()
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "could not connect to the identity provider: "+err.Error())
@@ -118,12 +157,15 @@ func (s *Server) handleSetSSO(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.settings.SetSSO(settings.SSO{
-		Enabled:      req.Enabled,
-		Issuer:       req.Issuer,
-		ClientID:     req.ClientID,
-		ClientSecret: req.ClientSecret,
-		RedirectURL:  req.RedirectURL,
-		Scopes:       req.Scopes,
+		Enabled:           req.Enabled,
+		Issuer:            req.Issuer,
+		ClientID:          req.ClientID,
+		ClientSecret:      req.ClientSecret,
+		RedirectURL:       req.RedirectURL,
+		Scopes:            req.Scopes,
+		GroupsClaim:       strings.TrimSpace(req.GroupsClaim),
+		GroupRoles:        roles,
+		SyncGroupsOnLogin: req.SyncGroupsOnLogin,
 	}); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -135,3 +177,35 @@ func (s *Server) handleSetSSO(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, s.ssoResponse())
 }
+
+// normalizeGroupRoles trims and validates a group→role mapping: group names must
+// be non-empty and every permission must be one ArcLoom knows, since these
+// strings are copied straight into user.Permissions.
+func normalizeGroupRoles(in []settings.GroupRole) ([]settings.GroupRole, error) {
+	out := make([]settings.GroupRole, 0, len(in))
+	for _, gr := range in {
+		gr.Group = strings.TrimSpace(gr.Group)
+		if gr.Group == "" {
+			continue // an empty row is the UI's "not filled in yet", not an error
+		}
+		perms := make([]string, 0, len(gr.Perms))
+		for _, p := range gr.Perms {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if !slices.Contains(knownPerms, p) {
+				return nil, fmt.Errorf("unknown permission %q for group %q", p, gr.Group)
+			}
+			if !slices.Contains(perms, p) {
+				perms = append(perms, p)
+			}
+		}
+		gr.Perms = perms
+		out = append(out, gr)
+	}
+	return out, nil
+}
+
+// knownPerms is the set a group mapping may grant (admin is its own flag).
+var knownPerms = []string{user.PermResources, user.PermDeploy, user.PermGit, user.PermApprove}

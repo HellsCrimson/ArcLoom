@@ -549,12 +549,23 @@ export interface AdminUser {
 	createdAt: string;
 }
 
+// GroupRole maps an IdP group to ArcLoom access for provisioned SSO users.
+// `admin` implies every permission, so `perms` is ignored alongside it.
+export interface GroupRole {
+	group: string;
+	admin?: boolean;
+	perms?: string[];
+}
+
 export interface SSOSettings {
 	enabled: boolean;
 	issuer: string;
 	clientId: string;
 	redirectUrl: string;
 	scopes: string;
+	groupsClaim: string;
+	groupRoles: GroupRole[];
+	syncGroupsOnLogin: boolean;
 	hasSecret: boolean;
 	secretStorable: boolean;
 	active: boolean;
@@ -567,6 +578,9 @@ export interface SSOUpdate {
 	clientSecret?: string;
 	redirectUrl: string;
 	scopes: string;
+	groupsClaim?: string;
+	groupRoles?: GroupRole[];
+	syncGroupsOnLogin?: boolean;
 }
 
 export interface LicenseStatus {

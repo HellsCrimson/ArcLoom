@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -16,14 +17,25 @@ import (
 type OIDCProvider struct {
 	oauth    oauth2.Config
 	verifier *oidc.IDTokenVerifier
+	// groupsClaim is the ID-token claim holding group membership; DefaultGroupsClaim
+	// when empty.
+	groupsClaim string
 }
 
+// DefaultGroupsClaim is the claim consulted for group membership when none is
+// configured.
+const DefaultGroupsClaim = "groups"
+
 // NewOIDCProvider performs OIDC discovery against issuer and builds the provider.
-// scopes are appended to the mandatory "openid" scope.
-func NewOIDCProvider(ctx context.Context, issuer, clientID, clientSecret, redirectURL string, scopes []string) (*OIDCProvider, error) {
+// scopes are appended to the mandatory "openid" scope. groupsClaim names the
+// claim to read group membership from ("groups" when empty).
+func NewOIDCProvider(ctx context.Context, issuer, clientID, clientSecret, redirectURL string, scopes []string, groupsClaim string) (*OIDCProvider, error) {
 	provider, err := oidc.NewProvider(ctx, issuer)
 	if err != nil {
 		return nil, fmt.Errorf("oidc discovery on %q: %w", issuer, err)
+	}
+	if groupsClaim == "" {
+		groupsClaim = DefaultGroupsClaim
 	}
 	return &OIDCProvider{
 		oauth: oauth2.Config{
@@ -33,7 +45,8 @@ func NewOIDCProvider(ctx context.Context, issuer, clientID, clientSecret, redire
 			Endpoint:     provider.Endpoint(),
 			Scopes:       append([]string{oidc.ScopeOpenID}, scopes...),
 		},
-		verifier: provider.Verifier(&oidc.Config{ClientID: clientID}),
+		verifier:    provider.Verifier(&oidc.Config{ClientID: clientID}),
+		groupsClaim: groupsClaim,
 	}, nil
 }
 
@@ -80,18 +93,48 @@ func (p *OIDCProvider) Exchange(ctx context.Context, code, nonce string) (Identi
 	if c.Subject == "" {
 		return Identity{}, errors.New("id_token has no subject")
 	}
+	// Groups come from a configurable claim, so decode the raw set too. A failure
+	// here is not fatal: authentication succeeded, the user just gets no
+	// group-derived access.
+	var raw map[string]any
+	_ = idToken.Claims(&raw)
+
 	display := firstNonEmpty(c.PreferredUsername, c.Name, c.Email, c.Subject)
 	return Identity{
 		Subject:     c.Subject,
 		Provider:    ProviderOIDC,
 		Email:       c.Email,
 		DisplayName: display,
+		Groups:      GroupsFromClaim(raw[p.groupsClaim]),
 		Claims: map[string]string{
 			"preferred_username": c.PreferredUsername,
 			"email":              c.Email,
 			"name":               c.Name,
 		},
 	}, nil
+}
+
+// GroupsFromClaim normalizes a groups claim value. IdPs are inconsistent here:
+// most send a JSON array of strings, some a single string, and some a
+// space/comma-separated list — all three are accepted. Anything else yields no
+// groups rather than an error, since a missing or odd claim must not break login.
+func GroupsFromClaim(v any) []string {
+	switch t := v.(type) {
+	case []any:
+		var out []string
+		for _, e := range t {
+			if s, ok := e.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
+			}
+		}
+		return out
+	case []string:
+		return t
+	case string:
+		return strings.FieldsFunc(t, func(r rune) bool { return r == ',' || r == ' ' })
+	default:
+		return nil
+	}
 }
 
 func firstNonEmpty(vals ...string) string {

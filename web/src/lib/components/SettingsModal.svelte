@@ -1,9 +1,28 @@
 <script lang="ts">
 	import Modal from '$lib/components/Modal.svelte';
-	import { api, type AdminUser, type SSOSettings, type LicenseStatus, type InstanceInfo } from '$lib/api/client';
+	import { api, type AdminUser, type GroupRole, type SSOSettings, type LicenseStatus, type InstanceInfo } from '$lib/api/client';
 	import type { AuditEntry } from '$lib/types';
 	import { auth } from '$lib/stores/auth.svelte';
-	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck, Award, ScrollText, Server, Check, X } from 'lucide-svelte';
+	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck, Award, ScrollText, Server, Check, X, Users, Plus } from 'lucide-svelte';
+
+	// --- SSO group mapping helpers ---
+	// These take the null check off the markup: `sso` is only non-null inside the
+	// tab's {#if}, which an inline arrow callback does not inherit.
+	// toggleGroupPerm avoids bind:checked, which writes on mount and would dirty a
+	// row the admin never touched (the same trap as the schema-form checkboxes).
+	function toggleGroupPerm(gr: GroupRole, perm: string, on: boolean) {
+		const current = gr.perms ?? [];
+		gr.perms = on ? [...current, perm] : current.filter((p) => p !== perm);
+	}
+	function addGroupRole() {
+		if (sso) sso.groupRoles = [...sso.groupRoles, { group: '', admin: false, perms: [] }];
+	}
+	function removeGroupRole(i: number) {
+		if (sso) sso.groupRoles = sso.groupRoles.filter((_, j) => j !== i);
+	}
+	function setSyncGroups(on: boolean) {
+		if (sso) sso.syncGroupsOnLogin = on;
+	}
 
 	let { open = $bindable(false) }: { open: boolean } = $props();
 
@@ -135,7 +154,10 @@
 				clientId: sso.clientId,
 				clientSecret: ssoSecret,
 				redirectUrl: sso.redirectUrl,
-				scopes: sso.scopes
+				scopes: sso.scopes,
+				groupsClaim: sso.groupsClaim,
+				groupRoles: sso.groupRoles,
+				syncGroupsOnLogin: sso.syncGroupsOnLogin
 			});
 			ssoSecret = '';
 			notice = 'SSO settings saved and reloaded.';
@@ -371,6 +393,87 @@
 				<div class="space-y-1">
 					<span class="block text-xs font-medium text-[var(--al-muted)]">Extra scopes</span>
 					<input class={field} bind:value={sso.scopes} placeholder="email profile" />
+					<p class="text-[10px] text-[var(--al-muted)]">
+						<span class="mono">groups</span> is requested automatically once a group mapping exists below.
+					</p>
+				</div>
+
+				<!-- Group → role mapping: what an IdP group grants a provisioned user.
+				     Without a mapping SSO users are read-only, which is the default. -->
+				<div class="rounded-md border border-[var(--al-border)] p-2.5">
+					<div class="mb-2 flex items-center gap-2">
+						<Users size={13} class="text-[var(--al-muted)]" />
+						<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Group mapping</span>
+						<button
+							class="ml-auto inline-flex items-center gap-1 rounded border border-[var(--al-border)] px-1.5 py-0.5 text-[11px] text-[var(--al-muted)] hover:text-[var(--al-accent)]"
+							onclick={addGroupRole}
+						><Plus size={11} /> Add group</button>
+					</div>
+
+					<div class="mb-2 grid grid-cols-[1fr_auto] items-center gap-2">
+						<div class="space-y-1">
+							<span class="block text-[11px] text-[var(--al-muted)]">Groups claim</span>
+							<input class={field} bind:value={sso.groupsClaim} placeholder="groups" />
+						</div>
+					</div>
+					<p class="mb-2 text-[10px] text-[var(--al-muted)]">
+						Claim carrying group membership — <span class="mono">groups</span> when blank
+						(Entra ID usually needs <span class="mono">roles</span>). Keycloak group paths like
+						<span class="mono">/admins</span> match the bare name.
+					</p>
+
+					{#if sso.groupRoles.length === 0}
+						<p class="text-[11px] text-[var(--al-muted)]">
+							No mapping — users provisioned by SSO are read-only until an admin grants access in
+							the Users tab.
+						</p>
+					{:else}
+						<div class="space-y-1.5">
+							{#each sso.groupRoles as gr, i (i)}
+								<div class="flex flex-wrap items-center gap-2 rounded border border-[var(--al-border)] bg-[var(--al-panel-2)] p-1.5">
+									<input
+										class="mono min-w-0 flex-1 rounded border border-[var(--al-border)] bg-[var(--al-bg)] px-2 py-1 text-xs text-[var(--al-text)] outline-none focus:border-[var(--al-accent)]"
+										bind:value={gr.group}
+										placeholder="platform-admins"
+									/>
+									<label class="flex flex-none items-center gap-1 text-[11px] text-[var(--al-text)]">
+										<input type="checkbox" checked={gr.admin ?? false} onchange={(e) => (gr.admin = e.currentTarget.checked)} />
+										admin
+									</label>
+									{#each PERMS as p (p.key)}
+										<label class="flex flex-none items-center gap-1 text-[11px] {gr.admin ? 'opacity-40' : 'text-[var(--al-muted)]'}" title={p.label}>
+											<input
+												type="checkbox"
+												disabled={gr.admin}
+												checked={(gr.perms ?? []).includes(p.key)}
+												onchange={(e) => toggleGroupPerm(gr, p.key, e.currentTarget.checked)}
+											/>
+											{p.key}
+										</label>
+									{/each}
+									<button
+										class="flex-none text-[var(--al-muted)] hover:text-[var(--al-danger)]"
+										aria-label="Remove group"
+										onclick={() => removeGroupRole(i)}
+									><Trash2 size={12} /></button>
+								</div>
+							{/each}
+						</div>
+						<label class="mt-2 flex items-start gap-1.5 text-[11px] text-[var(--al-text)]">
+							<input
+								type="checkbox"
+								checked={sso.syncGroupsOnLogin}
+								onchange={(e) => setSyncGroups(e.currentTarget.checked)}
+							/>
+							<span>
+								Re-apply on every login
+								<span class="block text-[10px] text-[var(--al-muted)]">
+									Makes the IdP the source of truth: it also <em>removes</em> access the mapping
+									does not grant, overwriting admin/permission edits made in the Users tab.
+								</span>
+							</span>
+						</label>
+					{/if}
 				</div>
 
 				{#if !sso.secretStorable}

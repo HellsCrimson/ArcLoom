@@ -151,6 +151,22 @@ func (s *Server) recordAudit(r *http.Request, action, projectID, detail string) 
 	})
 }
 
+// recordAuditAs appends an audit entry attributed to a username instead of the
+// request's authenticated user — for actions with no logged-in actor, such as an
+// SSO callback provisioning the very account it is about to log in.
+func (s *Server) recordAuditAs(username, action, detail string) {
+	if s.audit == nil {
+		return
+	}
+	_ = s.audit.Append(&audit.Entry{
+		ID:     uuid.NewString(),
+		Time:   time.Now(),
+		User:   username,
+		Action: action,
+		Detail: detail,
+	})
+}
+
 // handleListAudit returns audit entries (admin only), newest first, with
 // optional ?project=, ?user= and ?limit= filters.
 func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
