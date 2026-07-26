@@ -23,8 +23,9 @@ type licenseDTO struct {
 	KeyConfigured bool `json:"keyConfigured"`
 }
 
-// allFeatures is the catalog reported as "unlocked" for the current license.
-var allFeatures = []string{license.FeatureSSO, license.FeatureRBAC, license.FeatureDrift, license.FeatureMultiUser, license.FeatureCost}
+// allFeatures is the catalog reported as "unlocked" for the current license. It
+// lives in internal/license, beside the flags themselves, so the two cannot drift.
+var allFeatures = license.AllFeatures
 
 func (s *Server) licenseResponse() licenseDTO {
 	m := s.license

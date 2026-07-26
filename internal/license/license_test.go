@@ -2,6 +2,7 @@ package license
 
 import (
 	"crypto/ed25519"
+	"slices"
 	"testing"
 	"time"
 )
@@ -115,5 +116,33 @@ func TestManagerFeatureGates(t *testing.T) {
 	_ = m.Set("")
 	if m.Current() != nil {
 		t.Fatal("expected cleared license")
+	}
+}
+
+// TestAllFeaturesCoversEveryFlag guards the mistake that shipped `vault`
+// enforced-but-unlisted: a feature absent from AllFeatures is gated correctly yet
+// never appears in Settings → License, so nobody can tell their key unlocked it.
+func TestAllFeaturesCoversEveryFlag(t *testing.T) {
+	// Every flag the codebase defines. Go cannot enumerate constants, so this list
+	// is the deliberate second copy — if it and AllFeatures disagree, one of them
+	// was forgotten.
+	defined := []string{
+		FeatureSSO, FeatureRBAC, FeatureDrift, FeatureMultiUser, FeatureCost, FeatureVault,
+	}
+	if len(AllFeatures) != len(defined) {
+		t.Fatalf("AllFeatures has %d entries, %d flags are defined: %v", len(AllFeatures), len(defined), AllFeatures)
+	}
+	for _, f := range defined {
+		if !slices.Contains(AllFeatures, f) {
+			t.Errorf("feature %q is missing from AllFeatures (it would be enforced but invisible)", f)
+		}
+	}
+	// A blanket enterprise license (empty Features) must unlock every one of them.
+	m := NewManager(nil)
+	m.Install(&License{Tier: TierEnterprise})
+	for _, f := range AllFeatures {
+		if !m.Has(f) {
+			t.Errorf("a blanket enterprise license should grant %q", f)
+		}
 	}
 }

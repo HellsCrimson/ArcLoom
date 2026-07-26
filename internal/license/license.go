@@ -41,6 +41,14 @@ const (
 	FeatureVault     = "vault"      // external secret store (Vault / OpenBao)
 )
 
+// AllFeatures is the catalog of gated features, kept next to the constants it
+// lists so a new flag cannot be added without appearing here. The API reports it
+// as the set a license unlocks; a feature missing from it is enforced but
+// invisible in Settings → License, which is how `vault` was first shipped.
+var AllFeatures = []string{
+	FeatureSSO, FeatureRBAC, FeatureDrift, FeatureMultiUser, FeatureCost, FeatureVault,
+}
+
 // CommunitySeatLimit is how many users an unlicensed (community) install may
 // create. Enough for a homelab; more requires a license.
 const CommunitySeatLimit = 3
