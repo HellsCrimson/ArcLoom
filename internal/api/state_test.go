@@ -157,6 +157,47 @@ func TestStateListReportsTaintedInstances(t *testing.T) {
 	}
 }
 
+// Force-unlock streams like the other state ops, passes the lock ID straight
+// through and lands in run history; a missing ID fails before the stream starts.
+func TestForceUnlockEndpoint(t *testing.T) {
+	fake := &fakeRunner{}
+	srv, rh := driftTestServer(t, fake)
+	h := srv.Handler()
+
+	rec := post(t, h, http.MethodPost, "/api/projects/p1/state/force-unlock?lockId=abc-123", "")
+	if body := rec.Body.String(); !strings.Contains(body, "event: done") {
+		t.Fatalf("force-unlock stream = %s", body)
+	}
+	if fake.unlockedID != "abc-123" {
+		t.Fatalf("runner received lock id %q", fake.unlockedID)
+	}
+	list, _ := rh.List("p1")
+	found := false
+	for _, r := range list {
+		if r.Op == "force-unlock" && r.Status == "success" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("force-unlock not recorded: %+v", list)
+	}
+
+	// No ID: rejected before streaming, so the engine is never called.
+	fake.unlockedID = ""
+	for _, path := range []string{
+		"/api/projects/p1/state/force-unlock",
+		"/api/projects/p1/state/force-unlock?lockId=",
+		"/api/projects/p1/state/force-unlock?lockId=has%20space",
+	} {
+		if rec := post(t, h, http.MethodPost, path, ""); rec.Code != http.StatusBadRequest {
+			t.Fatalf("POST %s = %d, want 400", path, rec.Code)
+		}
+	}
+	if fake.unlockedID != "" {
+		t.Fatalf("engine called for a rejected request: %q", fake.unlockedID)
+	}
+}
+
 // Taint and untaint stream like the other state ops, pass the address through and
 // land in run history; a missing address fails before the stream starts.
 func TestTaintUntaintEndpoints(t *testing.T) {

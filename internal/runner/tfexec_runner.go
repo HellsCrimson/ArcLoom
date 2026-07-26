@@ -423,6 +423,27 @@ func (t *TfExec) StateMv(ctx context.Context, dir string, files map[string][]byt
 	return nil
 }
 
+// ForceUnlock releases a stuck state lock. It goes through the same prepare path
+// as the other state ops because the backend has to be initialized before its
+// lock can be addressed at all — and tfVars are deliberately nil: releasing a
+// lock reads no resource, so no provider credentials are needed.
+//
+// prepare takes the per-dir mutex, so a force-unlock issued while THIS server is
+// still running the op waits for it instead of yanking the lock from under it.
+// The stuck-lock case it exists for is the opposite one: the run that took the
+// lock is long gone.
+func (t *TfExec) ForceUnlock(ctx context.Context, dir string, files map[string][]byte, lockID string, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, nil, out)
+	defer cleanup()
+	if err != nil {
+		return err
+	}
+	if err := tf.ForceUnlock(ctx, lockID); err != nil {
+		return fmt.Errorf("force-unlock: %w", err)
+	}
+	return nil
+}
+
 // InitBackend re-initializes the persistent workspace after a backend change.
 // It cannot reuse prepare (whose plain init would fail with "backend
 // configuration changed"); everything else — sync, lock — matches.

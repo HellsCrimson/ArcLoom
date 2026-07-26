@@ -252,6 +252,9 @@ func (s *Server) Handler() http.Handler {
 				// provisioner left behind.
 				r.Post("/projects/{id}/state/taint", s.handleStateTaint)
 				r.Post("/projects/{id}/state/untaint", s.handleStateUntaint)
+				// Release a lock a crashed run left behind (the only remedy with
+				// a remote backend, where there is no file to delete).
+				r.Post("/projects/{id}/state/force-unlock", s.handleStateForceUnlock)
 				r.Post("/projects/{id}/state/init-backend", s.handleInitBackend)
 				// Absorb drift into the state (apply -refresh-only; no infra change).
 				r.Post("/projects/{id}/state/accept-drift", s.handleAcceptDrift)

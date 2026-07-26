@@ -982,7 +982,21 @@ export interface DriftInfo {
 export interface RunRecord {
 	id: string;
 	projectId: string;
-	op: 'plan' | 'apply' | 'destroy' | 'import' | 'state-rm' | 'state-mv' | 'init-backend' | 'validate' | 'lint' | 'drift';
+	op:
+		| 'plan'
+		| 'apply'
+		| 'destroy'
+		| 'import'
+		| 'state-rm'
+		| 'state-mv'
+		| 'init-backend'
+		| 'accept-drift'
+		| 'taint'
+		| 'untaint'
+		| 'force-unlock'
+		| 'validate'
+		| 'lint'
+		| 'drift';
 	env?: string;
 	user: string;
 	startedAt: string;
@@ -1080,7 +1094,8 @@ export type StreamableOp =
 	| 'init-backend'
 	| 'accept-drift'
 	| 'taint'
-	| 'untaint';
+	| 'untaint'
+	| 'force-unlock';
 
 const OP_PATH: Record<StreamableOp, string> = {
 	apply: 'apply',
@@ -1091,7 +1106,8 @@ const OP_PATH: Record<StreamableOp, string> = {
 	'init-backend': 'state/init-backend',
 	'accept-drift': 'state/accept-drift',
 	taint: 'state/taint',
-	untaint: 'state/untaint'
+	untaint: 'state/untaint',
+	'force-unlock': 'state/force-unlock'
 };
 
 // streamOp runs a mutating operation (apply/destroy/state surgery) and streams

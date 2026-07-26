@@ -1162,7 +1162,15 @@
 	// init-backend) into the run pane and refreshes the state list when it
 	// settles.
 	function runStateOp(
-		op: 'import' | 'state-rm' | 'state-mv' | 'init-backend' | 'accept-drift' | 'taint' | 'untaint',
+		op:
+			| 'import'
+			| 'state-rm'
+			| 'state-mv'
+			| 'init-backend'
+			| 'accept-drift'
+			| 'taint'
+			| 'untaint'
+			| 'force-unlock',
 		params: Record<string, string>
 	) {
 		if (!project) return;
@@ -1183,6 +1191,7 @@
 					: op === 'accept-drift' ? 'Drift absorbed into state'
 					: op === 'taint' ? 'Marked for replacement'
 					: op === 'untaint' ? 'Tainted mark cleared'
+					: op === 'force-unlock' ? 'State lock released'
 					: 'Backend initialized';
 				busy = '';
 				loadState();
@@ -1605,7 +1614,7 @@
 		bind:open={showState}
 		entries={stateEntries}
 		loading={stateLoading}
-		busy={busy === 'import' || busy === 'state-rm' || busy === 'state-mv' || busy === 'init-backend'}
+		busy={busy === 'import' || busy === 'state-rm' || busy === 'state-mv' || busy === 'init-backend' || busy === 'force-unlock'}
 		canDeploy={auth.can('deploy')}
 		backendType={project.backend?.type ?? ''}
 		drift={driftInfo}
@@ -1617,6 +1626,7 @@
 		onAcceptDrift={auth.can('deploy') ? () => runStateOp('accept-drift', {}) : undefined}
 		onTaint={(address) => runStateOp('taint', { address })}
 		onUntaint={(address) => runStateOp('untaint', { address })}
+		onForceUnlock={auth.can('deploy') ? (lockId) => runStateOp('force-unlock', { lockId }) : undefined}
 	/>
 
 	<!-- terraform block: required_version + state backend -->

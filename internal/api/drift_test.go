@@ -48,6 +48,9 @@ type fakeRunner struct {
 	// tainted / untainted record the address each op received.
 	tainted   string
 	untainted string
+	// unlockedID records the lock ID force-unlock received; unlockErr makes it fail.
+	unlockedID string
+	unlockErr  error
 	// State stubs: what StatePull reports and what StatePush received.
 	statePull    string
 	statePushed  []byte
@@ -117,6 +120,10 @@ func (f *fakeRunner) Taint(_ context.Context, _ string, _ map[string][]byte, _ m
 func (f *fakeRunner) Untaint(_ context.Context, _ string, _ map[string][]byte, _ map[string]string, address string, _ io.Writer) error {
 	f.untainted = address
 	return nil
+}
+func (f *fakeRunner) ForceUnlock(_ context.Context, _ string, _ map[string][]byte, lockID string, _ io.Writer) error {
+	f.unlockedID = lockID
+	return f.unlockErr
 }
 func (f *fakeRunner) InitBackend(context.Context, string, map[string][]byte, bool, io.Writer) error {
 	return nil

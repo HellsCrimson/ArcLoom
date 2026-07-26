@@ -98,6 +98,28 @@ func (s *Server) handleStateUntaint(w http.ResponseWriter, r *http.Request) {
 	s.streamOp(w, r, "untaint")
 }
 
+// handleStateForceUnlock releases a stuck state lock. A run the engine never
+// finished (killed process, crashed container, lost connection mid-apply) leaves
+// the lock held by nobody, and every later operation fails to acquire it — with
+// a remote backend there is no file to delete, so this is the only remedy. The
+// lock ID comes from the engine's refusal ("Lock Info: ID: …"), or from the
+// state-lock endpoint when the local backend made it visible.
+func (s *Server) handleStateForceUnlock(w http.ResponseWriter, r *http.Request) {
+	if !validLockID(r.URL.Query().Get("lockId")) {
+		writeErr(w, http.StatusBadRequest, "lockId is required")
+		return
+	}
+	s.streamOp(w, r, "force-unlock")
+}
+
+// validLockID sanity-checks a lock ID before it becomes a CLI argument. Most
+// backends use a UUID, but the format is backend-defined, so only the properties
+// that make it an argument at all are enforced.
+func validLockID(id string) bool {
+	id = strings.TrimSpace(id)
+	return id != "" && len(id) <= 200 && !strings.ContainsAny(id, " \t\n")
+}
+
 // handleAcceptDrift persists the refreshed state (apply -refresh-only) so the
 // state catches up to reality. It changes no infrastructure, and it is the only
 // way to clear drift a refresh-only plan reports — that plan never writes back
@@ -323,6 +345,9 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 	case "state-mv":
 		q := r.URL.Query()
 		err = run.StateMv(r.Context(), dir, files, tfVars, strings.TrimSpace(q.Get("from")), strings.TrimSpace(q.Get("to")), logW)
+		logW.flush()
+	case "force-unlock":
+		err = run.ForceUnlock(r.Context(), dir, files, strings.TrimSpace(r.URL.Query().Get("lockId")), logW)
 		logW.flush()
 	case "init-backend":
 		err = run.InitBackend(r.Context(), dir, files, r.URL.Query().Get("migrate") == "true", logW)

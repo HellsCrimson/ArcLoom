@@ -189,6 +189,12 @@ type Runner interface {
 	// StateMv renames an address inside the persisted state, e.g. after a
 	// resource was renamed in the model.
 	StateMv(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, from, to string, out io.Writer) error
+	// ForceUnlock releases a stuck state lock (`force-unlock`), the remedy for a
+	// run the engine never got to finish — killed process, crashed container,
+	// lost network mid-apply — which leaves the lock held with no owner. lockID
+	// is the ID the engine prints when it refuses to acquire the lock. The state
+	// contents are untouched; only the lock is released.
+	ForceUnlock(ctx context.Context, dir string, files map[string][]byte, lockID string, out io.Writer) error
 	// InitBackend re-initializes the workspace after the backend configuration
 	// changed. migrate copies the existing state into the new backend
 	// (-force-copy, implies -migrate-state); otherwise the new backend is used

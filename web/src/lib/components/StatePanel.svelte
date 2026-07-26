@@ -2,7 +2,7 @@
 	import Modal from './Modal.svelte';
 	import type { DriftInfo, StateEntry } from '$lib/api/client';
 	import type { DriftConfig } from '$lib/types';
-	import { Loader2, RefreshCw, PenLine, Trash2, Settings, AlertTriangle, CheckCircle2, Check, Biohazard, HeartPulse } from 'lucide-svelte';
+	import { Loader2, RefreshCw, PenLine, Trash2, Settings, AlertTriangle, CheckCircle2, Check, Biohazard, HeartPulse, LockOpen } from 'lucide-svelte';
 
 	let {
 		open = $bindable(false),
@@ -19,7 +19,8 @@
 		onMv,
 		onAcceptDrift,
 		onTaint,
-		onUntaint
+		onUntaint,
+		onForceUnlock
 	}: {
 		open: boolean;
 		entries: StateEntry[];
@@ -39,6 +40,8 @@
 		onTaint?: (address: string) => void;
 		/** Clear that mark (the remedy for a failed create-time provisioner). */
 		onUntaint?: (address: string) => void;
+		/** Release a lock a crashed run left behind. */
+		onForceUnlock?: (lockId: string) => void;
 	} = $props();
 
 	// Editable copy of the drift schedule, re-seeded whenever fresh info loads.
@@ -112,6 +115,24 @@
 			onUntaint?.(address);
 	}
 
+	// One prompt does both jobs: it carries the warning and takes the ID. The ID
+	// has to be typed because the lock is not visible from here — a remote backend
+	// keeps it in the remote store, and the local backend's lock is an OS file
+	// lock that dies with the process (so it never gets stuck). The engine prints
+	// the ID in the error that refused the operation.
+	function askForceUnlock() {
+		const id = window.prompt(
+			'Force-unlock this state?\n\n' +
+				'Do this only when the run holding the lock is really gone (killed process, crashed container, ' +
+				'connection lost mid-apply). Releasing a lock a LIVE run still holds lets two operations write ' +
+				'the state at once, which can corrupt it.\n\n' +
+				'The recorded state is not modified — only the lock is released.\n\n' +
+				'Lock ID (the failed operation prints it as "Lock Info: ID:"):',
+			''
+		);
+		if (id && id.trim()) onForceUnlock?.(id.trim());
+	}
+
 	function askMv(from: string) {
 		const to = window.prompt(`Move (rename) state address\n\nfrom: ${from}\nto:`, from);
 		if (to && to.trim() && to.trim() !== from) onMv(from, to.trim());
@@ -137,6 +158,32 @@
 			</button>
 		{/if}
 	</div>
+	{#if canDeploy && onForceUnlock}
+		<div class="mb-2 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-2">
+			<div class="flex flex-wrap items-center gap-2">
+				<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">State lock</span>
+				<span class="text-xs text-[var(--al-muted)]">
+					{backendType
+						? `held in the ${backendType} backend — not visible from here`
+						: 'held only while an operation runs (local state)'}
+				</span>
+				<button
+					class="ml-auto flex items-center gap-1 rounded-md border border-[var(--al-border)] px-2 py-1 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel)] disabled:opacity-40"
+					onclick={askForceUnlock}
+					disabled={busy}
+					title="Release a lock a crashed run left behind (the recorded state is untouched)"
+				>
+					<LockOpen size={12} /> Force unlock…
+				</button>
+			</div>
+			<p class="mt-1 text-[11px] text-[var(--al-muted)]">
+				An operation the engine never got to finish — killed process, crashed container, connection lost
+				mid-apply — can leave a remote backend's lock held by nobody, and every later operation then fails to
+				acquire it. Force-unlock releases it; the recorded state is not modified. Take the ID from the
+				“Lock Info: ID:” line of the operation that was refused.
+			</p>
+		</div>
+	{/if}
 	{#if drift}
 		<div class="mb-2 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-2">
 			<div class="flex flex-wrap items-center gap-2">

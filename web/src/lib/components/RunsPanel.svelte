@@ -23,6 +23,7 @@
 		'accept-drift': '#e3b341',
 		taint: '#e3b341',
 		untaint: ACTION_COLOR.create,
+		'force-unlock': '#f0883e',
 		validate: '#79c0ff',
 		lint: '#d2a8ff',
 		drift: '#e3b341'
