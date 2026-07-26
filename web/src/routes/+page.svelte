@@ -17,6 +17,7 @@
 	import UserMenu from '$lib/components/UserMenu.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
 	import CommandPalette, { type PaletteItem } from '$lib/components/CommandPalette.svelte';
+	import ToolbarMenu, { type ToolItem } from '$lib/components/ToolbarMenu.svelte';
 	import PlanDiffPanel from '$lib/components/PlanDiffPanel.svelte';
 	import PlanDiffList from '$lib/components/PlanDiffList.svelte';
 	import ResizeHandle from '$lib/components/ResizeHandle.svelte';
@@ -1616,21 +1617,126 @@
 	const accentHex = '#4c8dff';
 	const accentWeak = '#1f3a5f';
 
+	// --- Responsive top bar ---
+	// The bar used to render every action at full size whatever the window width,
+	// so on a narrow window it pushed past the viewport and produced a
+	// document-level horizontal scrollbar. The actions are now described as data
+	// and fitted into the width the flex layout actually leaves them: labels drop
+	// first (icons keep the row usable), then the lowest-priority actions move
+	// into the "More" menu. Nothing is ever unreachable.
+	let toolsWidth = $state(0);
+	let showToolMenu = $state(false);
+
+	// Width estimates (measured against the rendered buttons, then rounded up:
+	// over-estimating collapses one action early, which is invisible, while
+	// under-estimating would clip the bar). Each includes the 6px flex gap.
+	const TOOL_ICON_W = 42; // icon-only button
+	const TOOL_MORE_W = 86; // the "More" button
+	const toolWidth = (it: ToolItem) =>
+		44 + it.label.length * 7 + (it.badge ? 18 : 0) + (it.id === 'import' ? 14 : 0);
+
+	// Actions in priority order — earlier stays in the bar longer.
+	const toolItems = $derived.by<ToolItem[]>(() => {
+		if (!project) return [];
+		const items: ToolItem[] = [
+			{ id: 'editor', label: 'Editor', icon: LayoutDashboard, run: openEditor, active: showEditor, priority: 0 },
+			{ id: 'runs', label: 'Runs', icon: History, run: () => (showRuns = true), priority: 1 },
+			{ id: 'state', label: 'State', icon: Layers, run: () => { loadState(); loadDrift(); showState = true; }, priority: 1 }
+		];
+		// Variables and Secrets are readable by anyone (the panels gate their own
+		// edit actions), matching the pre-existing bar.
+		items.push({
+			id: 'variables', label: 'Variables', icon: VariableIcon, run: () => (showConfig = true),
+			badge: configCount > 0 ? String(configCount) : undefined, priority: 2
+		});
+		items.push({
+			id: 'secrets', label: 'Secrets', icon: KeyRound, run: () => { loadSecrets(); showSecrets = true; },
+			badge: secretsList.length > 0 ? String(secretsList.length) : undefined, priority: 2
+		});
+		if (auth.can('git')) {
+			items.push({ id: 'git', label: 'Git', icon: GitBranch, run: () => (showGit = true), priority: 2 });
+		}
+		if (auth.can('resources')) {
+			items.push({ id: 'import', label: 'Import', icon: FileDown, run: () => (showImportMenu = true), priority: 3 });
+			items.push({ id: 'environments', label: 'Environments', icon: Boxes, run: () => (showEnvironments = true), title: 'Manage deployment environments', priority: 4 });
+			items.push({ id: 'cost', label: 'Cost', icon: DollarSign, run: () => (showCost = true), title: 'Cost estimation settings', priority: 5 });
+			items.push({ id: 'policy', label: 'Policy', icon: ShieldCheck, run: () => (showPolicy = true), title: 'Policy as code (conftest/OPA)', priority: 5 });
+			items.push({ id: 'notify', label: 'Notify', icon: Bell, run: () => (showNotify = true), title: 'Webhook / Slack notifications for applies and drift', priority: 5 });
+		}
+		if (auth.isAdmin) {
+			items.push({ id: 'acl', label: 'Access', icon: ShieldCheck, run: () => (showAcl = true), title: 'Manage who can access this project', priority: 6 });
+		}
+		return items;
+	});
+
+	// Import keeps its submenu in the bar, but in the overflow list its two
+	// actions are flat rows — a menu inside a menu would be worse than either.
+	const importRows: ToolItem[] = [
+		{ id: 'import-hcl', label: 'Import HCL', icon: FileDown, run: () => (showImportHcl = true), priority: 3 },
+		{ id: 'import-state', label: 'Import state', icon: Database, run: () => (showImportState = true), priority: 3 }
+	];
+
+	// Fitting the actions into the measured width, degrading in three steps so the
+	// space available is always spent on the most useful thing:
+	//   1. everything labelled, if it fits;
+	//   2. otherwise every action stays visible as an icon, and the leftover width
+	//      buys labels back for the leading (highest-priority) ones — a full row of
+	//      icons would otherwise waste a few hundred px on a 1600px laptop;
+	//   3. and only when even the icons do not fit does the tail move to "More".
+	const toolLayout = $derived.by(() => {
+		const items = toolItems;
+		const labelAll = () => new Set(items.map((it) => it.id));
+		// Before the first measurement, assume everything fits: a flash of the full
+		// bar is better than a flash of an empty one.
+		if (items.length === 0 || toolsWidth === 0) {
+			return { labelled: labelAll(), visible: items, overflow: [] as ToolItem[] };
+		}
+
+		const iconTotal = items.length * TOOL_ICON_W;
+		if (iconTotal > toolsWidth) {
+			const budget = toolsWidth - TOOL_MORE_W;
+			const visible = items.slice(0, Math.max(0, Math.floor(budget / TOOL_ICON_W)));
+			const overflow = items.slice(visible.length).flatMap((it) => (it.id === 'import' ? importRows : [it]));
+			return { labelled: new Set<string>(), visible, overflow };
+		}
+
+		if (items.reduce((n, it) => n + toolWidth(it), 0) <= toolsWidth) {
+			return { labelled: labelAll(), visible: items, overflow: [] as ToolItem[] };
+		}
+
+		// Buy labels from the left, stopping at the first that does not fit so the
+		// labelled ones stay contiguous instead of scattering across the row.
+		let spare = toolsWidth - iconTotal;
+		const labelled = new Set<string>();
+		for (const it of items) {
+			const extra = toolWidth(it) - TOOL_ICON_W;
+			if (extra > spare) break;
+			spare -= extra;
+			labelled.add(it.id);
+		}
+		return { labelled, visible: items, overflow: [] as ToolItem[] };
+	});
+
 </script>
 
-<svelte:window onclick={() => (showImportMenu = false)} onkeydown={handleKeydown} />
+<svelte:window onclick={() => { showImportMenu = false; showToolMenu = false; }} onkeydown={handleKeydown} />
 
 <CommandPalette bind:open={showPalette} items={paletteItems} />
 
 <div class="flex h-screen flex-col">
-	<header class="flex items-center gap-3 border-b border-[var(--al-border)] bg-[var(--al-panel)] px-4 py-2">
-		<div class="flex items-center gap-2 font-semibold">
-			<Boxes size={18} class="text-[var(--al-accent)]" /> ArcLoom
+	<!-- No overflow-hidden anywhere on this bar: it would clip the Import and More
+	     dropdowns, which hang below the header. Horizontal overflow — the bug this
+	     replaces — is prevented structurally instead: the action row is fitted to
+	     its measured width, and flex-wrap moves the fixed-size groups to a second
+	     line once they cannot share one (roughly below 1000px). -->
+	<header class="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-[var(--al-border)] bg-[var(--al-panel)] px-4 py-2">
+		<div class="flex flex-none items-center gap-2 font-semibold">
+			<Boxes size={18} class="text-[var(--al-accent)]" /> <span class="hidden sm:inline">ArcLoom</span>
 		</div>
-		<div class="ml-2 flex items-center gap-1.5">
-			<FolderGit2 size={15} class="text-[var(--al-muted)]" />
+		<div class="flex flex-none items-center gap-1.5">
+			<FolderGit2 size={15} class="hidden shrink-0 text-[var(--al-muted)] sm:block" />
 			<select
-				class="rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-sm"
+				class="max-w-[7rem] rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-sm sm:max-w-[9rem] lg:max-w-[16rem]"
 				value={project?.id ?? ''}
 				onchange={(e) => selectProject(e.currentTarget.value)}
 			>
@@ -1650,54 +1756,26 @@
 						: `Drift detected at ${new Date(currentDrift.checkedAt).toLocaleString()} — open State for details`}
 					onclick={() => { loadState(); loadDrift(); showState = true; }}
 				>
-					<AlertTriangle size={12} /> {currentDrift.error ? 'drift check failed' : 'drift'}
+					<AlertTriangle size={12} />
+					<span class="hidden md:inline">{currentDrift.error ? 'drift check failed' : 'drift'}</span>
 				</button>
 			{/if}
 		</div>
 
 		{#if project}
-			<div class="ml-3 flex items-center gap-1.5 border-l border-[var(--al-border)] pl-3">
+			<!-- Context, not actions: undo/redo and the active environment are
+			     fixed-size and always available, so they stay out of the measured
+			     action row. -->
+			<div class="flex flex-none items-center gap-1.5 border-l border-[var(--al-border)] pl-3">
 				{#if auth.can('resources')}
 					<button class="{iconBtn} disabled:pointer-events-none disabled:opacity-30" title="Undo (Ctrl+Z)" aria-label="Undo" onclick={undo} disabled={!history.canUndo || busy !== ''}><Undo2 size={15} /></button>
 					<button class="{iconBtn} disabled:pointer-events-none disabled:opacity-30" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" onclick={redo} disabled={!history.canRedo || busy !== ''}><Redo2 size={15} /></button>
 				{/if}
-				<button
-					class="{hdrBtn} {showEditor ? 'border-[var(--al-accent)] bg-[var(--al-accent-weak)] text-[var(--al-accent)]' : ''}"
-					onclick={openEditor}
-				><LayoutDashboard size={14} /> Editor</button>
-				<button class={hdrBtn} onclick={() => (showConfig = true)}>
-					<VariableIcon size={14} /> Variables{#if configCount > 0}<span class="text-[10px] text-[var(--al-muted)]">{configCount}</span>{/if}
-				</button>
-				<button class={hdrBtn} onclick={() => { loadSecrets(); showSecrets = true; }}>
-					<KeyRound size={14} /> Secrets{#if secretsList.length > 0}<span class="text-[10px] text-[var(--al-muted)]">{secretsList.length}</span>{/if}
-				</button>
-				{#if auth.can('git')}
-					<button class={hdrBtn} onclick={() => (showGit = true)}>
-						<GitBranch size={14} /> Git
-					</button>
-				{/if}
-				<button class={hdrBtn} onclick={() => (showRuns = true)}>
-					<History size={14} /> Runs
-				</button>
-				<button class={hdrBtn} onclick={() => { loadState(); loadDrift(); showState = true; }}>
-					<Layers size={14} /> State
-				</button>
-				{#if auth.can('resources')}
-					<button class={hdrBtn} onclick={() => (showCost = true)} title="Cost estimation settings">
-						<DollarSign size={14} /> Cost
-					</button>
-					<button class={hdrBtn} onclick={() => (showPolicy = true)} title="Policy as code (conftest/OPA)">
-						<ShieldCheck size={14} /> Policy
-					</button>
-					<button class={hdrBtn} onclick={() => (showNotify = true)} title="Webhook / Slack notifications for applies and drift">
-						<Bell size={14} /> Notify
-					</button>
-				{/if}
 				{#if environments.length > 0}
 					<div class="flex items-center gap-1" title="Active deployment environment (scopes plan / apply / state)">
-						<Boxes size={14} class="text-[var(--al-muted)]" />
+						<Boxes size={14} class="hidden text-[var(--al-muted)] lg:block" />
 						<select
-							class="rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs text-[var(--al-text)] outline-none focus:border-[var(--al-accent)]"
+							class="max-w-[7rem] rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs text-[var(--al-text)] outline-none focus:border-[var(--al-accent)]"
 							value={activeEnv}
 							onchange={(e) => selectEnv((e.currentTarget as HTMLSelectElement).value)}
 						>
@@ -1708,38 +1786,57 @@
 						</select>
 					</div>
 				{/if}
-				{#if auth.can('resources')}
-					<button class={hdrBtn} onclick={() => (showEnvironments = true)} title="Manage deployment environments">
-						<Boxes size={14} /> Environments
-					</button>
-				{/if}
-				{#if auth.isAdmin}
-					<button class={hdrBtn} onclick={() => (showAcl = true)} title="Manage who can access this project">
-						<ShieldCheck size={14} /> Access
-					</button>
-				{/if}
-				{#if auth.can('resources')}
-				<div class="relative">
-					<button class={hdrBtn} onclick={(e) => { e.stopPropagation(); importMsg = ''; showImportMenu = !showImportMenu; }}>
-						<FileDown size={14} /> Import <ChevronDown size={13} />
-					</button>
-					{#if showImportMenu}
-						<div class="absolute left-0 top-full z-20 mt-1 w-40 overflow-hidden rounded-md border border-[var(--al-border)] bg-[var(--al-panel)] shadow-xl">
-							<button class="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]" onclick={() => { showImportMenu = false; showImportHcl = true; }}><FileDown size={13} /> Import HCL</button>
-							<button class="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]" onclick={() => { showImportMenu = false; showImportState = true; }}><Database size={13} /> Import state</button>
+			</div>
+
+			<!-- The measured action row. flex-1 + min-w-0 means clientWidth IS the
+			     space the other groups left over, so the fit needs no estimate of
+			     their widths. -->
+			<!-- min-w (not the flex default of min-content) keeps clientWidth equal to
+			     the width flex assigned rather than to the content, and keeps room for
+			     the "More" button so the actions stay reachable at any size. -->
+			<div class="flex min-w-[46px] flex-1 items-center gap-1.5" bind:clientWidth={toolsWidth}>
+				{#each toolLayout.visible as item (item.id)}
+					{#if item.id === 'import'}
+						<div class="relative flex-none">
+							<button class={hdrBtn} onclick={(e) => { e.stopPropagation(); importMsg = ''; showImportMenu = !showImportMenu; }}>
+								<FileDown size={14} />
+								{#if toolLayout.labelled.has('import')}Import <ChevronDown size={13} />{/if}
+							</button>
+							{#if showImportMenu}
+								<div class="absolute left-0 top-full z-20 mt-1 w-40 overflow-hidden rounded-md border border-[var(--al-border)] bg-[var(--al-panel)] shadow-xl">
+									<button class="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]" onclick={() => { showImportMenu = false; showImportHcl = true; }}><FileDown size={13} /> Import HCL</button>
+									<button class="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]" onclick={() => { showImportMenu = false; showImportState = true; }}><Database size={13} /> Import state</button>
+								</div>
+							{/if}
 						</div>
+					{:else}
+						{@const Icon = item.icon}
+						<button
+							class="{hdrBtn} flex-none {item.active ? 'border-[var(--al-accent)] bg-[var(--al-accent-weak)] text-[var(--al-accent)]' : ''}"
+							title={item.title ?? item.label}
+							aria-label={item.label}
+							onclick={item.run}
+						>
+							<Icon size={14} />
+							{#if toolLayout.labelled.has(item.id)}
+								{item.label}{#if item.badge}<span class="text-[10px] text-[var(--al-muted)]">{item.badge}</span>{/if}
+							{/if}
+						</button>
 					{/if}
-				</div>
+				{/each}
+				{#if toolLayout.overflow.length > 0}
+					<ToolbarMenu bind:open={showToolMenu} items={toolLayout.overflow} />
 				{/if}
 			</div>
 		{/if}
 
-		<div class="ml-auto flex items-center gap-2 text-sm">
+		<div class="ml-auto flex flex-none items-center gap-2 text-sm">
 			<button class={hdrBtn} onclick={() => (showPalette = true)} title="Search commands and resources (Ctrl+K)">
-				<Search size={13} /> <span class="text-[10px] text-[var(--al-muted)]">Ctrl K</span>
+				<Search size={13} /> <span class="hidden text-[10px] text-[var(--al-muted)] xl:inline">Ctrl K</span>
 			</button>
-			<span class="text-xs text-[var(--al-muted)]">engine</span>
-			<span class="mono rounded border border-[var(--al-border)] px-2 py-0.5 text-xs text-[var(--al-muted)]">{engine || defaultEngine}</span>
+			<!-- Which engine is informational; it is the first thing to go. -->
+			<span class="hidden text-xs text-[var(--al-muted)] 2xl:inline">engine</span>
+			<span class="mono hidden rounded border border-[var(--al-border)] px-2 py-0.5 text-xs text-[var(--al-muted)] lg:inline">{engine || defaultEngine}</span>
 			{#if auth.isAdmin}
 				<button class={iconBtn} title="Settings" aria-label="Settings" onclick={() => (showSettings = true)}><Settings size={16} /></button>
 			{/if}
