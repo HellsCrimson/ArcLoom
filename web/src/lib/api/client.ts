@@ -153,11 +153,12 @@ export const api = {
 			body: JSON.stringify({ required })
 		}).then((r) => json<ApprovalState>(r)),
 
-	approve: (id: string, env: string, summary: { add: number; change: number; destroy: number; replace: number }) =>
+	// Approves the plan the server stashed for this environment. It takes no
+	// summary: the counts on the record come from that plan, so an approver who
+	// never ran it (the reason approve is its own permission) records the truth.
+	approve: (id: string, env: string) =>
 		fetch(`/api/projects/${id}/approve${env ? `?env=${encodeURIComponent(env)}` : ''}`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(summary)
+			method: 'POST'
 		}).then((r) => json<Approval>(r)),
 
 	setEnvironments: (id: string, environments: Environment[]) =>
@@ -929,10 +930,26 @@ export interface Approval {
 	consumed: boolean;
 }
 
+// PendingPlan is a plan waiting to be approved: the artifact the last plan for
+// this environment produced, kept outside the CLI workspace (which the next
+// operation wipes) so it stays approvable, plus what it would do.
+export interface PendingPlan {
+	projectId: string;
+	env?: string;
+	runId?: string;
+	add: number;
+	change: number;
+	destroy: number;
+	replace: number;
+	plannedBy?: string;
+	plannedAt: string;
+}
+
 // ApprovalState is the gate status for a project + environment.
 export interface ApprovalState {
 	required: boolean;
 	approval: Approval | null;
+	planPending: PendingPlan | null;
 }
 
 // RunOutput is one root output value captured after an apply.

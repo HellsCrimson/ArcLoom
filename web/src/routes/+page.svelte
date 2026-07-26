@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type StateEntry, type Environment, type Approval } from '$lib/api/client';
+	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type StateEntry, type Environment, type Approval, type PendingPlan } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
 	import StatePanel from '$lib/components/StatePanel.svelte';
 	import type { AttrValue, DriftConfig, Engine, Module, Project, ProjectSummary, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
@@ -72,9 +72,12 @@
 	let environments = $state<Environment[]>([]);
 	let activeEnv = $state('');
 	let showEnvironments = $state(false);
-	// Plan → approve → apply gate (per project + active env).
+	// Plan → approve → apply gate (per project + active env). planPending is the
+	// server's stashed plan: it is what makes Approve available to a user who did
+	// not run the plan in this tab (a reload, or a different approver).
 	let approvalRequired = $state(false);
 	let currentApproval = $state<Approval | null>(null);
+	let planPending = $state<PendingPlan | null>(null);
 	// Provider upgrade suggestions, keyed by source (best-effort registry check).
 	let providerUpdates = $state<Record<string, ProviderUpdate>>({});
 	let bumping = $state('');
@@ -248,8 +251,10 @@
 		if (history.observe(project.id, JSON.stringify(project)) === 'recorded') {
 			runPane.clearOverlay();
 			// A model edit makes any approved plan stale: block a gated apply until
-			// the user re-plans and re-approves.
+			// the user re-plans and re-approves. The plan waiting to be approved is
+			// stale for the same reason, so stop offering it.
 			currentApproval = null;
+			planPending = null;
 		}
 	});
 
@@ -430,26 +435,30 @@
 		if (!project) {
 			approvalRequired = false;
 			currentApproval = null;
+			planPending = null;
 			return;
 		}
 		try {
 			const st = await api.getApproval(project.id, activeEnv);
 			approvalRequired = st.required;
 			currentApproval = st.approval;
+			planPending = st.planPending;
 		} catch {
 			approvalRequired = false;
 			currentApproval = null;
+			planPending = null;
 		}
 	}
 
-	// approvePlan snapshots the current saved plan as an approval so a gated apply
-	// can run it. Requires the approve permission (server-enforced).
+	// approvePlan signs off the plan the server stashed for this environment so a
+	// gated apply can run it. Requires the approve permission (server-enforced);
+	// the summary on the record comes from that plan, not from this tab.
 	async function approvePlan() {
 		if (!project) return;
 		error = '';
 		try {
-			const s = runPane.counts ?? { add: 0, change: 0, destroy: 0, replace: 0 };
-			currentApproval = await api.approve(project.id, activeEnv, s);
+			currentApproval = await api.approve(project.id, activeEnv);
+			planPending = null;
 		} catch (err) {
 			error = (err as Error).message;
 		}
@@ -1507,7 +1516,7 @@
 								{approvalRequired}
 								{approvalReady}
 								canApprove={auth.can('approve')}
-								hasPlan={runPane.counts !== null}
+								hasPlan={runPane.counts !== null || planPending !== null}
 								onValidate={runValidate}
 								onLint={runLint}
 								onPlan={runPlan}

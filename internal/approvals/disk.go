@@ -24,6 +24,14 @@ const keepPerProject = 50
 //	<root>/<projectID>/<approvedUnixNano>-<id>.tfplan  (saved plan artifact)
 //
 // The timestamp prefix makes lexical filename order equal chronological order.
+// and, in a subdirectory, at most one stashed (not yet approved) plan per
+// environment:
+//
+//	<root>/<projectID>/pending/<key>.json      (summary)
+//	<root>/<projectID>/pending/<key>.tfplan    (saved plan artifact)
+//
+// The subdirectory keeps them out of the approval listing, which reads every
+// .json in the project folder as an Approval record.
 type Disk struct {
 	root string
 	mu   sync.Mutex
@@ -140,6 +148,93 @@ func (d *Disk) InvalidateEnv(projectID, env string) error {
 		if data, err := json.Marshal(a); err == nil {
 			_ = os.WriteFile(path, data, 0o644)
 		}
+	}
+	return nil
+}
+
+// pendingStem is the "<dir>/<key>" path stem of an environment's stashed plan.
+// Environment names are safe path segments (letters, digits, _ and -) and so can
+// never contain a dot: an "env.<name>" key can never collide with the default
+// workspace's "default", not even for an environment literally named "default".
+func (d *Disk) pendingStem(projectID, env string) string {
+	key := "default"
+	if env != "" {
+		key = "env." + env
+	}
+	return filepath.Join(d.projectDir(projectID), "pending", key)
+}
+
+func (d *Disk) StashPlan(p *PendingPlan, planBytes []byte) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	stem := d.pendingStem(p.ProjectID, p.Env)
+	if err := os.MkdirAll(filepath.Dir(stem), 0o755); err != nil {
+		return err
+	}
+	meta, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("marshal pending plan: %w", err)
+	}
+	// The artifact is written (and renamed into place) before the summary that
+	// advertises it, so a crash mid-stash leaves no summary pointing at a
+	// truncated plan — the previous stash simply stands.
+	if err := writeAtomic(stem+".tfplan", planBytes); err != nil {
+		return fmt.Errorf("stash plan: %w", err)
+	}
+	if err := writeAtomic(stem+".json", meta); err != nil {
+		return fmt.Errorf("stash plan summary: %w", err)
+	}
+	return nil
+}
+
+func (d *Disk) StashedPlan(projectID, env string) (*PendingPlan, []byte, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	stem := d.pendingStem(projectID, env)
+	meta, err := os.ReadFile(stem + ".json")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, ErrNotFound
+		}
+		return nil, nil, err
+	}
+	var p PendingPlan
+	if err := json.Unmarshal(meta, &p); err != nil {
+		return nil, nil, fmt.Errorf("parse pending plan: %w", err)
+	}
+	planBytes, err := os.ReadFile(stem + ".tfplan")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, ErrNotFound
+		}
+		return nil, nil, err
+	}
+	return &p, planBytes, nil
+}
+
+func (d *Disk) DropStash(projectID, env string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	stem := d.pendingStem(projectID, env)
+	var firstErr error
+	for _, path := range []string{stem + ".json", stem + ".tfplan"} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// writeAtomic writes a file via a temporary sibling + rename, so a reader never
+// sees a partially written plan artifact.
+func writeAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 	return nil
 }

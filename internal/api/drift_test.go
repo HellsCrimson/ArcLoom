@@ -40,8 +40,10 @@ type fakeRunner struct {
 	applyErr   error
 	planCalled bool
 	// planFile, when set, is written as the saved plan by Plan (what the policy
-	// gate reads back to apply exactly what it checked).
+	// gate reads back to apply exactly what it checked); planRes is what Plan
+	// reports about it.
 	planFile          []byte
+	planRes           runner.PlanResult
 	acceptDriftCalled bool
 	// tainted / untainted record the address each op received.
 	tainted   string
@@ -79,7 +81,7 @@ func (f *fakeRunner) Plan(_ context.Context, dir string, _ map[string][]byte, _ 
 			_ = os.WriteFile(filepath.Join(dir, planFileName), f.planFile, 0o644)
 		}
 	}
-	return runner.PlanResult{}, nil
+	return f.planRes, nil
 }
 func (f *fakeRunner) DriftPlan(context.Context, string, map[string][]byte, map[string]string, io.Writer) (runner.PlanResult, error) {
 	return f.res, f.err

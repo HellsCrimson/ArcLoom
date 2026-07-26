@@ -23,6 +23,12 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/runs"
 )
 
+// planFileName mirrors the runner's saved-plan filename. The workspace copy is
+// transient — the next operation's sync deletes it — so it is read only in the
+// window right after a plan: to stash it for approval (stashPlan) and to hand the
+// policy gate the exact artifact it is about to apply.
+const planFileName = "tfplan"
+
 // runDir is the persistent CLI workspace for a project + environment. It lives
 // inside the project folder (so a project backup includes its state) and is
 // excluded from Git via the generated .gitignore. The empty (default)
@@ -228,9 +234,12 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		logW.flush()
 		if err == nil {
 			// A new plan supersedes any pending approval for this environment, so a
-			// gated apply can never run a stale approved plan.
+			// gated apply can never run a stale approved plan — and it becomes the
+			// plan an Approve will snapshot, kept outside the workspace so the next
+			// operation's sync cannot wipe it before the user clicks.
 			if s.approvals != nil {
 				_ = s.approvals.InvalidateEnv(p.ID, envName)
+				s.stashPlan(dir, p, rec, &res)
 			}
 			// Best-effort cost annotation (enterprise + enabled). Runs while the
 			// saved plan file still exists so Infracost can read it.
