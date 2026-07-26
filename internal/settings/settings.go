@@ -58,6 +58,81 @@ type GroupRole struct {
 	Perms []string `yaml:"perms,omitempty" json:"perms,omitempty"`
 }
 
+// SecretStoreKind selects the writable secret backend.
+const (
+	// SecretStoreLocal is the default: AES-GCM files under ARCLOOM_SECRETS_DIR.
+	SecretStoreLocal = "local"
+	// SecretStoreVault is HashiCorp Vault / OpenBao over the KV v2 API.
+	SecretStoreVault = "vault"
+)
+
+// SecretStore is the instance-wide secret-backend selection. Token is held in
+// memory only; on disk it lives (encrypted) in TokenEnc, like the SSO client
+// secret and the git credentials.
+type SecretStore struct {
+	// Kind is SecretStoreLocal (or empty, the same thing) or SecretStoreVault.
+	Kind string `yaml:"kind,omitempty"`
+	// Address is the Vault/OpenBao base URL, e.g. https://vault.lan:8200.
+	Address string `yaml:"address,omitempty"`
+	// Mount is the KV v2 mount ("secret" when empty); Prefix is the path inside
+	// it ("arcloom" when empty) so ArcLoom need not own the whole mount.
+	Mount  string `yaml:"mount,omitempty"`
+	Prefix string `yaml:"prefix,omitempty"`
+	// Namespace sets X-Vault-Namespace (Vault Enterprise / OpenBao namespaces).
+	Namespace string `yaml:"namespace,omitempty"`
+	// InsecureSkipVerify accepts a self-signed TLS certificate.
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify,omitempty"`
+
+	Token    string `yaml:"-"`
+	TokenEnc string `yaml:"token_enc,omitempty"`
+}
+
+// SecretStore returns the secret-backend selection with the token decrypted.
+func (s *Store) SecretStore() SecretStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cfg := s.doc.SecretStore
+	cfg.Token = s.decryptSecret(cfg.TokenEnc)
+	cfg.TokenEnc = ""
+	return cfg
+}
+
+// SetSecretStore persists the selection. A non-empty Token is encrypted; an empty
+// one keeps the stored value (the UI never receives it back), so saving an
+// unrelated field does not wipe the credential. Switching Kind away from vault
+// clears the connection fields, so a stale address cannot come back to life.
+func (s *Store) SetSecretStore(in SecretStore) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if in.Kind != SecretStoreVault {
+		s.doc.SecretStore = SecretStore{Kind: in.Kind}
+		return s.persist()
+	}
+	enc := s.doc.SecretStore.TokenEnc // keep existing by default
+	if in.Token != "" {
+		if s.key == nil {
+			return ErrSecretKeyRequired
+		}
+		blob, err := secrets.Encrypt(s.key, []byte(in.Token))
+		if err != nil {
+			return err
+		}
+		enc = base64.StdEncoding.EncodeToString(blob)
+	}
+	in.Token = ""
+	in.TokenEnc = enc
+	s.doc.SecretStore = in
+	return s.persist()
+}
+
+// SecretStoreTokenSet reports whether a token is stored, without revealing it.
+func (s *Store) SecretStoreTokenSet() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.doc.SecretStore.TokenEnc != ""
+}
+
 // Drift is one project's drift-detection schedule: a periodic refresh-only
 // plan that compares the persisted state against real infrastructure.
 type Drift struct {
@@ -210,6 +285,10 @@ type document struct {
 	// user with the approve permission has signed off on (the plan → approve →
 	// apply gate). Absent/false = apply re-plans and auto-approves (default).
 	ApprovalRequired map[string]bool `yaml:"approval_required,omitempty"`
+	// SecretStore selects where project secrets live: the local encrypted files
+	// (default) or an external store. Instance-wide, not per project — it is an
+	// infrastructure choice, like the engine.
+	SecretStore SecretStore `yaml:"secret_store,omitempty"`
 	// License is the ArcLoom Enterprise license token (vendor-signed, verified
 	// offline). Stored in plaintext — it is signed, not secret.
 	License string `yaml:"license,omitempty"`

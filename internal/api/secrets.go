@@ -16,12 +16,15 @@ func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"localEnabled": s.secrets.LocalEnabled(),
-		"secrets":      metas,
+		// writable: whether secrets can be created here at all (the local store or
+		// an external one); backend: which store that is, for the UI to name it.
+		"writable": s.secrets.Writable(),
+		"backend":  s.secrets.BackendName(),
+		"secrets":  metas,
 	})
 }
 
-// handleSetSecret stores a secret value in the local encrypted backend.
+// handleSetSecret stores a secret value in the writable backend.
 func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	name := chi.URLParam(r, "name")
@@ -39,7 +42,7 @@ func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleDeleteSecret removes a secret from the local backend.
+// handleDeleteSecret removes a secret from the writable backend.
 func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	name := chi.URLParam(r, "name")

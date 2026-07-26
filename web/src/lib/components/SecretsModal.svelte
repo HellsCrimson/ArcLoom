@@ -8,14 +8,18 @@
 	let {
 		open = $bindable(false),
 		secrets = [],
-		localEnabled = false,
+		writable = false,
+		backend = '',
 		busy = false,
 		onAdd,
 		onDelete
 	}: {
 		open: boolean;
 		secrets: SecretMeta[];
-		localEnabled: boolean;
+		/** Whether a secret can be stored at all (local store or an external one). */
+		writable: boolean;
+		/** Name of the writable store, shown so it is obvious where values land. */
+		backend?: string;
 		busy?: boolean;
 		onAdd: (name: string, value: string) => void;
 		onDelete: (name: string) => void;
@@ -85,9 +89,15 @@
 		</div>
 	</div>
 
-	{#if !localEnabled}
+	{#if !writable}
 		<div class="mb-3 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-3 py-2 text-xs text-[var(--al-muted)]">
-			Local encrypted storage is disabled. Set <span class="mono">ARCLOOM_SECRET_KEY</span> to store secrets, or provide them via <span class="mono">ARCLOOM_SECRET_&lt;name&gt;</span> environment variables.
+			No writable secret store. Set <span class="mono">ARCLOOM_SECRET_KEY</span> for local encrypted
+			storage, configure an external store in Settings → Secret store, or provide values via
+			<span class="mono">ARCLOOM_SECRET_&lt;name&gt;</span> environment variables.
+		</div>
+	{:else if backend && backend !== 'local'}
+		<div class="mb-3 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-3 py-2 text-xs text-[var(--al-muted)]">
+			Secrets are stored in <span class="mono">{backend}</span>, not on this host.
 		</div>
 	{/if}
 
@@ -102,7 +112,7 @@
 					<button class="mono flex-1 text-left text-sm text-[var(--al-text)] hover:text-[var(--al-accent)]" title="Set a new value" onclick={() => prefill(s.name, true)}>{s.name}</button>
 					<span class="rounded bg-[var(--al-panel-2)] px-1.5 py-0.5 text-[10px] uppercase text-[var(--al-muted)]">{s.backend}</span>
 					<span class="mono text-xs text-[var(--al-muted)]">••••••</span>
-					{#if s.backend === 'local'}
+					{#if s.backend !== 'env'}
 						<button class="rounded p-1 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDelete(s.name)} aria-label="Delete secret"><Trash2 size={14} /></button>
 					{/if}
 				</div>
@@ -117,7 +127,7 @@
 	{/if}
 
 	<!-- add / overwrite -->
-	{#if localEnabled}
+	{#if writable}
 		<div class="border-t border-[var(--al-border)] pt-3">
 			<div class="flex items-end gap-2">
 				{#if view === 'tree'}

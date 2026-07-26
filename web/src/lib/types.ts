@@ -187,7 +187,11 @@ export interface SecretMeta {
 }
 
 export interface SecretsResponse {
-	localEnabled: boolean;
+	/** Whether secrets can be created here: the local encrypted store or an
+	 *  external one (env secrets are read-only). */
+	writable: boolean;
+	/** Which store is writable: "local", "vault", or "" when none is. */
+	backend: string;
 	secrets: SecretMeta[] | null;
 }
 

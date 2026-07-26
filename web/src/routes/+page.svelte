@@ -176,7 +176,11 @@
 	let showSecrets = $state(false);
 	let showPalette = $state(false);
 	let secretsList = $state<SecretMeta[]>([]);
-	let secretsLocalEnabled = $state(false);
+	// Whether a secret can be created (local encrypted store or an external one)
+	// and which store that is — the Secrets modal and the inline "+ New" both
+	// hinge on it.
+	let secretsWritable = $state(false);
+	let secretsBackend = $state('');
 	const secretNames = $derived(secretsList.map((s) => s.name));
 
 	async function loadSecrets() {
@@ -184,7 +188,8 @@
 		try {
 			const res = await api.listSecrets(project.id);
 			secretsList = res.secrets ?? [];
-			secretsLocalEnabled = res.localEnabled;
+			secretsWritable = res.writable;
+			secretsBackend = res.backend;
 		} catch {
 			secretsList = [];
 		}
@@ -2065,7 +2070,7 @@
 						bind:values
 						{references}
 						secrets={secretNames}
-						onCreateSecret={secretsLocalEnabled && auth.can('resources') ? createSecretInline : undefined}
+						onCreateSecret={secretsWritable && auth.can('resources') ? createSecretInline : undefined}
 					/>
 				{/if}
 			{:else if schema}
@@ -2111,7 +2116,7 @@
 						bind:values
 						{references}
 						secrets={secretNames}
-						onCreateSecret={secretsLocalEnabled && auth.can('resources') ? createSecretInline : undefined}
+						onCreateSecret={secretsWritable && auth.can('resources') ? createSecretInline : undefined}
 						planDiffs={formPlanDiffs}
 					/>
 			{:else}
@@ -2382,7 +2387,8 @@
 	<SecretsModal
 		bind:open={showSecrets}
 		secrets={secretsList}
-		localEnabled={secretsLocalEnabled}
+		writable={secretsWritable}
+		backend={secretsBackend}
 		busy={busy === 'secret'}
 		onAdd={addSecret}
 		onDelete={deleteSecret}

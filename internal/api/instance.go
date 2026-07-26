@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/HellsCrimson/ArcLoom/internal/schema"
+	"github.com/HellsCrimson/ArcLoom/internal/secrets"
 )
 
 // BuildInfo is the build metadata main.go injects at link time (-ldflags -X).
@@ -78,8 +79,11 @@ type instanceInfo struct {
 	AuthProviders []string `json:"authProviders"`
 	SSOEnabled    bool     `json:"ssoEnabled"`
 	SecretStore   bool     `json:"secretStore"`
-	LogLevel      string   `json:"logLevel"`
-	LogFormat     string   `json:"logFormat"`
+	// SecretBackend names the store actually serving secrets ("local", "vault",
+	// or "" when only env secrets are readable).
+	SecretBackend string `json:"secretBackend,omitempty"`
+	LogLevel      string `json:"logLevel"`
+	LogFormat     string `json:"logFormat"`
 
 	LicenseTier     string   `json:"licenseTier"`
 	LicenseFeatures []string `json:"licenseFeatures,omitempty"`
@@ -124,7 +128,8 @@ func (s *Server) handleInstanceInfo(w http.ResponseWriter, r *http.Request) {
 		AuthEnabled:   s.cfg.AuthEnabled,
 		CookieSecure:  s.cfg.CookieSecure,
 		AuthProviders: s.authn().Enabled(),
-		SecretStore:   s.secrets != nil && s.secrets.LocalEnabled(),
+		SecretStore:   s.secrets != nil && s.secrets.Writable(),
+		SecretBackend: secretBackendName(s.secrets),
 		LogLevel:      s.cfg.LogLevel,
 		LogFormat:     s.cfg.LogFormat,
 		LicenseTier:   s.license.Tier(),
@@ -189,4 +194,13 @@ func firstNonEmptyLine(s string) string {
 		}
 	}
 	return ""
+}
+
+// secretBackendName reports the live secret backend for the instance panel,
+// tolerating a nil store (tests construct servers without one).
+func secretBackendName(st *secrets.Store) string {
+	if st == nil {
+		return ""
+	}
+	return st.BackendName()
 }

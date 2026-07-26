@@ -413,6 +413,25 @@ export const api = {
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(body)
 			}).then((r) => json<SSOSettings>(r)),
+		getSecretStore: () =>
+			fetch('/api/admin/settings/secret-store', { credentials: 'same-origin' }).then((r) =>
+				json<SecretStoreSettings>(r)
+			),
+		setSecretStore: (body: SecretStoreUpdate) =>
+			fetch('/api/admin/settings/secret-store', {
+				method: 'PUT',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			}).then((r) => json<SecretStoreSettings>(r)),
+		// Probes a candidate configuration without saving it.
+		testSecretStore: (body: SecretStoreUpdate) =>
+			fetch('/api/admin/settings/secret-store/test', {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			}).then((r) => json<{ status: string; target: string }>(r)),
 		setLicense: (token: string) =>
 			fetch('/api/admin/settings/license', {
 				method: 'PUT',
@@ -581,6 +600,38 @@ export interface SSOUpdate {
 	groupsClaim?: string;
 	groupRoles?: GroupRole[];
 	syncGroupsOnLogin?: boolean;
+}
+
+// SecretStoreSettings is the instance-wide secret-backend selection. The token is
+// never returned — only whether one is on file, and from where.
+export interface SecretStoreSettings {
+	kind: 'local' | 'vault';
+	address: string;
+	mount: string;
+	prefix: string;
+	namespace: string;
+	insecureSkipVerify: boolean;
+	tokenSet: boolean;
+	tokenFromEnv: boolean;
+	/** The backend actually serving secrets right now ("local" | "vault" | ""). */
+	active: string;
+	/** Whether ARCLOOM_SECRET_KEY is set, i.e. whether "local" is usable. */
+	localEnabled: boolean;
+	/** Whether an external store may be enabled (enterprise feature). */
+	licensed: boolean;
+	/** Secrets copied by the last save, when migration was requested. */
+	migrated?: number;
+}
+
+export interface SecretStoreUpdate {
+	kind: 'local' | 'vault';
+	address?: string;
+	mount?: string;
+	prefix?: string;
+	namespace?: string;
+	token?: string;
+	insecureSkipVerify?: boolean;
+	migrate?: boolean;
 }
 
 export interface LicenseStatus {

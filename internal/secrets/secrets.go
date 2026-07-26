@@ -1,15 +1,18 @@
 // Package secrets stores and resolves secret values for injection into the
-// Terraform/OpenTofu CLI at run time. Two backends are supported:
+// Terraform/OpenTofu CLI at run time. Three backends are supported:
 //
 //   - "local": an AES-256-GCM encrypted file per project (never in Git). The
 //     master key comes from ARCLOOM_SECRET_KEY.
 //   - "env": values read from ARCLOOM_SECRET_<name> in the host environment.
+//   - an external Backend (Vault / OpenBao), which REPLACES local as the
+//     writable store when configured — see backend.go.
 //
 // Plaintext secret values never enter the generated HCL; they reach the CLI
 // only as TF_VAR_<name> at plan/apply time.
 package secrets
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -20,7 +23,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
@@ -36,7 +38,7 @@ const masterKeySuffix = "KEY"
 // Meta describes a secret without exposing its value.
 type Meta struct {
 	Name    string `json:"name"`
-	Backend string `json:"backend"` // "local" | "env"
+	Backend string `json:"backend"` // "local" | "env" | an external backend's name
 }
 
 // Store manages per-project secrets across the local + env backends.
@@ -46,7 +48,10 @@ type Store struct {
 	// legacyKey is the pre-KDF (bare sha256) key, kept so .enc files written
 	// before the argon2id KDF landed can still be decrypted and migrated.
 	legacyKey []byte
-	mu        sync.Mutex
+	// remote is the optional external backend; when set it replaces the local
+	// files as the writable store (guarded by mu, swappable at runtime).
+	remote Backend
+	mu     sync.Mutex
 }
 
 // NewStore builds a store. masterKey (from ARCLOOM_SECRET_KEY) enables the local
@@ -100,28 +105,46 @@ func validProjectID(id string) bool {
 	return true
 }
 
-// Set stores a secret value in the local encrypted backend.
+// Set stores a secret value in the writable backend (the external store when
+// one is configured, otherwise the local encrypted files).
 func (s *Store) Set(projectID, name, value string) error {
 	if !validName(name) {
 		return fmt.Errorf("invalid secret name %q (use letters, digits, underscore)", name)
 	}
-	if s.key == nil {
-		return fmt.Errorf("local secret store disabled: set ARCLOOM_SECRET_KEY")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m, err := s.loadLocal(projectID)
-	if err != nil {
-		return err
-	}
-	m[name] = value
-	return s.saveLocal(projectID, m)
+	return s.mutate(projectID, func(m map[string]string) { m[name] = value })
 }
 
-// Delete removes a secret from the local backend.
+// Delete removes a secret from the writable backend.
 func (s *Store) Delete(projectID, name string) error {
+	return s.mutate(projectID, func(m map[string]string) { delete(m, name) })
+}
+
+// mutate applies a read-modify-write to a project's secret document. Both
+// backends work this way (one encrypted file / one KV document per project), so
+// the two paths differ only in where the document lives.
+func (s *Store) mutate(projectID string, fn func(map[string]string)) error {
+	if r := s.Remote(); r != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), backendTimeout)
+		defer cancel()
+		// Serialized with the local path's lock so two concurrent edits to the
+		// same project cannot read-modify-write over each other.
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		m, err := r.Load(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("%s: %w", r.Name(), err)
+		}
+		if m == nil {
+			m = map[string]string{}
+		}
+		fn(m)
+		if err := r.Store(ctx, projectID, m); err != nil {
+			return fmt.Errorf("%s: %w", r.Name(), err)
+		}
+		return nil
+	}
 	if s.key == nil {
-		return fmt.Errorf("local secret store disabled")
+		return ErrNoWritableBackend
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,46 +152,34 @@ func (s *Store) Delete(projectID, name string) error {
 	if err != nil {
 		return err
 	}
-	delete(m, name)
+	fn(m)
 	return s.saveLocal(projectID, m)
 }
 
 // List returns secret metadata (names + backend) with no values.
 func (s *Store) List(projectID string) ([]Meta, error) {
-	s.mu.Lock()
-	local, err := s.loadLocal(projectID)
-	s.mu.Unlock()
+	primary, env, err := s.load(projectID)
 	if err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
-	var out []Meta
-	for name := range local {
-		out = append(out, Meta{Name: name, Backend: "local"})
-		seen[name] = true
+	name := s.BackendName()
+	if name == "" {
+		name = "local"
 	}
-	for name := range envSecrets() {
-		if seen[name] {
-			continue
-		}
-		out = append(out, Meta{Name: name, Backend: "env"})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
+	return metasFrom(primary, env, name), nil
 }
 
-// Resolve returns a secret's plaintext value (local store first, then env).
+// Resolve returns a secret's plaintext value: the writable backend first, then
+// the environment.
 func (s *Store) Resolve(projectID, name string) (string, bool, error) {
-	s.mu.Lock()
-	local, err := s.loadLocal(projectID)
-	s.mu.Unlock()
+	primary, env, err := s.load(projectID)
 	if err != nil {
 		return "", false, err
 	}
-	if v, ok := local[name]; ok {
+	if v, ok := primary[name]; ok {
 		return v, true, nil
 	}
-	if v, ok := envSecrets()[name]; ok {
+	if v, ok := env[name]; ok {
 		return v, true, nil
 	}
 	return "", false, nil

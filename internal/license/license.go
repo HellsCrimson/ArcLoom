@@ -38,6 +38,7 @@ const (
 	FeatureDrift     = "drift"      // scheduled drift detection
 	FeatureMultiUser = "multi_user" // more users than the community seat limit
 	FeatureCost      = "cost"       // plan-time cost estimation (overrides + Infracost)
+	FeatureVault     = "vault"      // external secret store (Vault / OpenBao)
 )
 
 // CommunitySeatLimit is how many users an unlicensed (community) install may

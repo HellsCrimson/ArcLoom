@@ -186,6 +186,14 @@ func main() {
 	}
 	rcancel()
 
+	// Point the secret store at the configured backend (external store or the
+	// local encrypted files). A broken external config is non-fatal but loud:
+	// the store stays local-less rather than silently serving stale secrets, so
+	// secret reads fail until it is fixed.
+	if err := srv.ReloadSecretStore(); err != nil {
+		slog.Error("external secret store unavailable; secret reads will fail until it is fixed", "err", err)
+	}
+
 	// Scheduled drift checks (refresh-only plans) for projects that enabled
 	// them; stopped on shutdown so no plan outlives the server.
 	driftCtx, driftCancel := context.WithCancel(context.Background())

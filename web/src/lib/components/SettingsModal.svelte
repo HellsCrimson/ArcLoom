@@ -1,6 +1,15 @@
 <script lang="ts">
 	import Modal from '$lib/components/Modal.svelte';
-	import { api, type AdminUser, type GroupRole, type SSOSettings, type LicenseStatus, type InstanceInfo } from '$lib/api/client';
+	import {
+		api,
+		type AdminUser,
+		type GroupRole,
+		type SSOSettings,
+		type SecretStoreSettings,
+		type SecretStoreUpdate,
+		type LicenseStatus,
+		type InstanceInfo
+	} from '$lib/api/client';
 	import type { AuditEntry } from '$lib/types';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck, Award, ScrollText, Server, Check, X, Users, Plus } from 'lucide-svelte';
@@ -26,7 +35,7 @@
 
 	let { open = $bindable(false) }: { open: boolean } = $props();
 
-	type Tab = 'users' | 'sso' | 'license' | 'audit' | 'instance';
+	type Tab = 'users' | 'sso' | 'secrets' | 'license' | 'audit' | 'instance';
 	let tab = $state<Tab>('users');
 	let error = $state('');
 	let notice = $state('');
@@ -170,13 +179,85 @@
 		}
 	}
 
+	// --- Secret store ---
+	// Where project secrets live: the local encrypted files, or an external store.
+	// The token is write-only (the server never returns it), so an empty field on
+	// save means "keep the stored one".
+	let secretStore = $state<SecretStoreSettings | null>(null);
+	let vaultToken = $state('');
+	let secretBusy = $state('');
+	let migrateSecrets = $state(true);
+
+	async function loadSecretStore() {
+		error = '';
+		try {
+			secretStore = await api.admin.getSecretStore();
+			vaultToken = '';
+		} catch (e) {
+			error = (e as Error).message;
+		}
+	}
+
+	// The payload both Save and Test send.
+	function secretStorePayload(): SecretStoreUpdate {
+		const st = secretStore!;
+		return {
+			kind: st.kind,
+			address: st.address,
+			mount: st.mount,
+			prefix: st.prefix,
+			namespace: st.namespace,
+			token: vaultToken,
+			insecureSkipVerify: st.insecureSkipVerify
+		};
+	}
+
+	async function testSecretStore() {
+		if (!secretStore) return;
+		secretBusy = 'test';
+		error = '';
+		notice = '';
+		try {
+			const res = await api.admin.testSecretStore(secretStorePayload());
+			notice = `Reached ${res.target}`;
+		} catch (e) {
+			error = (e as Error).message;
+		} finally {
+			secretBusy = '';
+		}
+	}
+
+	async function saveSecretStore() {
+		if (!secretStore) return;
+		secretBusy = 'save';
+		error = '';
+		notice = '';
+		try {
+			const toVault = secretStore.kind === 'vault';
+			secretStore = await api.admin.setSecretStore({
+				...secretStorePayload(),
+				migrate: toVault && migrateSecrets
+			});
+			vaultToken = '';
+			notice =
+				secretStore.migrated && secretStore.migrated > 0
+					? `Saved — ${secretStore.migrated} secret(s) copied into the new store`
+					: 'Saved';
+		} catch (e) {
+			error = (e as Error).message;
+		} finally {
+			secretBusy = '';
+		}
+	}
+
 	// --- License ---
 	const FEATURE_LABELS: Record<string, string> = {
 		sso: 'Single sign-on (OIDC)',
 		rbac: 'Per-project ACLs + audit',
 		drift: 'Scheduled drift detection',
 		multi_user: 'Unlimited users',
-		cost: 'Cost estimation (Infracost)'
+		cost: 'Cost estimation (Infracost)',
+		vault: 'External secret store (Vault)'
 	};
 	let license = $state<LicenseStatus | null>(null);
 	let licenseToken = $state('');
@@ -254,6 +335,7 @@
 		if (!open) return;
 		if (tab === 'users' && users.length === 0) loadUsers();
 		if (tab === 'sso' && sso === null) loadSSO();
+		if (tab === 'secrets' && secretStore === null) loadSecretStore();
 		if (tab === 'license' && license === null) loadLicense();
 		if (tab === 'audit' && auditEntries.length === 0) loadAudit();
 		if (tab === 'instance' && instance === null) loadInstance();
@@ -269,6 +351,7 @@
 	<div class="mb-3 flex items-center gap-1.5">
 		<button class={tabBtn(tab === 'users')} onclick={() => (tab = 'users')}>Users</button>
 		<button class={tabBtn(tab === 'sso')} onclick={() => (tab = 'sso')}>Single sign-on</button>
+		<button class={tabBtn(tab === 'secrets')} onclick={() => (tab = 'secrets')}>Secret store</button>
 		<button class={tabBtn(tab === 'license')} onclick={() => (tab = 'license')}>License</button>
 		<button class={tabBtn(tab === 'audit')} onclick={() => (tab = 'audit')}>Audit log</button>
 		<button class={tabBtn(tab === 'instance')} onclick={() => (tab = 'instance')}>Instance</button>
@@ -487,6 +570,130 @@
 						onclick={saveSSO}
 					>
 						{#if savingSSO}<Loader2 size={14} class="animate-spin" />{/if} Save &amp; reconnect
+					</button>
+				</div>
+			</div>
+		{/if}
+	{:else if tab === 'secrets'}
+		{#if secretStore === null}
+			<div class="flex items-center gap-2 py-6 text-sm text-[var(--al-muted)]"><Loader2 size={14} class="animate-spin" /> Loading…</div>
+		{:else}
+			<!-- Where secrets live. Values never enter generated HCL either way; this
+			     only decides which store holds them. -->
+			<div class="mb-3 flex items-center gap-2 rounded-lg border border-[var(--al-border)] bg-[var(--al-panel-2)] px-3 py-2">
+				<KeyRound size={15} class="text-[var(--al-accent)]" />
+				<span class="text-sm font-semibold text-[var(--al-text)]">Secret store</span>
+				<span class="ml-auto text-xs {secretStore.active ? 'text-[var(--al-accent)]' : 'text-[var(--al-danger)]'}">
+					{secretStore.active ? `active: ${secretStore.active}` : 'no writable store'}
+				</span>
+			</div>
+
+			<div class="space-y-3">
+				<div class="flex flex-wrap items-center gap-2">
+					{#each [{ id: 'local', label: 'Local (encrypted files)' }, { id: 'vault', label: 'Vault / OpenBao' }] as opt (opt.id)}
+						<button
+							class="rounded-md border px-3 py-1.5 text-xs font-medium {secretStore.kind === opt.id
+								? 'border-[var(--al-accent)] bg-[var(--al-accent-weak)] text-[var(--al-accent)]'
+								: 'border-[var(--al-border)] text-[var(--al-text)] hover:bg-[var(--al-panel-2)]'}"
+							onclick={() => (secretStore!.kind = opt.id as 'local' | 'vault')}
+						>{opt.label}</button>
+					{/each}
+				</div>
+
+				{#if secretStore.kind === 'local'}
+					<p class="text-xs text-[var(--al-muted)]">
+						Secrets are stored as AES-256-GCM files under the secrets directory, encrypted with the
+						key derived from <span class="mono">ARCLOOM_SECRET_KEY</span>.
+						{#if !secretStore.localEnabled}
+							<span class="text-[var(--al-danger)]">That key is not set, so nothing can be stored locally.</span>
+						{/if}
+					</p>
+				{:else}
+					{#if !secretStore.licensed}
+						<p class="rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-3 py-2 text-xs text-[var(--al-muted)]">
+							An external secret store is an <span class="text-[var(--al-text)]">ArcLoom Enterprise</span>
+							feature. Switching back to local storage is always allowed.
+						</p>
+					{/if}
+					<div class="space-y-1">
+						<span class="block text-xs font-medium text-[var(--al-muted)]">Address</span>
+						<input class={field} bind:value={secretStore.address} placeholder="https://vault.lan:8200" />
+					</div>
+					<div class="grid grid-cols-2 gap-3">
+						<div class="space-y-1">
+							<span class="block text-xs font-medium text-[var(--al-muted)]">KV v2 mount</span>
+							<input class={field} bind:value={secretStore.mount} placeholder="secret" />
+						</div>
+						<div class="space-y-1">
+							<span class="block text-xs font-medium text-[var(--al-muted)]">Path prefix</span>
+							<input class={field} bind:value={secretStore.prefix} placeholder="arcloom" />
+						</div>
+					</div>
+					<p class="text-[10px] text-[var(--al-muted)]">
+						One document per project at
+						<span class="mono">{secretStore.mount || 'secret'}/data/{secretStore.prefix || 'arcloom'}/&lt;project-id&gt;</span>.
+						The token's policy needs read + write on that path.
+					</p>
+					<div class="grid grid-cols-2 gap-3">
+						<div class="space-y-1">
+							<span class="block text-xs font-medium text-[var(--al-muted)]">Token</span>
+							<input
+								class={field}
+								type="password"
+								bind:value={vaultToken}
+								placeholder={secretStore.tokenSet
+									? '•••••••• (unchanged)'
+									: secretStore.tokenFromEnv
+										? 'from ARCLOOM_VAULT_TOKEN'
+										: ''}
+							/>
+						</div>
+						<div class="space-y-1">
+							<span class="block text-xs font-medium text-[var(--al-muted)]">Namespace</span>
+							<input class={field} bind:value={secretStore.namespace} placeholder="(Vault Enterprise / OpenBao)" />
+						</div>
+					</div>
+					<p class="text-[10px] text-[var(--al-muted)]">
+						Storing a token needs <span class="mono">ARCLOOM_SECRET_KEY</span> to encrypt it at rest —
+						or leave it blank and set <span class="mono">ARCLOOM_VAULT_TOKEN</span> so ArcLoom holds no
+						credential on disk.
+					</p>
+					<label class="flex items-center gap-2 text-xs text-[var(--al-text)]">
+						<input
+							type="checkbox"
+							checked={secretStore.insecureSkipVerify}
+							onchange={(e) => (secretStore!.insecureSkipVerify = e.currentTarget.checked)}
+						/>
+						Skip TLS verification (self-signed certificate)
+					</label>
+					<label class="flex items-start gap-2 text-xs text-[var(--al-text)]">
+						<input type="checkbox" checked={migrateSecrets} onchange={(e) => (migrateSecrets = e.currentTarget.checked)} />
+						<span>
+							Copy existing secrets into this store when saving
+							<span class="block text-[10px] text-[var(--al-muted)]">
+								Recommended: without it, values your resources already reference stop resolving and
+								the next plan fails on a missing variable. The originals are left in place.
+							</span>
+						</span>
+					</label>
+				{/if}
+
+				<div class="flex justify-end gap-2">
+					{#if secretStore.kind === 'vault'}
+						<button
+							class="inline-flex items-center gap-1.5 rounded-md border border-[var(--al-border)] px-3 py-1.5 text-sm font-medium text-[var(--al-text)] hover:bg-[var(--al-panel-2)] disabled:opacity-40"
+							disabled={secretBusy !== '' || !secretStore.address}
+							onclick={testSecretStore}
+						>
+							{#if secretBusy === 'test'}<Loader2 size={14} class="animate-spin" />{/if} Test connection
+						</button>
+					{/if}
+					<button
+						class="inline-flex items-center gap-1.5 rounded-md bg-[var(--al-accent)] px-3 py-1.5 text-sm font-medium text-white hover:brightness-110 disabled:opacity-40"
+						disabled={secretBusy !== '' || (secretStore.kind === 'vault' && !secretStore.licensed)}
+						onclick={saveSecretStore}
+					>
+						{#if secretBusy === 'save'}<Loader2 size={14} class="animate-spin" />{/if} Save
 					</button>
 				</div>
 			</div>
