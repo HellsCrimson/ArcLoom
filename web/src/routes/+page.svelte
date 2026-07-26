@@ -1,11 +1,22 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp, DeleteBlockedError, type AttrDiff, type DriftInfo, type PlanChange, type RunOutput, type StateEntry, type CostSummary, type LintSummary, type PolicySummary, type Environment, type Approval } from '$lib/api/client';
+	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type StateEntry, type Environment, type Approval } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
 	import StatePanel from '$lib/components/StatePanel.svelte';
-	import type { AttrValue, DriftConfig, Engine, Module, NormalizedSchema, Project, ProjectSummary, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
-	import SchemaForm from '$lib/form/SchemaForm.svelte';
-	import Modal from '$lib/components/Modal.svelte';
+	import type { AttrValue, DriftConfig, Engine, Module, Project, ProjectSummary, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
+	import ResourceFormPane from '$lib/form/ResourceFormPane.svelte';
+	import NewProjectModal from '$lib/components/NewProjectModal.svelte';
+	import ApplyConfirmModal from '$lib/components/ApplyConfirmModal.svelte';
+	import DeleteBlockedModal from '$lib/components/DeleteBlockedModal.svelte';
+	import DestroyConfirmModal from '$lib/components/DestroyConfirmModal.svelte';
+	import TerraformBlockModal from '$lib/components/TerraformBlockModal.svelte';
+	import NewModuleModal from '$lib/components/NewModuleModal.svelte';
+	import RegistryModuleModal from '$lib/components/RegistryModuleModal.svelte';
+	import ModuleInputsModal from '$lib/components/ModuleInputsModal.svelte';
+	import ImportHclModal from '$lib/components/ImportHclModal.svelte';
+	import ImportStateModal from '$lib/components/ImportStateModal.svelte';
+	import ImportResourceModal from '$lib/components/ImportResourceModal.svelte';
+	import DeployActions from '$lib/components/DeployActions.svelte';
 	import ProjectConfig from '$lib/components/ProjectConfig.svelte';
 	import SecretsModal from '$lib/components/SecretsModal.svelte';
 	import GitPanel from '$lib/components/GitPanel.svelte';
@@ -16,50 +27,28 @@
 	import EnvironmentsPanel from '$lib/components/EnvironmentsPanel.svelte';
 	import UserMenu from '$lib/components/UserMenu.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
-	import CommandPalette, { type PaletteItem } from '$lib/components/CommandPalette.svelte';
-	import ToolbarMenu, { type ToolItem } from '$lib/components/ToolbarMenu.svelte';
-	import PlanDiffPanel from '$lib/components/PlanDiffPanel.svelte';
-	import PlanDiffList from '$lib/components/PlanDiffList.svelte';
+	import CommandPalette from '$lib/components/CommandPalette.svelte';
+	import ToolbarActions from '$lib/components/ToolbarActions.svelte';
 	import ResizeHandle from '$lib/components/ResizeHandle.svelte';
+	import RunOutputPane from '$lib/components/RunOutputPane.svelte';
+	import StructureSidebar from '$lib/components/StructureSidebar.svelte';
+	import { attrToText, buildAttrs, rowsToAttrs } from '$lib/form/attrs';
+	import { findInScope, providerForType, providerVersionForSource, resolveAddress, suggestName } from '$lib/model/scope';
+	import { iconBtn, hdrBtn } from '$lib/styles';
+	import { buildImportRows, buildPaletteItems, buildToolItems, globalKeydown, type CommandActions } from '$lib/commands';
 	import { auth } from '$lib/stores/auth.svelte';
 	import { history } from '$lib/stores/history.svelte';
+	import { panels } from '$lib/stores/panelGeometry.svelte';
+	import { runPane } from '$lib/stores/runPane.svelte';
+	import { form } from '$lib/stores/resourceForm.svelte';
 	import EditorView from '$lib/editor/EditorView.svelte';
 	import HclView from '$lib/editor/HclView.svelte';
-	import { ACTION_COLOR, ACTION_SYMBOL } from '$lib/editor/graph';
 	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
 	import {
-		Play, Save, Loader2, Boxes, Plus, Trash2, FolderGit2, Folder, Settings, FileDown, Database, LayoutDashboard, ChevronDown, KeyRound, GitBranch, Variable as VariableIcon, Rocket, Flame, History, Package, Layers, HardDriveDownload, Undo2, Redo2, ShieldCheck, AlertTriangle, Search, ArrowUp, Ruler, DollarSign, CheckCircle2, Lock, LockOpen, Bell
+		Boxes, Plus, Trash2, FolderGit2, Settings, Undo2, Redo2, AlertTriangle, Search
 	} from 'lucide-svelte';
 
 	const LAST_PROJECT_KEY = 'arcloom.lastProject';
-	// Right-panel geometry: the HCL/run-output column's width and how much of it
-	// the run output takes. Both are user-dragged and remembered per browser.
-	const SIDEBAR_WIDTH_KEY = 'arcloom.sidebarWidth';
-	const HCL_WIDTH_KEY = 'arcloom.hclWidth';
-	const RUN_HEIGHT_KEY = 'arcloom.runHeight';
-	const HCL_MIN_WIDTH = 320;
-	const SIDEBAR_MIN_WIDTH = 180;
-	const RUN_MIN_HEIGHT = 88;
-
-	let sidebarWidth = $state(256); // w-64, the previous fixed width
-	let hclWidth = $state(416); // 26rem, the previous fixed width
-	let runHeight = $state(280);
-	let asideHeight = $state(0); // measured, so the run pane can't be dragged past it
-
-	function clampSidebarWidth(px: number) {
-		const max = Math.max(SIDEBAR_MIN_WIDTH, window.innerWidth - 640);
-		sidebarWidth = Math.round(Math.min(Math.max(px, SIDEBAR_MIN_WIDTH), max));
-	}
-
-	function clampHclWidth(px: number) {
-		const max = Math.max(HCL_MIN_WIDTH, window.innerWidth - 520);
-		hclWidth = Math.round(Math.min(Math.max(px, HCL_MIN_WIDTH), max));
-	}
-
-	function clampRunHeight(px: number) {
-		const max = Math.max(RUN_MIN_HEIGHT, (asideHeight || window.innerHeight) - 160);
-		runHeight = Math.round(Math.min(Math.max(px, RUN_MIN_HEIGHT), max));
-	}
 
 	let engines = $state<Engine[]>([]);
 	let defaultEngine = $state('tofu');
@@ -68,41 +57,7 @@
 	let project = $state<Project | null>(null);
 	let engine = $state('');
 
-	let providerSource = $state('');
-	let resourceTypes = $state<string[]>([]);
-	let dataSourceTypes = $state<string[]>([]);
-	let selectedType = $state('');
-	let schema = $state<NormalizedSchema | null>(null);
-	// Whether the schema form edits a managed resource or a data source.
-	let resourceKind = $state<ResourceKind>('resource');
-
-	// Center form can edit either a resource or a provider config block.
-	let formKind = $state<'resource' | 'provider'>('resource');
-	let resourceName = $state('example');
-	let editingId = $state<string | null>(null);
-	let editingProviderKey = $state('');
-	// Alias of the provider instance being edited; editable only while creating
-	// a new aliased instance (providerAliasNew).
-	let editingProviderAlias = $state('');
-	let providerAliasNew = $state(false);
-	let values = $state<Record<string, AttrValue>>({});
-	// count / for_each meta-args (raw HCL expressions, mutually exclusive), and
-	// the edited resource's depends_on (managed on the canvas, preserved here).
-	let resourceCount = $state('');
-	let resourceForEach = $state('');
-	let resourceDependsOn = $state<string[] | undefined>(undefined);
-	// provider meta-arg ("aws.euwest"); '' = the type's default provider.
-	let resourceProvider = $state('');
-
 	let hcl = $state('');
-	let planLog = $state<string[]>([]);
-	let planResult = $state<string>('');
-	let planChanges = $state<PlanChange[]>([]);
-	let planCounts = $state<{ add: number; change: number; destroy: number; replace: number } | null>(null);
-	let planCost = $state<CostSummary | null>(null);
-	let planLint = $state<LintSummary | null>(null);
-	let planPolicy = $state<PolicySummary | null>(null);
-	let applyOutputs = $state<RunOutput[]>([]);
 	let showApplyConfirm = $state(false);
 	let showDestroyConfirm = $state(false);
 	let destroyName = $state('');
@@ -133,7 +88,6 @@
 	let bkType = $state('');
 	let bkRows = $state<{ key: string; expr: string }[]>([]);
 	let bkMode = $state<'migrate' | 'reconfigure'>('migrate');
-	const BACKEND_TYPES = ['local', 's3', 'gcs', 'azurerm', 'http', 'pg', 'consul', 'kubernetes', 'oss', 'cos', 'remote'];
 	let showDeleteBlocked = $state(false);
 	let deleteBlockedCount = $state(0);
 	let deleteBlockedName = $state('');
@@ -258,11 +212,6 @@
 		providerSig; // track
 		if (project) void loadProviderUpdates();
 	});
-	// Instances of the provider the form's resource type belongs to; a provider
-	// picker is shown when the source has more than one instance (aliases).
-	const formProviderInstances = $derived(
-		providers.filter((p) => p.key === selectedType.split('_')[0])
-	);
 	const references = $derived.by(() => {
 		const refs: string[] = [];
 		for (const r of savedResources) refs.push(`${r.type}.${r.name}.id`, `${r.type}.${r.name}.result`);
@@ -297,11 +246,7 @@
 			return;
 		}
 		if (history.observe(project.id, JSON.stringify(project)) === 'recorded') {
-			planChanges = [];
-			planCounts = null;
-			planCost = null;
-			planLint = null;
-			planPolicy = null;
+			runPane.clearOverlay();
 			// A model edit makes any approved plan stale: block a gated apply until
 			// the user re-plans and re-approves.
 			currentApproval = null;
@@ -332,11 +277,7 @@
 			if (activeModule && !project.localModules?.some((m) => m.name === activeModule)) {
 				activeModule = null;
 			}
-			planChanges = [];
-			planCounts = null;
-			planCost = null;
-			planLint = null;
-			planPolicy = null;
+			runPane.clearOverlay();
 			await refreshProjects();
 			await refreshHcl();
 			restored = true;
@@ -349,106 +290,73 @@
 		}
 		if (!restored) return;
 		// Re-open (or close) the form so it can't show pre-restore values.
-		if (formKind === 'resource' && editingId) {
-			const found = findInScope(editingId, activeModule ?? undefined);
+		if (form.formKind === 'resource' && form.editingId) {
+			const found = findInScope(project, form.editingId, activeModule ?? undefined);
 			if (found) await editResource(found.r, found.kind);
 			else resetFormOnly();
-		} else if (formKind === 'provider' && editingProviderKey) {
+		} else if (form.formKind === 'provider' && form.providerKey) {
 			const prov = project.providers.find(
-				(p) => p.key === editingProviderKey && (p.alias ?? '') === editingProviderAlias
+				(p) => p.key === form.providerKey && (p.alias ?? '') === form.providerAlias
 			);
-			if (prov && !providerAliasNew) await configureProvider(prov);
+			if (prov && !form.providerAliasNew) await configureProvider(prov);
 			else if (!prov) resetFormOnly();
 		}
 	}
 
-	function handleKeydown(e: KeyboardEvent) {
-		if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
-		const k = e.key.toLowerCase();
-		// Ctrl+K opens the command palette from anywhere, including inputs.
-		if (k === 'k') {
-			e.preventDefault();
-			showPalette = !showPalette;
-			return;
-		}
-		const t = e.target as HTMLElement | null;
-		// Leave native undo alone inside text inputs.
-		if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-		if (k === 'enter') {
-			// Ctrl+Enter runs a plan (matches the palette hint).
-			if (project && auth.can('deploy') && busy === '') {
-				e.preventDefault();
-				runPlan();
-			}
-		} else if (k === 'z' && !e.shiftKey) {
-			e.preventDefault();
-			undo();
-		} else if ((k === 'z' && e.shiftKey) || k === 'y') {
-			e.preventDefault();
-			redo();
-		}
-	}
+	// Every command the palette, the top bar and the shortcuts can run. All
+	// values are arrows, so referencing a function declared further down cannot
+	// hit a temporal-dead-zone error.
+	const commandActions: CommandActions = {
+		showEditorPane: () => { error = ''; showEditor = true; },
+		toggleEditor: () => openEditor(),
+		openConfig: () => (showConfig = true),
+		openSecrets: () => { loadSecrets(); showSecrets = true; },
+		openGit: () => (showGit = true),
+		openRuns: () => (showRuns = true),
+		openStatePanel: () => { loadState(); loadDrift(); showState = true; },
+		plan: () => runPlan(),
+		validate: () => runValidate(),
+		lint: () => runLint(),
+		openApply: () => (showApplyConfirm = true),
+		openDestroy: () => { destroyName = ''; showDestroyConfirm = true; },
+		openCost: () => (showCost = true),
+		openPolicy: () => (showPolicy = true),
+		openNotify: () => (showNotify = true),
+		openTerraform: () => openBackend(),
+		openEnvironments: () => (showEnvironments = true),
+		openImportHcl: () => { importMsg = ''; showImportHcl = true; },
+		openImportState: () => { importMsg = ''; showImportState = true; },
+		showImportHcl: () => (showImportHcl = true),
+		showImportState: () => (showImportState = true),
+		openImportMenu: () => (showImportMenu = true),
+		newProject: () => newProject(),
+		openSettings: () => (showSettings = true),
+		openAcl: () => (showAcl = true),
+		jumpToAddress: (addr: string) => jumpToAddress(addr),
+		openRegistryModule: (m: Module) => openRegModule(m)
+	};
 
 	// Command palette entries: permission-filtered commands plus every resource
 	// across all scopes (global search; selecting one opens its form).
-	const paletteItems = $derived.by<PaletteItem[]>(() => {
-		const items: PaletteItem[] = [];
-		const resItem = (addr: string): PaletteItem => ({
-			id: `res:${addr}`,
-			label: addr,
-			group: 'resources',
-			mono: true,
-			run: () => jumpToAddress(addr)
-		});
-		if (project) {
-			items.push({ id: 'cmd:editor', label: 'Open visual editor', group: 'commands', run: () => { error = ''; showEditor = true; } });
-			items.push({ id: 'cmd:vars', label: 'Variables, locals & outputs', group: 'commands', run: () => (showConfig = true) });
-			items.push({ id: 'cmd:secrets', label: 'Secrets', group: 'commands', run: () => { loadSecrets(); showSecrets = true; } });
-			if (auth.can('git')) items.push({ id: 'cmd:git', label: 'Git', group: 'commands', run: () => (showGit = true) });
-			items.push({ id: 'cmd:runs', label: 'Run history', group: 'commands', run: () => (showRuns = true) });
-			items.push({ id: 'cmd:state', label: 'State & drift', group: 'commands', run: () => { loadState(); loadDrift(); showState = true; } });
-			if (auth.can('deploy')) {
-				items.push({ id: 'cmd:plan', label: 'Plan', hint: 'Ctrl+Enter', group: 'commands', run: runPlan });
-				items.push({ id: 'cmd:validate', label: 'Validate', group: 'commands', run: runValidate });
-				items.push({ id: 'cmd:lint', label: 'Lint (tflint)', group: 'commands', run: runLint });
-				items.push({ id: 'cmd:apply', label: 'Apply…', group: 'commands', run: () => (showApplyConfirm = true) });
-				items.push({ id: 'cmd:destroy', label: 'Destroy…', group: 'commands', run: () => { destroyName = ''; showDestroyConfirm = true; } });
-			}
-			if (auth.can('resources')) {
-				items.push({ id: 'cmd:cost', label: 'Cost estimation', group: 'commands', run: () => (showCost = true) });
-				items.push({ id: 'cmd:policy', label: 'Policy as code', group: 'commands', run: () => (showPolicy = true) });
-				items.push({ id: 'cmd:notify', label: 'Notifications', group: 'commands', run: () => (showNotify = true) });
-				items.push({ id: 'cmd:terraform', label: 'Terraform block (required_version, backend)', group: 'commands', run: openBackend });
-				items.push({ id: 'cmd:environments', label: 'Environments', group: 'commands', run: () => (showEnvironments = true) });
-				items.push({ id: 'cmd:import-hcl', label: 'Import HCL', group: 'commands', run: () => { importMsg = ''; showImportHcl = true; } });
-				items.push({ id: 'cmd:import-state', label: 'Import state', group: 'commands', run: () => { importMsg = ''; showImportState = true; } });
-			}
-		}
-		if (auth.can('resources')) items.push({ id: 'cmd:new-project', label: 'New project', group: 'commands', run: newProject });
-		if (auth.isAdmin) items.push({ id: 'cmd:settings', label: 'Settings', group: 'commands', run: () => (showSettings = true) });
-		if (auth.isAdmin && project) items.push({ id: 'cmd:access', label: 'Project access', group: 'commands', run: () => (showAcl = true) });
-		if (project) {
-			for (const r of project.resources) items.push(resItem(`${r.type}.${r.name}`));
-			for (const d of project.dataSources ?? []) items.push(resItem(`data.${d.type}.${d.name}`));
-			for (const lm of project.localModules ?? []) {
-				for (const r of lm.resources) items.push(resItem(`module.${lm.name}.${r.type}.${r.name}`));
-				for (const d of lm.dataSources ?? []) items.push(resItem(`module.${lm.name}.data.${d.type}.${d.name}`));
-			}
-			for (const m of registryModules) {
-				items.push({ id: `res:module.${m.name}`, label: `module.${m.name}`, hint: m.source, group: 'resources', mono: true, run: () => openRegModule(m) });
-			}
-		}
-		return items;
-	});
+	const paletteItems = $derived.by(() =>
+		buildPaletteItems({
+			project,
+			registryModules,
+			perms: { resources: auth.can('resources'), deploy: auth.can('deploy'), git: auth.can('git'), admin: auth.isAdmin },
+			actions: commandActions
+		})
+	);
 
 	onMount(async () => {
 		// Restore the dragged panel geometry before the first paint of the aside.
-		const savedSidebar = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
-		if (savedSidebar) clampSidebarWidth(savedSidebar);
-		const savedWidth = Number(localStorage.getItem(HCL_WIDTH_KEY));
-		if (savedWidth) clampHclWidth(savedWidth);
-		const savedRun = Number(localStorage.getItem(RUN_HEIGHT_KEY));
-		if (savedRun) clampRunHeight(savedRun);
+		panels.init();
+		// The run pane and the resource form used to be this component's own $state,
+		// so they died with it. They are singletons now, and +layout unmounts this
+		// page on logout — without an explicit reset the next user to sign in in the
+		// same tab would see the previous session's streamed output and provider
+		// source. Resetting on mount restores the old per-mount lifetime exactly.
+		runPane.resetSession();
+		form.resetSession();
 		try {
 			const e = await api.engines();
 			engines = e.engines;
@@ -486,7 +394,7 @@
 			await loadSecrets();
 			await loadEnvironments();
 			await loadApproval();
-			if (project.providers?.length) providerSource = project.providers[0].source;
+			if (project.providers?.length) form.providerSource = project.providers[0].source;
 		} catch (err) {
 			error = (err as Error).message;
 		}
@@ -509,10 +417,10 @@
 	function selectEnv(name: string) {
 		if (name === activeEnv) return;
 		activeEnv = name;
-		planChanges = [];
-		planCounts = null;
-		planCost = null;
-		planResult = '';
+		runPane.changes = [];
+		runPane.counts = null;
+		runPane.cost = null;
+		runPane.result = '';
 		if (showState) loadState();
 		loadApproval();
 	}
@@ -540,7 +448,7 @@
 		if (!project) return;
 		error = '';
 		try {
-			const s = planCounts ?? { add: 0, change: 0, destroy: 0, replace: 0 };
+			const s = runPane.counts ?? { add: 0, change: 0, destroy: 0, replace: 0 };
 			currentApproval = await api.approve(project.id, activeEnv, s);
 		} catch (err) {
 			error = (err as Error).message;
@@ -661,27 +569,9 @@
 	}
 
 	function resetEditor() {
-		schema = null;
-		selectedType = '';
-		editingId = null;
-		editingProviderKey = '';
-		editingProviderAlias = '';
-		providerAliasNew = false;
-		formKind = 'resource';
-		values = {};
-		resourceName = 'example';
+		form.resetAll();
 		hcl = '';
-		planLog = [];
-		planResult = '';
-		planChanges = [];
-		planCounts = null;
-		planCost = null;
-		planLint = null;
-		planPolicy = null;
-		applyOutputs = [];
-		resourceTypes = [];
-		dataSourceTypes = [];
-		resourceKind = 'resource';
+		runPane.reset();
 		activeModule = null;
 	}
 
@@ -697,11 +587,7 @@
 	// Switch the editing scope (null = root/main, else a local module).
 	async function selectScope(mod: string | null) {
 		activeModule = mod;
-		schema = null;
-		selectedType = '';
-		editingId = null;
-		formKind = 'resource';
-		values = {};
+		form.resetForScope();
 		await refreshHcl();
 	}
 
@@ -746,28 +632,14 @@
 			project = await api.getProject(project.id);
 			await refreshProjects();
 			await refreshHcl();
-			if (editingId === rid) resetFormOnly();
+			if (form.editingId === rid) resetFormOnly();
 		} catch (err) {
 			error = (err as Error).message;
 		}
 	}
 
 	function resetFormOnly() {
-		schema = null;
-		selectedType = '';
-		editingId = null;
-		editingProviderKey = '';
-		editingProviderAlias = '';
-		providerAliasNew = false;
-		formKind = 'resource';
-		values = {};
-	}
-
-	// attrToText renders an AttrValue as editable raw-expression text (a
-	// reference or JSON literal is also a valid HCL expression).
-	function attrToText(av: AttrValue | undefined): string {
-		if (!av) return '';
-		return av.mode === 'expression' ? (av.expr ?? '') : av.mode === 'reference' ? (av.ref ?? '') : av.mode === 'literal' ? JSON.stringify(av.literal ?? '') : '';
+		form.resetForm();
 	}
 
 	// Draft values for the module-inputs modal (raw HCL text per variable).
@@ -805,12 +677,7 @@
 		busy = 'regmodule';
 		error = '';
 		try {
-			const config: Record<string, AttrValue> = {};
-			for (const row of rmRows) {
-				const k = row.key.trim();
-				const e = row.expr.trim();
-				if (k && e) config[k] = { mode: 'expression', expr: e };
-			}
+			const config = rowsToAttrs(rmRows);
 			// Upsert keys on name, so a rename must drop the old call first.
 			if (rmEditing && rmEditing !== rmName.trim()) {
 				await api.deleteRegistryModule(project.id, rmEditing);
@@ -870,12 +737,12 @@
 	async function addProvider() {
 		error = '';
 		busy = 'provider';
-		schema = null;
-		selectedType = '';
+		form.schema = null;
+		form.selectedType = '';
 		try {
-			const res = await api.addProvider(providerSource, engine, providerVersionForSource(providerSource));
-			resourceTypes = res.resourceTypes;
-			dataSourceTypes = res.dataSourceTypes ?? [];
+			const res = await api.addProvider(form.providerSource, engine, providerVersionForSource(project, form.providerSource));
+			form.resourceTypes = res.resourceTypes;
+			form.dataSourceTypes = res.dataSourceTypes ?? [];
 		} catch (err) {
 			error = (err as Error).message;
 		} finally {
@@ -886,21 +753,12 @@
 	async function pickType(t: string, kind: ResourceKind = 'resource') {
 		error = '';
 		busy = 'schema';
-		formKind = 'resource';
-		resourceKind = kind;
-		selectedType = t;
-		editingId = null;
-		values = {};
-		resourceCount = '';
-		resourceForEach = '';
-		resourceDependsOn = undefined;
-		resourceProvider = '';
-		resourceName = suggestName(t, kind);
+		form.beginNew(t, kind, suggestName(kind === 'data' ? savedDataSources : savedResources, t));
 		try {
-			const ver = providerVersionForSource(providerSource);
-			schema = kind === 'data'
-				? await api.dataSourceSchema(providerSource, t, engine, ver)
-				: await api.resourceSchema(providerSource, t, engine, ver);
+			const ver = providerVersionForSource(project, form.providerSource);
+			form.schema = kind === 'data'
+				? await api.dataSourceSchema(form.providerSource, t, engine, ver)
+				: await api.resourceSchema(form.providerSource, t, engine, ver);
 		} catch (err) {
 			error = (err as Error).message;
 		} finally {
@@ -911,20 +769,11 @@
 	async function editResource(r: Resource, kind: ResourceKind = 'resource') {
 		error = '';
 		busy = 'schema';
-		formKind = 'resource';
-		resourceKind = kind;
-		selectedType = r.type;
-		editingId = r.id;
-		resourceName = r.name;
-		values = JSON.parse(JSON.stringify(r.attrs ?? {}));
-		resourceCount = r.count ?? '';
-		resourceForEach = r.forEach ?? '';
-		resourceDependsOn = r.dependsOn;
-		resourceProvider = r.provider ?? '';
-		const src = providerForType(r.type);
+		form.beginEdit(r, kind);
+		const src = providerForType(project, r.type, form.providerSource);
 		try {
-			const ver = providerVersionForSource(src);
-			schema = kind === 'data'
+			const ver = providerVersionForSource(project, src);
+			form.schema = kind === 'data'
 				? await api.dataSourceSchema(src, r.type, engine, ver)
 				: await api.resourceSchema(src, r.type, engine, ver);
 		} catch (err) {
@@ -938,16 +787,10 @@
 	async function configureProvider(prov: ProviderInstance) {
 		error = '';
 		busy = 'schema';
-		formKind = 'provider';
-		editingProviderKey = prov.key;
-		editingProviderAlias = prov.alias ?? '';
-		providerAliasNew = false;
-		providerSource = prov.source;
-		editingId = null;
-		selectedType = '';
+		form.beginProvider(prov);
 		try {
-			schema = await api.providerSchema(prov.source, engine, prov.version);
-			values = JSON.parse(JSON.stringify(prov.config ?? {}));
+			form.schema = await api.providerSchema(prov.source, engine, prov.version);
+			form.values = JSON.parse(JSON.stringify(prov.config ?? {}));
 		} catch (err) {
 			error = (err as Error).message;
 		} finally {
@@ -959,9 +802,9 @@
 	// same schema form, empty config, editable alias.
 	async function addProviderAlias(prov: ProviderInstance) {
 		await configureProvider(prov);
-		editingProviderAlias = '';
-		providerAliasNew = true;
-		values = {};
+		form.providerAlias = '';
+		form.providerAliasNew = true;
+		form.values = {};
 	}
 
 	async function deleteProviderInstance(prov: ProviderInstance) {
@@ -972,97 +815,36 @@
 		try {
 			project = await api.deleteProviderInstance(project.id, prov.key, prov.alias);
 			await refreshHcl();
-			if (formKind === 'provider' && editingProviderKey === prov.key && editingProviderAlias === (prov.alias ?? '')) resetFormOnly();
+			if (form.formKind === 'provider' && form.providerKey === prov.key && form.providerAlias === (prov.alias ?? '')) resetFormOnly();
 		} catch (err) {
 			error = (err as Error).message;
 		}
 	}
 
-	function providerForType(type: string): string {
-		const key = type.split('_')[0];
-		return project?.providers?.find((p) => p.key === key)?.source ?? providerSource;
-	}
-
-	// providerVersionForSource returns the version constraint the project pins
-	// a provider source to, so schema fetches match the pinned version.
-	function providerVersionForSource(source: string): string | undefined {
-		return project?.providers?.find((p) => p.source === source && p.version)?.version;
-	}
-
-	function suggestName(type: string, kind: ResourceKind = 'resource'): string {
-		const base = type.replace(/^[a-z0-9]+_/, '') || type;
-		let n = base;
-		let i = 1;
-		const pool = kind === 'data' ? savedDataSources : savedResources;
-		const taken = new Set(pool.filter((r) => r.type === type).map((r) => r.name));
-		while (taken.has(n)) n = `${base}_${++i}`;
-		return n;
-	}
-
-	// cleanAttr prunes an AttrValue to what should be sent: unset scalars, empty
-	// collections, and incomplete references/secrets/expressions collapse to
-	// undefined so they're dropped. Recurses into structural collections so a
-	// nested reference/secret is preserved but an empty nested slot is not.
-	// cleanAttr prunes the untouched parts of a form value. `keyed` marks a value
-	// the user deliberately created a key for (an object/map entry): an empty
-	// string there is a real value — `avatarUrl = ""` in a provider's config
-	// object means something — so only unkeyed blanks are dropped.
-	function cleanAttr(v: AttrValue, keyed = false): AttrValue | undefined {
-		if (v.mode === 'reference') return v.ref ? { mode: 'reference', ref: v.ref } : undefined;
-		if (v.mode === 'expression') return v.expr ? { mode: 'expression', expr: v.expr } : undefined;
-		if (v.mode === 'secret') return v.secretRef ? { mode: 'secret', secretRef: v.secretRef } : undefined;
-		// literal
-		// An empty collection carries nothing and cannot round-trip (an empty slice
-		// is omitted on the wire, so `{}` would come back as an untyped scalar) —
-		// prune it like any other untouched row.
-		if (v.items !== undefined) {
-			const items = v.items.map((it) => cleanAttr(it)).filter((x): x is AttrValue => x !== undefined);
-			return items.length ? { mode: 'literal', items } : undefined;
-		}
-		if (v.entries !== undefined) {
-			const entries = v.entries
-				.map((e) => ({ key: e.key.trim(), value: cleanAttr(e.value, true) }))
-				.filter((e): e is { key: string; value: AttrValue } => e.key !== '' && e.value !== undefined);
-			return entries.length ? { mode: 'literal', entries } : undefined;
-		}
-		const lit = v.literal;
-		if (lit === undefined || lit === null || (lit === '' && !keyed)) return undefined;
-		return { mode: 'literal', literal: lit };
-	}
-
-	function buildAttrs(): Record<string, AttrValue> {
-		const out: Record<string, AttrValue> = {};
-		for (const [name, v] of Object.entries(values)) {
-			const cleaned = cleanAttr(v);
-			if (cleaned) out[name] = cleaned;
-		}
-		return out;
-	}
-
 	async function saveResource() {
-		if (!schema || !project) return;
+		if (!form.schema || !project) return;
 		error = '';
 		busy = 'save';
 		try {
 			await api.upsertResource(project.id, {
-				id: editingId ?? undefined,
-				kind: resourceKind,
-				type: selectedType,
-				name: resourceName,
-				providerSource,
+				id: form.editingId ?? undefined,
+				kind: form.kind,
+				type: form.selectedType,
+				name: form.name,
+				providerSource: form.providerSource,
 				module: activeModule ?? undefined,
-				attrs: buildAttrs(),
-				dependsOn: resourceDependsOn,
-				count: resourceCount.trim() || undefined,
-				forEach: resourceForEach.trim() || undefined,
-				provider: resourceProvider || undefined
+				attrs: buildAttrs(form.values),
+				dependsOn: form.dependsOn,
+				count: form.count.trim() || undefined,
+				forEach: form.forEach.trim() || undefined,
+				provider: form.provider || undefined
 			});
 			project = await api.getProject(project.id);
 			await refreshProjects();
 			await refreshHcl();
 			const scope = activeModule ? project.localModules?.find((m) => m.name === activeModule) : project;
-			const scopeRes = (resourceKind === 'data' ? scope?.dataSources : scope?.resources) ?? [];
-			editingId = editingId ?? scopeRes.find((r) => r.name === resourceName && r.type === selectedType)?.id ?? null;
+			const scopeRes = (form.kind === 'data' ? scope?.dataSources : scope?.resources) ?? [];
+			form.editingId = form.editingId ?? scopeRes.find((r) => r.name === form.name && r.type === form.selectedType)?.id ?? null;
 		} catch (err) {
 			error = (err as Error).message;
 		} finally {
@@ -1072,20 +854,20 @@
 
 	async function saveProviderConfig() {
 		if (!project) return;
-		if (providerAliasNew && !editingProviderAlias.trim()) {
+		if (form.providerAliasNew && !form.providerAlias.trim()) {
 			error = 'alias is required for an additional provider instance';
 			return;
 		}
 		error = '';
 		busy = 'save';
 		try {
-			project = await api.setProviderConfig(project.id, editingProviderKey, {
-				alias: editingProviderAlias.trim() || undefined,
-				source: providerSource,
-				config: buildAttrs()
+			project = await api.setProviderConfig(project.id, form.providerKey, {
+				alias: form.providerAlias.trim() || undefined,
+				source: form.providerSource,
+				config: buildAttrs(form.values)
 			});
-			editingProviderAlias = editingProviderAlias.trim();
-			providerAliasNew = false;
+			form.providerAlias = form.providerAlias.trim();
+			form.providerAliasNew = false;
 			await refreshProjects();
 			await refreshHcl();
 		} catch (err) {
@@ -1151,8 +933,8 @@
 			// The import also adopted the state, so the State panel / plan overlay
 			// must not keep showing the pre-import picture.
 			await loadState();
-			planChanges = [];
-			planCounts = null;
+			runPane.changes = [];
+			runPane.counts = null;
 			const parts = [`${res.addedResources} resources`];
 			// Matched = the state described resources the model already had (the usual
 			// "import HCL, then import its state" flow), so nothing was duplicated.
@@ -1186,7 +968,7 @@
 
 	// Returns a provider's resource and data source types for the editor palette.
 	async function editorLoadTypes(source: string): Promise<{ resourceTypes: string[]; dataSourceTypes: string[] }> {
-		const res = await api.addProvider(source, engine, providerVersionForSource(source));
+		const res = await api.addProvider(source, engine, providerVersionForSource(project, source));
 		return { resourceTypes: res.resourceTypes, dataSourceTypes: res.dataSourceTypes ?? [] };
 	}
 
@@ -1194,39 +976,14 @@
 	// resource or data source.
 	async function editorAddType(type: string, source: string, kind: ResourceKind = 'resource') {
 		showEditor = false;
-		providerSource = source;
+		form.providerSource = source;
 		await pickType(type, kind);
-	}
-
-	// scopeResources returns the resource list for a scope (module name or root).
-	function scopeResources(moduleName?: string): Resource[] {
-		if (!project) return [];
-		return moduleName
-			? (project.localModules?.find((m) => m.name === moduleName)?.resources ?? [])
-			: project.resources;
-	}
-
-	function scopeDataSources(moduleName?: string): Resource[] {
-		if (!project) return [];
-		return moduleName
-			? (project.localModules?.find((m) => m.name === moduleName)?.dataSources ?? [])
-			: (project.dataSources ?? []);
-	}
-
-	// findInScope resolves a node id to the full resource and whether it is a
-	// managed resource or a data source (canvas callbacks only carry the id).
-	function findInScope(id: string, moduleName?: string): { r: Resource; kind: ResourceKind } | null {
-		const r = scopeResources(moduleName).find((x) => x.id === id);
-		if (r) return { r, kind: 'resource' };
-		const d = scopeDataSources(moduleName).find((x) => x.id === id);
-		if (d) return { r: d, kind: 'data' };
-		return null;
 	}
 
 	// Clicking a node opens it in the schema form (in the node's own scope). The
 	// canvas passes a shallow node, so we resolve the full resource (with attrs).
 	function editorEditResource(r: Resource, moduleName?: string) {
-		const found = findInScope(r.id, moduleName);
+		const found = findInScope(project, r.id, moduleName);
 		activeModule = moduleName ?? null;
 		showEditor = false;
 		editResource(found?.r ?? r, found?.kind ?? 'resource');
@@ -1238,39 +995,22 @@
 	// Returns false when nothing matches (e.g. a planned delete already gone
 	// from the model).
 	function jumpToAddress(address: string): boolean {
-		if (!project) return false;
-		let addr = address.replace(/\[[^\]]*\]/g, '');
-		let moduleName: string | undefined;
-		const m = addr.match(/^module\.([A-Za-z0-9_-]+)\.(.+)$/);
-		if (m) {
-			moduleName = m[1];
-			addr = m[2];
+		const found = resolveAddress(project, registryModules, address);
+		if (!found) return false;
+		if (found.kind === 'registryModule') {
+			openRegModule(found.module);
+			return true;
 		}
-		if (addr.startsWith('module.')) return false; // nested modules aren't in the model
-		const kind: ResourceKind = addr.startsWith('data.') ? 'data' : 'resource';
-		const [type, name] = addr.replace(/^data\./, '').split('.');
-		if (!type || !name) return false;
-		if (moduleName && !project.localModules?.some((lm) => lm.name === moduleName)) {
-			const reg = registryModules.find((rm) => rm.name === moduleName);
-			if (reg) {
-				openRegModule(reg);
-				return true;
-			}
-			return false;
-		}
-		const pool = kind === 'data' ? scopeDataSources(moduleName) : scopeResources(moduleName);
-		const r = pool.find((x) => x.type === type && x.name === name);
-		if (!r) return false;
-		activeModule = moduleName ?? null;
+		activeModule = found.module ?? null;
 		showEditor = false;
-		editResource(r, kind);
+		editResource(found.r, found.resourceKind);
 		return true;
 	}
 
 	async function editorDeleteResource(id: string, moduleName?: string) {
 		if (!project) return;
 		try {
-			await api.deleteResource(project.id, id, moduleName, findInScope(id, moduleName)?.kind);
+			await api.deleteResource(project.id, id, moduleName, findInScope(project, id, moduleName)?.kind);
 			await refreshProject();
 		} catch (err) {
 			error = (err as Error).message;
@@ -1281,7 +1021,7 @@
 	// depends_on), preserving its type/attrs, within its scope.
 	async function resaveResource(id: string, patch: { name?: string; dependsOn?: string[] }, moduleName?: string) {
 		if (!project) return;
-		const found = findInScope(id, moduleName);
+		const found = findInScope(project, id, moduleName);
 		if (!found) return;
 		const r = found.r;
 		try {
@@ -1307,26 +1047,19 @@
 	function runPlan() {
 		if (!project) return;
 		error = '';
-		planLog = [];
-		planResult = '';
-		planChanges = [];
-		planCounts = null;
-		planCost = null;
-		planLint = null;
-		planPolicy = null;
-		applyOutputs = [];
+		runPane.reset();
 		busy = 'plan';
 		streamPlan(project.id, (ev) => {
-			if (ev.kind === 'log') planLog = [...planLog, ev.line];
+			if (ev.kind === 'log') runPane.append(ev.line);
 			else if (ev.kind === 'result') {
-				planResult = ev.hasChanges ? 'Changes pending' : 'No changes';
-				planChanges = ev.changes ?? [];
-				dismissedDiffAddress = null; // a fresh plan re-shows the form banner
-				planCounts = ev.hasChanges
+				runPane.result = ev.hasChanges ? 'Changes pending' : 'No changes';
+				runPane.changes = ev.changes ?? [];
+				runPane.dismissedAddress = null; // a fresh plan re-shows the form banner
+				runPane.counts = ev.hasChanges
 					? { add: ev.add ?? 0, change: ev.change ?? 0, destroy: ev.destroy ?? 0, replace: ev.replace ?? 0 }
 					: null;
-				planCost = ev.cost ?? null;
-				planPolicy = ev.policy ?? null;
+				runPane.cost = ev.cost ?? null;
+				runPane.policy = ev.policy ?? null;
 			} else if (ev.kind === 'error') {
 				error = ev.error;
 				busy = '';
@@ -1342,19 +1075,12 @@
 	function runValidate() {
 		if (!project) return;
 		error = '';
-		planLog = [];
-		planResult = '';
-		planChanges = [];
-		planCounts = null;
-		planCost = null;
-		planLint = null;
-		planPolicy = null;
-		applyOutputs = [];
+		runPane.reset();
 		busy = 'validate';
 		streamPlan(project.id, (ev) => {
-			if (ev.kind === 'log') planLog = [...planLog, ev.line];
+			if (ev.kind === 'log') runPane.append(ev.line);
 			else if (ev.kind === 'result') {
-				planResult = ev.valid
+				runPane.result = ev.valid
 					? `Valid${ev.warningCount ? ` · ${ev.warningCount} warning(s)` : ''}`
 					: `${ev.errorCount ?? 0} validation error(s)`;
 			} else if (ev.kind === 'error') {
@@ -1369,23 +1095,16 @@
 	function runLint() {
 		if (!project) return;
 		error = '';
-		planLog = [];
-		planResult = '';
-		planChanges = [];
-		planCounts = null;
-		planCost = null;
-		planLint = null;
-		planPolicy = null;
-		applyOutputs = [];
+		runPane.reset();
 		busy = 'lint';
 		streamPlan(project.id, (ev) => {
-			if (ev.kind === 'log') planLog = [...planLog, ev.line];
+			if (ev.kind === 'log') runPane.append(ev.line);
 			else if (ev.kind === 'result') {
-				planLint = ev.lint ?? null;
-				if (ev.available === false) planResult = 'tflint not installed';
-				else if ((ev.errorCount ?? 0) > 0) planResult = `${ev.errorCount} lint error(s)`;
-				else if ((ev.warningCount ?? 0) > 0) planResult = `${ev.warningCount} lint warning(s)`;
-				else planResult = 'No lint issues';
+				runPane.lint = ev.lint ?? null;
+				if (ev.available === false) runPane.result = 'tflint not installed';
+				else if ((ev.errorCount ?? 0) > 0) runPane.result = `${ev.errorCount} lint error(s)`;
+				else if ((ev.warningCount ?? 0) > 0) runPane.result = `${ev.warningCount} lint warning(s)`;
+				else runPane.result = 'No lint issues';
 			} else if (ev.kind === 'error') {
 				error = ev.error;
 				busy = '';
@@ -1439,23 +1158,16 @@
 	) {
 		if (!project) return;
 		error = '';
-		planLog = [];
-		planResult = '';
-		planChanges = [];
-		planCounts = null;
-		planCost = null;
-		planLint = null;
-		planPolicy = null;
-		applyOutputs = [];
+		runPane.reset();
 		busy = op;
 		streamOp(project.id, op, (ev) => {
-			if (ev.kind === 'log') planLog = [...planLog, ev.line];
+			if (ev.kind === 'log') runPane.append(ev.line);
 			else if (ev.kind === 'error') {
 				error = ev.error;
 				busy = '';
 				loadState();
 			} else if (ev.kind === 'done') {
-				planResult =
+				runPane.result =
 					op === 'import' ? 'Imported into state'
 					: op === 'state-rm' ? 'Removed from state'
 					: op === 'state-mv' ? 'State address moved'
@@ -1510,12 +1222,7 @@
 			}
 			const backendChanged = backendSig() !== bkOpenedSig;
 			if (backendChanged) {
-				const config: Record<string, AttrValue> = {};
-				for (const row of bkRows) {
-					const k = row.key.trim();
-					const e = row.expr.trim();
-					if (k && e) config[k] = { mode: 'expression', expr: e };
-				}
+				const config = rowsToAttrs(bkRows);
 				project = await api.setBackend(project.id, { type: bkType.trim(), config });
 			}
 			await refreshHcl();
@@ -1533,44 +1240,8 @@
 	// Address of the resource currently in the form, for `tofu import`
 	// (managed resources only — data sources are read, never imported).
 	const importAddress = $derived(
-		`${activeModule ? `module.${activeModule}.` : ''}${selectedType}.${resourceName}`
+		`${activeModule ? `module.${activeModule}.` : ''}${form.selectedType}.${form.name}`
 	);
-
-	// --- Plan overlay in the form: which attributes the last plan touches. ---
-	// The canvas and the run pane point AT a resource; the form is where the user
-	// then looks for what actually changes, so the plan's per-attribute diff is
-	// surfaced here instead of only in the streamed log.
-	const stripIndex = (addr: string) => addr.replace(/\[[^\]]*\]/g, '');
-	// Dismissal is remembered per address (not a bare flag) so it neither leaks to
-	// the next resource the user opens nor survives the next plan, which resets it.
-	let dismissedDiffAddress = $state<string | null>(null);
-	// Full address of the open form, matching plan addresses (data sources carry
-	// the "data." prefix there).
-	const formAddress = $derived(
-		`${activeModule ? `module.${activeModule}.` : ''}${resourceKind === 'data' ? 'data.' : ''}${selectedType}.${resourceName}`
-	);
-	// Instances of the open resource with a pending action. A counted resource
-	// plans per instance ("x.y[0]"), so several changes can match one form.
-	const formPlanChanges = $derived(
-		formKind === 'resource' && editingId && dismissedDiffAddress !== formAddress
-			? planChanges.filter((c) => stripIndex(c.address) === formAddress)
-			: []
-	);
-	// Flattened for the per-field markers, deduped by path across instances (they
-	// usually change identically; a path forcing replacement wins).
-	const formPlanDiffs = $derived.by(() => {
-		const byPath = new Map<string, AttrDiff>();
-		for (const c of formPlanChanges) {
-			for (const d of c.diffs ?? []) {
-				const prev = byPath.get(d.path);
-				if (!prev || (d.forcesReplace && !prev.forcesReplace)) byPath.set(d.path, d);
-			}
-		}
-		return [...byPath.values()];
-	});
-	// Which run-pane change rows have their attribute diff expanded (by address;
-	// an expansion survives the next plan, so re-planning keeps the same row open).
-	let expandedDiffs = $state<Record<string, boolean>>({});
 
 	function runImport() {
 		showImportResource = false;
@@ -1588,39 +1259,21 @@
 			return;
 		}
 		error = '';
-		planLog = [];
-		planResult = '';
-		planChanges = [];
-		planCounts = null;
-		planCost = null;
-		planLint = null;
-		planPolicy = null;
-		applyOutputs = [];
+		runPane.reset();
 		busy = op;
 		streamOp(project.id, op, (ev) => {
-			if (ev.kind === 'log') planLog = [...planLog, ev.line];
-			else if (ev.kind === 'result') applyOutputs = ev.outputs ?? [];
+			if (ev.kind === 'log') runPane.append(ev.line);
+			else if (ev.kind === 'result') runPane.outputs = ev.outputs ?? [];
 			else if (ev.kind === 'error') {
 				error = ev.error;
 				busy = '';
 			} else if (ev.kind === 'done') {
-				planResult = op === 'apply' ? 'Applied' : 'Destroyed';
+				runPane.result = op === 'apply' ? 'Applied' : 'Destroyed';
 				busy = '';
 				if (op === 'apply' && approvalRequired) loadApproval(); // approval consumed
 			}
 		}, undefined, activeEnv);
 	}
-
-	const btn = 'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-40';
-	const btnPrimary = `${btn} bg-[var(--al-accent)] text-white hover:brightness-110`;
-	const btnGhost = `${btn} border border-[var(--al-border)] text-[var(--al-text)] hover:bg-[var(--al-panel-2)]`;
-	const iconBtn = 'rounded-md p-1.5 text-[var(--al-muted)] hover:bg-[var(--al-panel-2)] hover:text-[var(--al-text)]';
-	const hdrBtn = 'inline-flex items-center gap-1.5 rounded-md border border-[var(--al-border)] px-2.5 py-1 text-xs font-medium text-[var(--al-text)] hover:bg-[var(--al-panel-2)] disabled:opacity-40';
-	const ta = 'mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-bg)] p-2.5 text-xs text-[var(--al-text)] outline-none focus:border-[var(--al-accent)]';
-
-	// Accent as literal hex (for inline styles that concatenate/tint).
-	const accentHex = '#4c8dff';
-	const accentWeak = '#1f3a5f';
 
 	// --- Responsive top bar ---
 	// The bar used to render every action at full size whatever the window width,
@@ -1632,99 +1285,32 @@
 	let toolsWidth = $state(0);
 	let showToolMenu = $state(false);
 
-	// Width estimates (measured against the rendered buttons, then rounded up:
-	// over-estimating collapses one action early, which is invisible, while
-	// under-estimating would clip the bar). Each includes the 6px flex gap.
-	const TOOL_ICON_W = 42; // icon-only button
-	const TOOL_MORE_W = 86; // the "More" button
-	const toolWidth = (it: ToolItem) =>
-		44 + it.label.length * 7 + (it.badge ? 18 : 0) + (it.id === 'import' ? 14 : 0);
-
 	// Actions in priority order — earlier stays in the bar longer.
-	const toolItems = $derived.by<ToolItem[]>(() => {
-		if (!project) return [];
-		const items: ToolItem[] = [
-			{ id: 'editor', label: 'Editor', icon: LayoutDashboard, run: openEditor, active: showEditor, priority: 0 },
-			{ id: 'runs', label: 'Runs', icon: History, run: () => (showRuns = true), priority: 1 },
-			{ id: 'state', label: 'State', icon: Layers, run: () => { loadState(); loadDrift(); showState = true; }, priority: 1 }
-		];
-		// Variables and Secrets are readable by anyone (the panels gate their own
-		// edit actions), matching the pre-existing bar.
-		items.push({
-			id: 'variables', label: 'Variables', icon: VariableIcon, run: () => (showConfig = true),
-			badge: configCount > 0 ? String(configCount) : undefined, priority: 2
-		});
-		items.push({
-			id: 'secrets', label: 'Secrets', icon: KeyRound, run: () => { loadSecrets(); showSecrets = true; },
-			badge: secretsList.length > 0 ? String(secretsList.length) : undefined, priority: 2
-		});
-		if (auth.can('git')) {
-			items.push({ id: 'git', label: 'Git', icon: GitBranch, run: () => (showGit = true), priority: 2 });
-		}
-		if (auth.can('resources')) {
-			items.push({ id: 'import', label: 'Import', icon: FileDown, run: () => (showImportMenu = true), priority: 3 });
-			items.push({ id: 'environments', label: 'Environments', icon: Boxes, run: () => (showEnvironments = true), title: 'Manage deployment environments', priority: 4 });
-			items.push({ id: 'cost', label: 'Cost', icon: DollarSign, run: () => (showCost = true), title: 'Cost estimation settings', priority: 5 });
-			items.push({ id: 'policy', label: 'Policy', icon: ShieldCheck, run: () => (showPolicy = true), title: 'Policy as code (conftest/OPA)', priority: 5 });
-			items.push({ id: 'notify', label: 'Notify', icon: Bell, run: () => (showNotify = true), title: 'Webhook / Slack notifications for applies and drift', priority: 5 });
-		}
-		if (auth.isAdmin) {
-			items.push({ id: 'acl', label: 'Access', icon: ShieldCheck, run: () => (showAcl = true), title: 'Manage who can access this project', priority: 6 });
-		}
-		return items;
-	});
+	const toolItems = $derived.by(() =>
+		buildToolItems({
+			hasProject: !!project,
+			configCount,
+			secretCount: secretsList.length,
+			editorActive: showEditor,
+			perms: { resources: auth.can('resources'), deploy: auth.can('deploy'), git: auth.can('git'), admin: auth.isAdmin },
+			actions: commandActions
+		})
+	);
 
-	// Import keeps its submenu in the bar, but in the overflow list its two
-	// actions are flat rows — a menu inside a menu would be worse than either.
-	const importRows: ToolItem[] = [
-		{ id: 'import-hcl', label: 'Import HCL', icon: FileDown, run: () => (showImportHcl = true), priority: 3 },
-		{ id: 'import-state', label: 'Import state', icon: Database, run: () => (showImportState = true), priority: 3 }
-	];
-
-	// Fitting the actions into the measured width, degrading in three steps so the
-	// space available is always spent on the most useful thing:
-	//   1. everything labelled, if it fits;
-	//   2. otherwise every action stays visible as an icon, and the leftover width
-	//      buys labels back for the leading (highest-priority) ones — a full row of
-	//      icons would otherwise waste a few hundred px on a 1600px laptop;
-	//   3. and only when even the icons do not fit does the tail move to "More".
-	const toolLayout = $derived.by(() => {
-		const items = toolItems;
-		const labelAll = () => new Set(items.map((it) => it.id));
-		// Before the first measurement, assume everything fits: a flash of the full
-		// bar is better than a flash of an empty one.
-		if (items.length === 0 || toolsWidth === 0) {
-			return { labelled: labelAll(), visible: items, overflow: [] as ToolItem[] };
-		}
-
-		const iconTotal = items.length * TOOL_ICON_W;
-		if (iconTotal > toolsWidth) {
-			const budget = toolsWidth - TOOL_MORE_W;
-			const visible = items.slice(0, Math.max(0, Math.floor(budget / TOOL_ICON_W)));
-			const overflow = items.slice(visible.length).flatMap((it) => (it.id === 'import' ? importRows : [it]));
-			return { labelled: new Set<string>(), visible, overflow };
-		}
-
-		if (items.reduce((n, it) => n + toolWidth(it), 0) <= toolsWidth) {
-			return { labelled: labelAll(), visible: items, overflow: [] as ToolItem[] };
-		}
-
-		// Buy labels from the left, stopping at the first that does not fit so the
-		// labelled ones stay contiguous instead of scattering across the row.
-		let spare = toolsWidth - iconTotal;
-		const labelled = new Set<string>();
-		for (const it of items) {
-			const extra = toolWidth(it) - TOOL_ICON_W;
-			if (extra > spare) break;
-			spare -= extra;
-			labelled.add(it.id);
-		}
-		return { labelled, visible: items, overflow: [] as ToolItem[] };
-	});
+	const importItems = buildImportRows(commandActions);
 
 </script>
 
-<svelte:window onclick={() => { showImportMenu = false; showToolMenu = false; }} onkeydown={handleKeydown} />
+<svelte:window
+	onclick={() => { showImportMenu = false; showToolMenu = false; }}
+	onkeydown={(e) => globalKeydown(e, {
+		togglePalette: () => (showPalette = !showPalette),
+		canPlan: () => !!project && auth.can('deploy') && busy === '',
+		plan: runPlan,
+		undo,
+		redo
+	})}
+/>
 
 <CommandPalette bind:open={showPalette} items={paletteItems} />
 
@@ -1796,43 +1382,14 @@
 			<!-- The measured action row. flex-1 + min-w-0 means clientWidth IS the
 			     space the other groups left over, so the fit needs no estimate of
 			     their widths. -->
-			<!-- min-w (not the flex default of min-content) keeps clientWidth equal to
-			     the width flex assigned rather than to the content, and keeps room for
-			     the "More" button so the actions stay reachable at any size. -->
-			<div class="flex min-w-[46px] flex-1 items-center gap-1.5" bind:clientWidth={toolsWidth}>
-				{#each toolLayout.visible as item (item.id)}
-					{#if item.id === 'import'}
-						<div class="relative flex-none">
-							<button class={hdrBtn} onclick={(e) => { e.stopPropagation(); importMsg = ''; showImportMenu = !showImportMenu; }}>
-								<FileDown size={14} />
-								{#if toolLayout.labelled.has('import')}Import <ChevronDown size={13} />{/if}
-							</button>
-							{#if showImportMenu}
-								<div class="absolute left-0 top-full z-20 mt-1 w-40 overflow-hidden rounded-md border border-[var(--al-border)] bg-[var(--al-panel)] shadow-xl">
-									<button class="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]" onclick={() => { showImportMenu = false; showImportHcl = true; }}><FileDown size={13} /> Import HCL</button>
-									<button class="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]" onclick={() => { showImportMenu = false; showImportState = true; }}><Database size={13} /> Import state</button>
-								</div>
-							{/if}
-						</div>
-					{:else}
-						{@const Icon = item.icon}
-						<button
-							class="{hdrBtn} flex-none {item.active ? 'border-[var(--al-accent)] bg-[var(--al-accent-weak)] text-[var(--al-accent)]' : ''}"
-							title={item.title ?? item.label}
-							aria-label={item.label}
-							onclick={item.run}
-						>
-							<Icon size={14} />
-							{#if toolLayout.labelled.has(item.id)}
-								{item.label}{#if item.badge}<span class="text-[10px] text-[var(--al-muted)]">{item.badge}</span>{/if}
-							{/if}
-						</button>
-					{/if}
-				{/each}
-				{#if toolLayout.overflow.length > 0}
-					<ToolbarMenu bind:open={showToolMenu} items={toolLayout.overflow} />
-				{/if}
-			</div>
+			<ToolbarActions
+				items={toolItems}
+				importRows={importItems}
+				bind:measuredWidth={toolsWidth}
+				bind:menuOpen={showToolMenu}
+				bind:importMenuOpen={showImportMenu}
+				onImportOpen={() => (importMsg = '')}
+			/>
 		{/if}
 
 		<div class="ml-auto flex flex-none items-center gap-2 text-sm">
@@ -1864,7 +1421,7 @@
 				{project}
 				{hcl}
 				accent="#4c8dff"
-				{planChanges}
+				planChanges={runPane.changes}
 				planning={busy === 'plan'}
 				onPlan={auth.can('deploy') ? runPlan : undefined}
 				loadTypes={editorLoadTypes}
@@ -1877,307 +1434,87 @@
 				onClose={() => (showEditor = false)}
 			/>
 		{:else}
-		<aside
-			class="shrink-0 space-y-3 overflow-y-auto border-r border-[var(--al-border)] bg-[var(--al-panel)] p-3"
-			style="width:{sidebarWidth}px;"
-		>
-			{#if project}
-				<div>
-					<label for="provider-source" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Provider</label>
-					<div class="flex gap-1.5">
-						<input id="provider-source" class="min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={providerSource} placeholder="" />
-						<button class={btnGhost} onclick={addProvider} disabled={busy === 'provider'}>
-							{#if busy === 'provider'}<Loader2 size={14} class="animate-spin" />{:else}Add{/if}
-						</button>
-					</div>
-				</div>
-
-				{#if providers.length > 0}
-					<div>
-						<div class="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Configured providers</div>
-						<ul class="space-y-0.5">
-							{#each providers as prov (prov.key + '.' + (prov.alias ?? ''))}
-								{@const addr = prov.alias ? `${prov.key}.${prov.alias}` : prov.key}
-								{@const up = providerUpdates[prov.source]}
-								<li class="group flex items-center gap-1">
-									<span class="mono flex-1 truncate text-[11px] text-[var(--al-muted)]" title={prov.source}>
-										{prov.key}{#if prov.alias}<span class="text-[var(--al-accent)]">.{prov.alias}</span>{/if}
-									</span>
-									{#if up?.update && up.latest}
-										{#if auth.can('resources')}
-											<button
-												class="flex items-center gap-0.5 rounded-full border px-1.5 py-px text-[10px] font-semibold transition-colors hover:text-black disabled:opacity-50"
-												style="border-color:#e3b34166;color:#e3b341;background:#e3b34114;"
-												onmouseenter={(e) => (e.currentTarget.style.background = '#e3b341')}
-												onmouseleave={(e) => (e.currentTarget.style.background = '#e3b34114')}
-												title="Update available: {up.current ?? up.pinned ?? '?'} → {up.latest}. Click to pin {addr} to {up.latest}."
-												disabled={bumping === prov.source}
-												onclick={() => bumpProvider(prov, up.latest!)}
-											>
-												{#if bumping === prov.source}<Loader2 size={10} class="animate-spin" />{:else}<ArrowUp size={10} />{/if}{up.latest}
-											</button>
-										{:else}
-											<span class="mono text-[10px]" style="color:#e3b341;" title="Update available: {up.current ?? up.pinned ?? '?'} → {up.latest}">↑{up.latest}</span>
-										{/if}
-									{/if}
-									{#if auth.can('resources')}
-										{#if !prov.alias}
-											<button class="{iconBtn} opacity-0 group-hover:opacity-100" title="Add aliased instance of {prov.key}" aria-label="Add provider alias" onclick={() => addProviderAlias(prov)}><Plus size={13} /></button>
-										{:else}
-											<button class="{iconBtn} opacity-0 group-hover:opacity-100 hover:text-[var(--al-danger)]" title="Remove {addr}" aria-label="Remove provider instance" onclick={() => deleteProviderInstance(prov)}><Trash2 size={13} /></button>
-										{/if}
-									{/if}
-									<button class={iconBtn} title="Configure {addr}" aria-label="Configure provider" onclick={() => configureProvider(prov)}><Settings size={14} /></button>
-								</li>
-							{/each}
-						</ul>
-					</div>
-				{/if}
-
-				{#if resourceTypes.length > 0}
-					<div>
-						<div class="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Resource types</div>
-						<ul class="space-y-0.5">
-							{#each resourceTypes as t (t)}
-								<li>
-									<button class="mono w-full rounded px-2 py-1 text-left text-xs {selectedType === t && formKind === 'resource' && resourceKind === 'resource' && !editingId ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => pickType(t)}>{t}</button>
-								</li>
-							{/each}
-						</ul>
-					</div>
-				{/if}
-
-				{#if dataSourceTypes.length > 0}
-					<div>
-						<div class="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Data sources</div>
-						<ul class="space-y-0.5">
-							{#each dataSourceTypes as t (t)}
-								<li>
-									<button class="mono w-full rounded px-2 py-1 text-left text-xs {selectedType === t && formKind === 'resource' && resourceKind === 'data' && !editingId ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => pickType(t, 'data')} title="Add data source {t}">{t}</button>
-								</li>
-							{/each}
-						</ul>
-					</div>
-				{/if}
-
-				<!-- Structure tree: main + local modules as folders -->
-				<div>
-					<div class="mb-1 flex items-center justify-between">
-						<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Structure</span>
-						<span class="flex items-center">
-							<button class={iconBtn} title="Add registry module" aria-label="Add registry module" onclick={() => openRegModule()}><Package size={14} /></button>
-							<button class={iconBtn} title="New local module" aria-label="New local module" onclick={() => { nmName = ''; showNewModule = true; }}><Plus size={14} /></button>
-						</span>
-					</div>
-
-					<!-- main (root) -->
-					<button class="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs {activeModule === null ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => selectScope(null)}>
-						<Folder size={12} /> main
-						<span class="ml-auto text-[10px]">{project.resources.length}</span>
-					</button>
-					{#if activeModule === null}
-						<ul class="mb-1 ml-3 space-y-0.5 border-l border-[var(--al-border)] pl-2">
-							{#each project.resources as r (r.id)}
-								<li class="group flex items-center">
-									<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px] {editingId === r.id ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}" onclick={() => editResource(r)} title="Edit {r.type}.{r.name}">{r.type}.{r.name}</button>
-									<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteScopedResource(r.id)} aria-label="Delete"><Trash2 size={11} /></button>
-								</li>
-							{/each}
-							{#each project.dataSources ?? [] as d (d.id)}
-								<li class="group flex items-center">
-									<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px]" style="color:{editingId === d.id ? 'var(--al-accent)' : '#56d4bc'};opacity:{editingId === d.id ? 1 : 0.85};" onclick={() => editResource(d, 'data')} title="Edit data.{d.type}.{d.name}">data.{d.type}.{d.name}</button>
-									<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteScopedResource(d.id, 'data')} aria-label="Delete"><Trash2 size={11} /></button>
-								</li>
-							{/each}
-						</ul>
-					{/if}
-
-					<!-- local modules -->
-					{#each localModules as m (m.name)}
-						<div class="group flex items-center">
-							<button class="flex flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs {activeModule === m.name ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => selectScope(m.name)}>
-								<FolderGit2 size={12} /> modules/{m.name}
-								<span class="ml-auto text-[10px]">{(m.resources ?? []).length}</span>
-							</button>
-							<button class="px-1 opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteModule(m.name)} aria-label="Delete module"><Trash2 size={12} /></button>
-						</div>
-						{#if activeModule === m.name}
-							<ul class="mb-1 ml-3 space-y-0.5 border-l border-[var(--al-border)] pl-2">
-								{#each m.resources ?? [] as r (r.id)}
-									<li class="group flex items-center">
-										<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px] {editingId === r.id ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}" onclick={() => editResource(r)} title="Edit {r.type}.{r.name}">{r.type}.{r.name}</button>
-										<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteScopedResource(r.id)} aria-label="Delete"><Trash2 size={11} /></button>
-									</li>
-								{/each}
-								{#each m.dataSources ?? [] as d (d.id)}
-									<li class="group flex items-center">
-										<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px]" style="color:{editingId === d.id ? 'var(--al-accent)' : '#56d4bc'};opacity:{editingId === d.id ? 1 : 0.85};" onclick={() => editResource(d, 'data')} title="Edit data.{d.type}.{d.name}">data.{d.type}.{d.name}</button>
-										<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteScopedResource(d.id, 'data')} aria-label="Delete"><Trash2 size={11} /></button>
-									</li>
-								{/each}
-								<li>
-									<button class="mt-0.5 text-[10px] text-[var(--al-muted)] hover:text-[var(--al-accent)]" onclick={() => (showInputs = true)}>⚙ module inputs</button>
-								</li>
-							</ul>
-						{/if}
-					{/each}
-
-					<!-- registry/external module calls -->
-					{#each registryModules as m (m.name)}
-						<div class="group flex items-center">
-							<button class="flex flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]" onclick={() => openRegModule(m)} title="{m.source}{m.version ? ' @ ' + m.version : ''}">
-								<Package size={12} style="color:#c297ff" /> module.{m.name}
-							</button>
-							<button class="px-1 opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => deleteRegModule(m.name)} aria-label="Delete registry module"><Trash2 size={12} /></button>
-						</div>
-					{/each}
-				</div>
-			{:else}
-				<p class="text-xs text-[var(--al-muted)]">Create a project to begin.</p>
-			{/if}
-		</aside>
+		<StructureSidebar
+			width={panels.sidebarWidth}
+			{project}
+			{providers}
+			{providerUpdates}
+			{bumping}
+			{localModules}
+			{registryModules}
+			{activeModule}
+			addingProvider={busy === 'provider'}
+			canResources={auth.can('resources')}
+			onAddProvider={addProvider}
+			onBumpProvider={bumpProvider}
+			onAddAlias={addProviderAlias}
+			onDeleteInstance={deleteProviderInstance}
+			onConfigureProvider={configureProvider}
+			onPickType={pickType}
+			onSelectScope={selectScope}
+			onEditResource={editResource}
+			onDeleteResource={deleteScopedResource}
+			onNewModule={() => { nmName = ''; showNewModule = true; }}
+			onDeleteModule={deleteModule}
+			onOpenInputs={() => (showInputs = true)}
+			onOpenRegistryModule={openRegModule}
+			onDeleteRegistryModule={deleteRegModule}
+		/>
 		<ResizeHandle
 			orientation="vertical"
 			label="Resize the structure panel"
-			onResize={(dx) => clampSidebarWidth(sidebarWidth + dx)}
-			onEnd={() => localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))}
+			onResize={(dx) => panels.setSidebarWidth(panels.sidebarWidth + dx)}
+			onEnd={() => panels.persistSidebar()}
 		/>
 
-		<main class="min-w-0 flex-1 overflow-y-auto p-5">
-			{#if !project}
-				<div class="grid h-full place-items-center text-sm text-[var(--al-muted)]">
-					<button class={btnPrimary} onclick={newProject}><Plus size={15} /> New project</button>
-				</div>
-			{:else if busy === 'schema'}
-				<div class="flex items-center gap-2 text-sm text-[var(--al-muted)]"><Loader2 size={16} class="animate-spin" /> Loading schema…</div>
-			{:else if schema && formKind === 'provider'}
-				<div class="mb-4 flex items-end gap-3">
-					<div class="mono text-sm text-[var(--al-muted)]">provider "<span class="text-[var(--al-accent)]">{editingProviderKey}</span>"{#if editingProviderAlias && !providerAliasNew}<span> alias "<span class="text-[var(--al-accent)]">{editingProviderAlias}</span>"</span>{/if}</div>
-					{#if providerAliasNew}
-						<div>
-							<label for="provider-alias" class="mb-1 block text-xs text-[var(--al-muted)]" title="alias meta-argument — resources select this instance via provider = {editingProviderKey}.<alias>">alias</label>
-							<input id="provider-alias" class="mono w-36 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={editingProviderAlias} placeholder="euwest" />
-						</div>
-						<span class="pb-1.5 text-[10px] uppercase text-[var(--al-muted)]">new instance</span>
-					{/if}
-					{#if auth.can('resources')}<button class={btnPrimary + ' ml-auto'} onclick={saveProviderConfig} disabled={busy === 'save' || (providerAliasNew && !editingProviderAlias.trim())}><Save size={15} /> Save provider config</button>{/if}
-				</div>
-				{#if (schema.fields?.length ?? 0) === 0}
-					<p class="text-sm text-[var(--al-muted)]">This provider has no configurable arguments.</p>
-				{:else}
-					<SchemaForm
-						{schema}
-						bind:values
-						{references}
-						secrets={secretNames}
-						onCreateSecret={secretsWritable && auth.can('resources') ? createSecretInline : undefined}
-					/>
-				{/if}
-			{:else if schema}
-				<div class="mb-4 flex items-end gap-3">
-					<div>
-						<label for="resource-name" class="mb-1 block text-xs text-[var(--al-muted)]">resource name</label>
-						<input id="resource-name" class="mono rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={resourceName} />
-					</div>
-					<div>
-						<label for="resource-count" class="mb-1 block text-xs text-[var(--al-muted)]" title="count meta-argument — an HCL expression, e.g. 3 or var.replicas">count</label>
-						<input id="resource-count" class="mono w-28 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" bind:value={resourceCount} placeholder="3 · var.n" disabled={resourceForEach.trim() !== ''} />
-					</div>
-					<div>
-						<label for="resource-foreach" class="mb-1 block text-xs text-[var(--al-muted)]" title="for_each meta-argument — a set or map expression, e.g. toset([&quot;a&quot;, &quot;b&quot;])">for_each</label>
-						<input id="resource-foreach" class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" bind:value={resourceForEach} placeholder="toset([…]) · var.map" disabled={resourceCount.trim() !== ''} />
-					</div>
-					{#if formProviderInstances.length > 1}
-						<div>
-							<label for="resource-provider" class="mb-1 block text-xs text-[var(--al-muted)]" title="provider meta-argument — which instance of the provider manages this {resourceKind === 'data' ? 'data source' : 'resource'}">provider</label>
-							<select id="resource-provider" class="mono rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={resourceProvider}>
-								{#each formProviderInstances as pi (pi.alias ?? '')}
-									<option value={pi.alias ? `${pi.key}.${pi.alias}` : ''}>{pi.alias ? `${pi.key}.${pi.alias}` : `${pi.key} (default)`}</option>
-								{/each}
-							</select>
-						</div>
-					{/if}
-					<div class="mono text-sm text-[var(--al-muted)]">{resourceKind === 'data' ? 'data' : 'resource'} "<span class="text-[var(--al-accent)]">{selectedType}</span>" "{resourceName}"{#if editingId}<span class="ml-1 text-[10px] uppercase">editing</span>{/if}</div>
-					{#if auth.can('resources')}<button class={btnPrimary + ' ml-auto'} onclick={saveResource} disabled={busy === 'save'}><Save size={15} /> {editingId ? 'Update' : 'Save'} {resourceKind === 'data' ? 'data source' : 'resource'}</button>{/if}
-					{#if editingId && resourceKind === 'resource' && auth.can('deploy')}
-						<button class={btnGhost} title="Adopt an existing real-world resource into state ({importAddress})" onclick={() => { importId = ''; showImportResource = true; }} disabled={busy !== ''}>
-							<HardDriveDownload size={15} /> Import
-						</button>
-					{/if}
-				</div>
-				{#if formPlanChanges.length > 0}
-					<PlanDiffPanel
-						changes={formPlanChanges}
-						onDismiss={() => (dismissedDiffAddress = formAddress)}
-					/>
-				{/if}
-				<SchemaForm
-						{schema}
-						bind:values
-						{references}
-						secrets={secretNames}
-						onCreateSecret={secretsWritable && auth.can('resources') ? createSecretInline : undefined}
-						planDiffs={formPlanDiffs}
-					/>
-			{:else}
-				<div class="grid h-full place-items-center text-center text-sm text-[var(--al-muted)]">
-					Add a provider and pick a resource type, select an existing resource to edit,<br />or import existing HCL / state.
-				</div>
-			{/if}
-		</main>
+		<ResourceFormPane
+			hasProject={!!project}
+			loadingSchema={busy === 'schema'}
+			saving={busy === 'save'}
+			anyBusy={busy !== ''}
+			{activeModule}
+			{references}
+			secrets={secretNames}
+			onCreateSecret={secretsWritable && auth.can('resources') ? createSecretInline : undefined}
+			{providers}
+			canResources={auth.can('resources')}
+			canDeploy={auth.can('deploy')}
+			onSaveResource={saveResource}
+			onSaveProvider={saveProviderConfig}
+			onImportResource={() => { importId = ''; showImportResource = true; }}
+			onNewProject={newProject}
+		/>
 
 		<ResizeHandle
 			orientation="vertical"
 			label="Resize the generated-HCL panel"
-			onResize={(dx) => clampHclWidth(hclWidth - dx)}
-			onEnd={() => localStorage.setItem(HCL_WIDTH_KEY, String(hclWidth))}
+			onResize={(dx) => panels.setHclWidth(panels.hclWidth - dx)}
+			onEnd={() => panels.persistHcl()}
 		/>
 		<aside
 			class="flex shrink-0 flex-col border-l"
-			style="width:{hclWidth}px;border-color:var(--al-border);"
-			bind:clientHeight={asideHeight}
+			style="width:{panels.hclWidth}px;border-color:var(--al-border);"
+			bind:clientHeight={panels.asideHeight}
 		>
 			<!-- Generated HCL — shares the graph editor's viewer for a consistent look -->
 			<div class="min-h-0 flex-1">
 				<HclView {hcl}>
 					{#snippet actions()}
 						{#if auth.can('deploy')}
-						{@const running = busy === 'plan' || busy === 'validate' || busy === 'lint' || busy === 'apply' || busy === 'destroy' || busy === 'import' || busy === 'state-rm' || busy === 'state-mv'}
-						<button class={btnGhost} title="Validate the generated configuration" onclick={runValidate} disabled={!project || running}>
-							{#if busy === 'validate'}<Loader2 size={14} class="animate-spin" />{:else}<ShieldCheck size={14} />{/if} Validate
-						</button>
-						<button class={btnGhost} title="Lint the generated configuration with tflint" onclick={runLint} disabled={!project || running}>
-							{#if busy === 'lint'}<Loader2 size={14} class="animate-spin" />{:else}<Ruler size={14} />{/if} Lint
-						</button>
-						<button class={btnGhost} onclick={runPlan} disabled={!project || running}>
-							{#if busy === 'plan'}<Loader2 size={14} class="animate-spin" />{:else}<Play size={14} />{/if} Plan
-						</button>
-						{#if approvalRequired && auth.can('approve')}
-							<button
-								class={btnGhost}
-								title={approvalReady ? 'This plan is approved' : 'Approve the current plan so it can be applied'}
-								onclick={approvePlan}
-								disabled={!project || running || approvalReady || planCounts === null}
-							>
-								<CheckCircle2 size={14} /> {approvalReady ? 'Approved' : 'Approve'}
-							</button>
-						{/if}
-						<button
-							class={btnPrimary}
-							onclick={() => (showApplyConfirm = true)}
-							disabled={!project || running || (approvalRequired && !approvalReady)}
-							title={approvalRequired && !approvalReady ? 'Apply is gated: an approved plan is required' : 'Apply the plan'}
-						>
-							{#if busy === 'apply'}<Loader2 size={14} class="animate-spin" />{:else}<Rocket size={14} />{/if} Apply
-						</button>
-						<button
-							class="{btn} border border-[var(--al-border)] text-[var(--al-danger)] hover:bg-[var(--al-danger)]/10"
-							title="Destroy all deployed resources"
-							onclick={() => { destroyName = ''; showDestroyConfirm = true; }}
-							disabled={!project || running}
-						>
-							{#if busy === 'destroy'}<Loader2 size={14} class="animate-spin" />{:else}<Flame size={14} />{/if}
-						</button>
+							<DeployActions
+								{busy}
+								hasProject={!!project}
+								{approvalRequired}
+								{approvalReady}
+								canApprove={auth.can('approve')}
+								hasPlan={runPane.counts !== null}
+								onValidate={runValidate}
+								onLint={runLint}
+								onPlan={runPlan}
+								onApprove={approvePlan}
+								onApply={() => (showApplyConfirm = true)}
+								onDestroy={() => { destroyName = ''; showDestroyConfirm = true; }}
+							/>
 						{/if}
 					{/snippet}
 				</HclView>
@@ -2185,192 +1522,25 @@
 			<ResizeHandle
 				orientation="horizontal"
 				label="Resize the run-output pane"
-				onResize={(dy) => clampRunHeight(runHeight - dy)}
-				onEnd={() => localStorage.setItem(RUN_HEIGHT_KEY, String(runHeight))}
+				onResize={(dy) => panels.setRunHeight(panels.runHeight - dy)}
+				onEnd={() => panels.persistRun()}
 			/>
 			<!-- Plan output -->
-			<div class="flex min-h-0 flex-none flex-col border-t" style="height:{runHeight}px;border-color:var(--al-code-border);background:var(--al-code-bg);">
-				<div class="flex h-11 flex-none items-center border-b px-4" style="border-color:var(--al-code-border);">
-					<div class="font-mono" style="font-size:12.5px;font-weight:600;color:var(--al-code-text);">run output</div>
-					{#if planResult}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:{accentWeak};color:{accentHex};">{planResult}</span>{/if}
-					{#if planCost}<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:rgba(16,185,129,0.15);color:#10b981;" title="Estimated monthly cost">${planCost.totalMonthly.toFixed(2)}/mo</span>{/if}
-					{#if planPolicy && planPolicy.available && !planPolicy.error}
-						{#if planPolicy.failureCount > 0}
-							<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:{ACTION_COLOR.delete}22;color:{ACTION_COLOR.delete};" title="Policy failures — an enforced apply is blocked">{planPolicy.failureCount} policy failure{planPolicy.failureCount === 1 ? '' : 's'}</span>
-						{:else}
-							<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:rgba(16,185,129,0.15);color:#10b981;" title="All policies passed">policy ok</span>
-						{/if}
-					{/if}
-					{#if project}
-						{#if auth.can('resources')}
-							<button
-								class="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold"
-								style="background:var(--al-panel-2);color:var(--al-muted);"
-								title={approvalRequired ? 'Apply requires an approved plan — click to disable' : 'Require an approved plan before apply'}
-								onclick={toggleApprovalGate}
-							>
-								{#if approvalRequired}<Lock size={11} /> Gate on{:else}<LockOpen size={11} /> Gate off{/if}
-							</button>
-						{:else if approvalRequired}
-							<span class="ml-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:var(--al-panel-2);color:var(--al-muted);"><Lock size={11} /> Gated</span>
-						{/if}
-						{#if approvalRequired && currentApproval && !currentApproval.consumed}
-							<span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="background:rgba(16,185,129,0.15);color:#10b981;" title="Approved — apply enabled">✓ approved by {currentApproval.approvedBy}</span>
-						{/if}
-					{/if}
-					{#if planCounts}
-						<span class="ml-auto flex items-center gap-2 font-mono text-[11px] font-semibold">
-							<span style="color:{ACTION_COLOR.create}">+{planCounts.add}</span>
-							<span style="color:{ACTION_COLOR.update}">~{planCounts.change}</span>
-							<span style="color:{ACTION_COLOR.replace}">±{planCounts.replace}</span>
-							<span style="color:{ACTION_COLOR.delete}">−{planCounts.destroy}</span>
-						</span>
-					{/if}
-				</div>
-				{#if planChanges.length > 0}
-					<div class="max-h-[45%] flex-none overflow-auto border-b py-1" style="border-color:var(--al-code-border);">
-						{#each planChanges as c (c.address)}
-							<div class="flex items-center gap-1 px-[18px]">
-								{#if (c.diffs?.length ?? 0) > 0}
-									<!-- Expand the attribute diff in place, so finding out WHAT changes
-									     never means scrolling the raw log below. -->
-									<button
-										class="flex-none font-mono text-[10px]"
-										style="color:var(--al-code-comment);"
-										title={expandedDiffs[c.address] ? 'Hide changed attributes' : 'Show changed attributes'}
-										aria-expanded={expandedDiffs[c.address] ?? false}
-										onclick={() => (expandedDiffs[c.address] = !expandedDiffs[c.address])}
-									>{expandedDiffs[c.address] ? '▾' : '▸'}</button>
-								{:else}
-									<span class="flex-none font-mono text-[10px]" style="color:transparent;">▸</span>
-								{/if}
-								<button
-									class="flex min-w-0 flex-1 items-center gap-2 py-0.5 text-left font-mono hover:bg-[var(--al-panel-2)]"
-									style="font-size:11.5px;line-height:1.6;"
-									title="{c.address} — click to open"
-									onclick={() => jumpToAddress(c.address)}
-								>
-									<span class="w-3 flex-none text-center font-bold" style="color:{ACTION_COLOR[c.action]}">{ACTION_SYMBOL[c.action]}</span>
-									<span class="truncate" style="color:var(--al-code-text);">{c.address}</span>
-									{#if (c.diffs?.length ?? 0) > 0}
-										<span class="flex-none text-[10px]" style="color:var(--al-code-comment);">{c.diffs?.length} attr</span>
-									{/if}
-									<span class="ml-auto flex-none text-[10px]" style="color:{ACTION_COLOR[c.action]}">{c.action}</span>
-								</button>
-							</div>
-							{#if expandedDiffs[c.address]}
-								<div class="mb-1 ml-[34px] mr-[18px] border-l pl-2" style="border-color:var(--al-code-border);">
-									<PlanDiffList diffs={c.diffs ?? []} truncated={c.diffsTruncated} compact />
-								</div>
-							{/if}
-						{/each}
-					</div>
-				{/if}
-				{#if planCost}
-					<div class="max-h-[40%] flex-none overflow-auto border-b py-1" style="border-color:var(--al-code-border);">
-						<div class="flex items-center gap-2 px-[18px] py-0.5">
-							<span class="text-[10px] font-semibold uppercase tracking-wide" style="color:var(--al-code-comment);">estimated cost</span>
-							<span class="ml-auto font-mono text-[11px] font-semibold" style="color:var(--al-code-text);">${planCost.totalMonthly.toFixed(2)}/mo</span>
-						</div>
-						{#if planCost.error}
-							<div class="px-[18px] py-0.5 text-[10px]" style="color:var(--al-code-comment);">Infracost unavailable ({planCost.error}) — using price overrides only</div>
-						{/if}
-						{#each planCost.lines as l (l.address)}
-							<div class="flex items-center gap-3 px-[18px] py-0.5 font-mono" style="font-size:11.5px;line-height:1.6;">
-								<span class="truncate" style="color:var(--al-code-text);" title={l.address}>{l.address}</span>
-								<span class="flex-none text-[9px] uppercase tracking-wide" style="color:var(--al-code-comment);">{l.source}</span>
-								<span class="ml-auto flex-none" style="color:var(--al-code-muted);">${l.monthly.toFixed(2)}/mo</span>
-							</div>
-						{/each}
-						{#if planCost.lines.length === 0}
-							<div class="px-[18px] py-0.5 text-[11px]" style="color:var(--al-code-muted);">No priced resources — add price overrides or configure Infracost.</div>
-						{/if}
-					</div>
-				{/if}
-				{#if planPolicy}
-					<div class="max-h-[40%] flex-none overflow-auto border-b py-1" style="border-color:var(--al-code-border);">
-						<div class="px-[18px] py-0.5 text-[10px] font-semibold uppercase tracking-wide" style="color:var(--al-code-comment);">
-							policy{#if !planPolicy.available} — conftest not installed{:else if planPolicy.error} — check failed{:else} · {planPolicy.failureCount} failure{planPolicy.failureCount === 1 ? '' : 's'} · {planPolicy.warningCount} warning{planPolicy.warningCount === 1 ? '' : 's'}{/if}
-						</div>
-						{#if planPolicy.error}
-							<div class="px-[18px] py-0.5 text-[11px]" style="color:{ACTION_COLOR.delete};">{planPolicy.error}</div>
-						{/if}
-						{#each planPolicy.violations as v, i (i)}
-							<div class="flex items-start gap-2 px-[18px] py-0.5 font-mono" style="font-size:11.5px;line-height:1.6;">
-								<span class="w-14 flex-none text-[10px] uppercase" style="color:{v.severity === 'failure' ? ACTION_COLOR.delete : ACTION_COLOR.update};">{v.severity}</span>
-								<span class="truncate" style="color:var(--al-code-text);" title={v.message}>{v.message}</span>
-								{#if v.rule}<span class="ml-auto flex-none text-[10px]" style="color:var(--al-code-comment);">{v.rule}</span>{/if}
-							</div>
-						{/each}
-						{#if planPolicy.available && !planPolicy.error && planPolicy.violations.length === 0}
-							<div class="px-[18px] py-0.5 text-[11px]" style="color:var(--al-code-muted);">All policies passed ({planPolicy.successes} rule{planPolicy.successes === 1 ? '' : 's'}).</div>
-						{/if}
-					</div>
-				{/if}
-				{#if planLint}
-					<div class="max-h-[40%] flex-none overflow-auto border-b py-1" style="border-color:var(--al-code-border);">
-						<div class="px-[18px] py-0.5 text-[10px] font-semibold uppercase tracking-wide" style="color:var(--al-code-comment);">
-							lint{#if !planLint.available} — tflint not installed{:else} · {planLint.issues.length} issue{planLint.issues.length === 1 ? '' : 's'}{/if}
-						</div>
-						{#each planLint.issues as iss, i (i)}
-							<div class="flex items-start gap-2 px-[18px] py-0.5 font-mono" style="font-size:11.5px;line-height:1.6;">
-								<span class="w-14 flex-none text-[10px] uppercase" style="color:{iss.severity === 'error' ? ACTION_COLOR.delete : ACTION_COLOR.update};">{iss.severity}</span>
-								<span class="truncate" style="color:var(--al-code-text);" title={iss.message}>{iss.message}</span>
-								{#if iss.filename}<span class="ml-auto flex-none text-[10px]" style="color:var(--al-code-comment);">{iss.filename}:{iss.line}</span>{/if}
-							</div>
-						{/each}
-						{#if planLint.available && planLint.issues.length === 0}
-							<div class="px-[18px] py-0.5 text-[11px]" style="color:var(--al-code-muted);">No issues found.</div>
-						{/if}
-					</div>
-				{/if}
-				{#if applyOutputs.length > 0}
-					<div class="max-h-[40%] flex-none overflow-auto border-b py-1" style="border-color:var(--al-code-border);">
-						<div class="px-[18px] py-0.5 text-[10px] font-semibold uppercase tracking-wide" style="color:var(--al-code-comment);">outputs</div>
-						{#each applyOutputs as o (o.name)}
-							<div class="flex items-center gap-3 px-[18px] py-0.5 font-mono" style="font-size:11.5px;line-height:1.6;">
-								<span class="flex-none" style="color:var(--al-code-text);">{o.name}</span>
-								<span class="ml-auto truncate" style="color:var(--al-code-muted);" title={o.sensitive ? '' : o.value}>{o.sensitive ? '(sensitive)' : o.value}</span>
-							</div>
-						{/each}
-					</div>
-				{/if}
-				<pre class="flex-1 overflow-auto whitespace-pre-wrap px-[18px] py-3 font-mono" style="font-size:11.5px;line-height:1.6;color:var(--al-code-muted);">{planLog.join('\n') || '// run plan or apply to see output'}</pre>
-			</div>
+			<RunOutputPane
+				height={panels.runHeight}
+				hasProject={!!project}
+				{approvalRequired}
+				approval={currentApproval}
+				onToggleGate={auth.can('resources') ? toggleApprovalGate : undefined}
+				onJump={jumpToAddress}
+			/>
 		</aside>
 		{/if}
 	</div>
 </div>
 
 <!-- New project modal -->
-<Modal title="New project" bind:open={showNewProject}>
-	<div class="space-y-3">
-		<div>
-			<label for="np-name" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Name</label>
-			<input
-				id="np-name"
-				class="w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]"
-				bind:value={npName}
-				placeholder="my-infra"
-				onkeydown={(e) => { if (e.key === 'Enter') createProjectConfirmed(); }}
-			/>
-		</div>
-		<div>
-			<label for="np-engine" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Engine</label>
-			<select id="np-engine" class="w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm" bind:value={npEngine}>
-				{#each engines as e (e.engine)}
-					<option value={e.engine}>{e.engine} {e.version}</option>
-				{/each}
-			</select>
-		</div>
-	</div>
-	{#snippet footer()}
-		<button class={btnGhost} onclick={() => (showNewProject = false)}>Cancel</button>
-		<button class={btnPrimary} onclick={createProjectConfirmed} disabled={busy === 'project' || !npName.trim()}>
-			{#if busy === 'project'}<Loader2 size={14} class="animate-spin" />{/if} Create
-		</button>
-	{/snippet}
-</Modal>
+<NewProjectModal bind:open={showNewProject} bind:name={npName} bind:engine={npEngine} {engines} saving={busy === 'project'} onCreate={createProjectConfirmed} />
 
 {#if auth.isAdmin}
 	<SettingsModal bind:open={showSettings} />
@@ -2438,302 +1608,93 @@
 	/>
 
 	<!-- terraform block: required_version + state backend -->
-	<Modal title="Terraform block" bind:open={showBackend}>
-		<div class="space-y-3">
-			<div>
-				<label for="bk-required-version" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Required version</label>
-				<input
-					id="bk-required-version"
-					class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]"
-					placeholder={'>= 1.6.0  ·  ~> 1.12  ·  empty = unconstrained'}
-					bind:value={bkRequiredVersion}
-				/>
-				<p class="mt-1 text-xs text-[var(--al-muted)]">
-					Emitted as <span class="mono">required_version</span> in the terraform block — the engine
-					refuses to run outside the constraint, and tflint's
-					<span class="mono">terraform_required_version</span> rule expects it.
-				</p>
-			</div>
-			<div class="border-t border-[var(--al-border)] pt-3">
-				<span class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">State backend</span>
-			</div>
-			<p class="text-xs text-[var(--al-muted)]">
-				Where this project's state lives. Empty type = local state in the project workspace.
-				Values are raw HCL literals (no interpolation allowed by Terraform); put credentials in the
-				server's environment, never here.
-			</p>
-			<div>
-				<label for="bk-type" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Backend type</label>
-				<input id="bk-type" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="s3 · gcs · http · pg · … (empty = local)" bind:value={bkType} list="bk-types" />
-				<datalist id="bk-types">
-					{#each BACKEND_TYPES as t (t)}<option value={t}></option>{/each}
-				</datalist>
-			</div>
-			<div>
-				<div class="mb-1 flex items-center justify-between">
-					<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Configuration</span>
-					<button class="text-xs text-[var(--al-muted)] hover:text-[var(--al-accent)]" onclick={() => (bkRows = [...bkRows, { key: '', expr: '' }])}>+ add value</button>
-				</div>
-				{#if bkRows.length === 0}
-					<p class="text-xs text-[var(--al-muted)]">No configuration values.</p>
-				{/if}
-				<div class="space-y-1.5">
-					{#each bkRows as row, i (i)}
-						<div class="flex items-center gap-2">
-							<input class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" placeholder="bucket" bind:value={row.key} />
-							<input class="mono min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" placeholder={'"my-bucket" · true · 5432'} bind:value={row.expr} />
-							<button class="text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => (bkRows = bkRows.filter((_, j) => j !== i))} aria-label="Remove value"><Trash2 size={12} /></button>
-						</div>
-					{/each}
-				</div>
-			</div>
-			{#if auth.can('deploy')}
-				<div>
-					<span class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">On save</span>
-					<label class="flex items-start gap-2 text-sm text-[var(--al-text)]">
-						<input type="radio" class="mt-1" name="bk-mode" value="migrate" checked={bkMode === 'migrate'} onchange={() => (bkMode = 'migrate')} />
-						<span>Migrate existing state<span class="block text-xs text-[var(--al-muted)]">Copies the current state into the new backend (init -migrate-state).</span></span>
-					</label>
-					<label class="mt-1 flex items-start gap-2 text-sm text-[var(--al-text)]">
-						<input type="radio" class="mt-1" name="bk-mode" value="reconfigure" checked={bkMode === 'reconfigure'} onchange={() => (bkMode = 'reconfigure')} />
-						<span>Reconfigure only<span class="block text-xs text-[var(--al-muted)]">Uses whatever the new backend already holds; nothing is copied.</span></span>
-					</label>
-				</div>
-			{:else}
-				<p class="text-xs text-[var(--al-muted)]">You lack the deploy permission — the backend is saved but the workspace is re-initialized on the next deploy-user operation.</p>
-			{/if}
-		</div>
-		{#snippet footer()}
-			<button class={btnGhost} onclick={() => (showBackend = false)}>Cancel</button>
-			<button class={btnPrimary} onclick={saveBackend} disabled={busy === 'backend'}>
-				{#if busy === 'backend'}<Loader2 size={14} class="animate-spin" />{/if} Save
-			</button>
-		{/snippet}
-	</Modal>
+	<TerraformBlockModal
+		bind:open={showBackend}
+		bind:requiredVersion={bkRequiredVersion}
+		bind:type={bkType}
+		bind:rows={bkRows}
+		bind:mode={bkMode}
+		canDeploy={auth.can('deploy')}
+		saving={busy === 'backend'}
+		onSave={saveBackend}
+	/>
 
 	<!-- Import a live resource into state -->
-	<Modal title="Import into state" bind:open={showImportResource}>
-		<p class="mb-3 text-sm text-[var(--al-text)]">
-			Adopt an existing real-world resource as
-			<span class="mono text-[var(--al-accent)]">{importAddress}</span>.
-			The provider reads it by ID and records it in this project's state — nothing is created or changed.
-		</p>
-		<label for="import-id" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Resource ID</label>
-		<input
-			id="import-id"
-			class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]"
-			placeholder="provider-specific ID (e.g. i-0abc123, vpc-…, a value)"
-			bind:value={importId}
-			onkeydown={(e) => { if (e.key === 'Enter' && importId.trim()) runImport(); }}
-		/>
-		<p class="mt-1.5 text-xs text-[var(--al-muted)]">Attributes that differ from the form will show as changes on the next plan.</p>
-		{#snippet footer()}
-			<button class={btnGhost} onclick={() => (showImportResource = false)}>Cancel</button>
-			<button class={btnPrimary} onclick={runImport} disabled={!importId.trim()}>
-				<HardDriveDownload size={14} /> Import
-			</button>
-		{/snippet}
-	</Modal>
+	<ImportResourceModal bind:open={showImportResource} bind:id={importId} address={importAddress} onImport={runImport} />
 
 	<!-- Apply confirmation -->
-	<Modal title="Apply changes" bind:open={showApplyConfirm}>
-		<p class="text-sm text-[var(--al-text)]">
-			This runs <span class="mono">{engine || defaultEngine} apply</span> on
-			<span class="font-semibold">{project.name}</span> and makes real changes to your infrastructure.
-		</p>
-		<p class="mt-2 text-xs text-[var(--al-muted)]">
-			{#if planResult === 'No changes'}
-				The last plan reported no changes.
-			{:else if planResult === 'Changes pending'}
-				The last plan reported pending changes — review the run output before applying.
-			{:else}
-				Tip: run a plan first to review exactly what will change.
-			{/if}
-		</p>
-		{#snippet footer()}
-			<button class={btnGhost} onclick={() => (showApplyConfirm = false)}>Cancel</button>
-			<button class={btnPrimary} onclick={() => { showApplyConfirm = false; runOp('apply'); }}>
-				<Rocket size={14} /> Apply
-			</button>
-		{/snippet}
-	</Modal>
+	<ApplyConfirmModal
+		bind:open={showApplyConfirm}
+		engine={engine || defaultEngine}
+		projectName={project.name}
+		planResult={runPane.result}
+		onApply={() => { showApplyConfirm = false; runOp('apply'); }}
+	/>
 
 	<!-- Delete blocked: project still has deployed resources -->
-	<Modal title="Project has deployed resources" bind:open={showDeleteBlocked}>
-		<p class="text-sm text-[var(--al-text)]">
-			<span class="font-semibold">{project.name}</span> still tracks
-			<span class="font-semibold text-[var(--al-danger)]">{deleteBlockedCount} deployed resource{deleteBlockedCount === 1 ? '' : 's'}</span>
-			in its state. Deleting the project also deletes that state, and the resources would keep
-			running with nothing left to manage or destroy them.
-		</p>
-		<p class="mt-2 text-xs text-[var(--al-muted)]">
-			Recommended: cancel and run <span class="font-semibold">Destroy</span> first, then delete the project.
-		</p>
-		<label for="delblock-name" class="mb-1 mt-3 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">
-			Type the project name ({project.name}) to delete anyway
-		</label>
-		<input
-			id="delblock-name"
-			class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-danger)]"
-			bind:value={deleteBlockedName}
-			placeholder={project.name}
-		/>
-		{#snippet footer()}
-			<button class={btnGhost} onclick={() => (showDeleteBlocked = false)}>Cancel</button>
-			<button
-				class="{btn} bg-[var(--al-danger)] text-white hover:brightness-110"
-				disabled={deleteBlockedName !== project?.name}
-				onclick={forceRemoveProject}
-			>
-				<Trash2 size={14} /> Delete anyway
-			</button>
-		{/snippet}
-	</Modal>
+	<DeleteBlockedModal
+		bind:open={showDeleteBlocked}
+		bind:name={deleteBlockedName}
+		projectName={project.name}
+		deployedCount={deleteBlockedCount}
+		onDelete={forceRemoveProject}
+	/>
 
 	<!-- Destroy confirmation -->
-	<Modal title="Destroy infrastructure" bind:open={showDestroyConfirm}>
-		<p class="text-sm text-[var(--al-text)]">
-			This runs <span class="mono">{engine || defaultEngine} destroy</span> and
-			<span class="font-semibold text-[var(--al-danger)]">deletes every resource this project has deployed</span>.
-			It cannot be undone.
-		</p>
-		<label for="destroy-name" class="mb-1 mt-3 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">
-			Type the project name ({project.name}) to confirm
-		</label>
-		<input
-			id="destroy-name"
-			class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-danger)]"
-			bind:value={destroyName}
-			placeholder={project.name}
-		/>
-		{#snippet footer()}
-			<button class={btnGhost} onclick={() => (showDestroyConfirm = false)}>Cancel</button>
-			<button
-				class="{btn} bg-[var(--al-danger)] text-white hover:brightness-110"
-				disabled={destroyName !== project?.name}
-				onclick={() => { showDestroyConfirm = false; runOp('destroy'); }}
-			>
-				<Flame size={14} /> Destroy
-			</button>
-		{/snippet}
-	</Modal>
+	<DestroyConfirmModal
+		bind:open={showDestroyConfirm}
+		bind:name={destroyName}
+		engine={engine || defaultEngine}
+		projectName={project.name}
+		onDestroy={() => { showDestroyConfirm = false; runOp('destroy'); }}
+	/>
 
 	<!-- New module modal -->
-	<Modal title="New module" bind:open={showNewModule}>
-		<label for="nm-name" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Module name</label>
-		<input id="nm-name" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="vpc" bind:value={nmName} onkeydown={(e) => { if (e.key === 'Enter') createModule(); }} />
-		<p class="mt-1.5 text-xs text-[var(--al-muted)]">Creates <span class="mono">modules/{nmName || 'name'}/</span> with its own resources, variables, and outputs.</p>
-		{#snippet footer()}
-			<button class={btnGhost} onclick={() => (showNewModule = false)}>Cancel</button>
-			<button class={btnPrimary} onclick={createModule} disabled={busy === 'module' || !nmName.trim()}>{#if busy === 'module'}<Loader2 size={14} class="animate-spin" />{/if} Create</button>
-		{/snippet}
-	</Modal>
+	<NewModuleModal bind:open={showNewModule} bind:name={nmName} saving={busy === 'module'} onCreate={createModule} />
 
 	<!-- Registry module modal (add / edit) -->
-	<Modal title={rmEditing ? `Module "${rmEditing}"` : 'Add registry module'} bind:open={showRegModule}>
-		<div class="space-y-3">
-			<div class="flex gap-2">
-				<div class="w-40">
-					<label for="rm-name" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Name</label>
-					<input id="rm-name" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="vpc" bind:value={rmName} />
-				</div>
-				<div class="min-w-0 flex-1">
-					<label for="rm-source" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Source</label>
-					<input id="rm-source" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="terraform-aws-modules/vpc/aws" bind:value={rmSource} />
-				</div>
-				<div class="w-28">
-					<label for="rm-version" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Version</label>
-					<input id="rm-version" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="~> 5.0" bind:value={rmVersion} />
-				</div>
-			</div>
-			<div>
-				<div class="mb-1 flex items-center justify-between">
-					<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Inputs (raw HCL)</span>
-					<button class="text-xs text-[var(--al-muted)] hover:text-[var(--al-accent)]" onclick={() => (rmRows = [...rmRows, { key: '', expr: '' }])}>+ add input</button>
-				</div>
-				{#if rmRows.length === 0}
-					<p class="text-xs text-[var(--al-muted)]">No inputs yet — the module is called with defaults.</p>
-				{/if}
-				<div class="space-y-1.5">
-					{#each rmRows as row, i (i)}
-						<div class="flex items-center gap-2">
-							<input class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" placeholder="name" bind:value={row.key} />
-							<input class="mono min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" placeholder={'value (HCL) — e.g. "10.0.0.0/16" or var.cidr'} bind:value={row.expr} />
-							<button class="text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => (rmRows = rmRows.filter((_, j) => j !== i))} aria-label="Remove input"><Trash2 size={12} /></button>
-						</div>
-					{/each}
-				</div>
-			</div>
-		</div>
-		{#snippet footer()}
-			<button class={btnGhost} onclick={() => (showRegModule = false)}>Cancel</button>
-			<button class={btnPrimary} onclick={saveRegModule} disabled={busy === 'regmodule' || !rmName.trim() || !rmSource.trim()}>{#if busy === 'regmodule'}<Loader2 size={14} class="animate-spin" />{/if} {rmEditing ? 'Update' : 'Add'} module</button>
-		{/snippet}
-	</Modal>
+	<RegistryModuleModal
+		bind:open={showRegModule}
+		editing={rmEditing}
+		bind:name={rmName}
+		bind:source={rmSource}
+		bind:version={rmVersion}
+		bind:rows={rmRows}
+		saving={busy === 'regmodule'}
+		onSave={saveRegModule}
+	/>
 
 	<!-- Module inputs modal -->
 	{#if activeMod}
-		<Modal title={`Module "${activeMod.name}" — inputs from root`} bind:open={showInputs}>
-			{#if (activeMod.variables ?? []).length === 0}
-				<p class="text-sm text-[var(--al-muted)]">This module has no variables yet. Add variables in the module's Variables panel, then set their values here.</p>
-			{:else}
-				<p class="mb-2 text-xs text-[var(--al-muted)]">Values the root passes to <span class="mono">module "{activeMod.name}"</span> (raw HCL).</p>
-				<div class="space-y-2">
-					{#each activeMod.variables ?? [] as v (v.name)}
-						<div class="flex items-center gap-2">
-							<span class="mono w-32 truncate text-xs text-[var(--al-text)]">{v.name}</span>
-							<input class="mono flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" placeholder="value (HCL)" bind:value={inputDraft[v.name]} />
-						</div>
-					{/each}
-				</div>
-			{/if}
-			{#snippet footer()}
-				<button class={btnGhost} onclick={() => (showInputs = false)}>Cancel</button>
-				<button class={btnPrimary} onclick={submitInputs} disabled={busy === 'inputs'}>{#if busy === 'inputs'}<Loader2 size={14} class="animate-spin" />{/if} Save inputs</button>
-			{/snippet}
-		</Modal>
+		<ModuleInputsModal
+			bind:open={showInputs}
+			moduleName={activeMod.name}
+			variables={activeMod.variables ?? []}
+			bind:draft={inputDraft}
+			saving={busy === 'inputs'}
+			onSave={submitInputs}
+		/>
 	{/if}
 {/if}
 
 <!-- Import HCL modal -->
-<Modal title="Import existing HCL" bind:open={showImportHcl}>
-	<div class="mb-2 flex items-center gap-1.5 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-xs">
-		<span class="text-[var(--al-muted)]">Importing into</span>
-		<span class="mono font-medium text-[var(--al-text)]">{activeModule ? `module "${activeModule}"` : 'root module'}</span>
-	</div>
-	<p class="mb-2 text-xs text-[var(--al-muted)]">Select one or more <span class="mono">.tf</span> files, or paste HCL below. Resources, variables, providers and required_providers are reconstructed into the model.</p>
-	<input type="file" multiple accept=".tf,.hcl" class="mb-2 text-xs" onchange={(e) => readFiles(e.currentTarget.files, 'hcl')} />
-	{#if Object.keys(importHclFiles).length > 0}
-		<p class="mb-2 text-xs text-[var(--al-muted)]">Files: {Object.keys(importHclFiles).join(', ')}</p>
-	{/if}
-	<textarea class={ta} rows="12" placeholder="resource &quot;...&quot; ..." bind:value={importHclText}></textarea>
-	{#snippet footer()}
-		<button class={btnGhost} onclick={() => (showImportHcl = false)}>Cancel</button>
-		<button class={btnPrimary} onclick={doImportHcl} disabled={busy === 'import'}>
-			{#if busy === 'import'}<Loader2 size={14} class="animate-spin" />{/if} Import
-		</button>
-	{/snippet}
-</Modal>
+<ImportHclModal
+	bind:open={showImportHcl}
+	bind:text={importHclText}
+	bind:files={importHclFiles}
+	scopeLabel={activeModule ? `module "${activeModule}"` : 'root module'}
+	saving={busy === 'import'}
+	onFiles={(l) => readFiles(l, 'hcl')}
+	onImport={doImportHcl}
+/>
 
 <!-- Import state modal -->
-<Modal title="Import local state" bind:open={showImportState}>
-	<p class="mb-2 text-xs text-[var(--al-muted)]">
-		Select a <span class="mono">terraform.tfstate</span> file or paste its JSON. Managed resources become
-		editable configuration (computed/sensitive values are dropped so the generated config stays valid),
-		<strong class="text-[var(--al-text)]">and the state itself is adopted</strong> as this project's state
-		{#if activeEnv}for environment <span class="mono">{activeEnv}</span>{/if} — so a plan diffs against
-		what already exists instead of proposing to create it all again.
-	</p>
-	<input type="file" accept=".tfstate,.json" class="mb-2 text-xs" onchange={(e) => readFiles(e.currentTarget.files, 'state')} />
-	<textarea class={ta} rows="12" placeholder={'{ "version": 4, "resources": [...] }'} bind:value={importStateText}></textarea>
-	<label class="mt-2 flex items-center gap-2 text-xs text-[var(--al-muted)]">
-		<input type="checkbox" checked={replaceState} onchange={() => (replaceState = !replaceState)} class="accent-[var(--al-accent)]" />
-		Replace the existing state (needed only when this project already tracks resources)
-	</label>
-	{#snippet footer()}
-		<button class={btnGhost} onclick={() => (showImportState = false)}>Cancel</button>
-		<button class={btnPrimary} onclick={doImportState} disabled={busy === 'import'}>
-			{#if busy === 'import'}<Loader2 size={14} class="animate-spin" />{/if} Import
-		</button>
-	{/snippet}
-</Modal>
+<ImportStateModal
+	bind:open={showImportState}
+	bind:text={importStateText}
+	bind:replace={replaceState}
+	envName={activeEnv}
+	saving={busy === 'import'}
+	onFiles={(l) => readFiles(l, 'state')}
+	onImport={doImportState}
+/>
