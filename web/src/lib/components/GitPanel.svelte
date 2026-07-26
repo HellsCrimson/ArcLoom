@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { api } from '$lib/api/client';
+	import { api, CommitPushedError } from '$lib/api/client';
 	import type { GitStatus, GitCommit, GitBranch as GitBranchType, GitCredMeta, Project } from '$lib/types';
 	import Modal from './Modal.svelte';
 	import {
 		GitBranch, GitCommitVertical, History, Loader2, Upload, Download, RotateCcw, Cloud,
-		GitMerge, Trash2, Plus, ArrowUp, ArrowDown, KeyRound
+		GitMerge, Trash2, Plus, ArrowUp, ArrowDown, KeyRound, Undo2, AlertTriangle
 	} from 'lucide-svelte';
 
 	let {
@@ -234,6 +234,53 @@
 		}
 	}
 
+	// --- Undo the last commit (the one history-rewriting operation) ---
+	// Everything else in this panel moves history forward; this drops the newest
+	// commit and hands its files back as uncommitted changes, so a commit made by
+	// mistake can be reworded, split or extended. Guarded by an inline warning
+	// rather than a bare confirm() because it rewrites history, and escalated
+	// when origin already has the commit (the server refuses without force).
+	let undoing = $state(false);
+	let undoPushed = $state(false);
+	// Best-effort local read of "already on origin": a tracking ref exists and we
+	// are not ahead of it. The server decides for real.
+	const lastCommitPushed = $derived(
+		!!status?.hasRemote && !!status?.hasCommits && (status?.ahead ?? 0) === 0
+	);
+
+	function askUndo() {
+		undoing = true;
+		undoPushed = false;
+		err = '';
+		info = '';
+	}
+
+	async function undoLastCommit(force: boolean) {
+		busy = 'undo';
+		err = '';
+		try {
+			const undone = await api.git.undoCommit(projectId, force);
+			undoing = false;
+			undoPushed = false;
+			info = `Undid ${undone.short} — its files are uncommitted changes again${
+				commits.length === 1 ? ' (the repository has no commits now)' : ''
+			}`;
+			selectedCommit = null;
+			await refresh();
+		} catch (e) {
+			if (e instanceof CommitPushedError) {
+				// Stale status: the commit is on origin after all — re-ask with the
+				// stronger warning instead of failing the user's intent outright.
+				undoPushed = true;
+			} else {
+				err = (e as Error).message;
+				undoing = false;
+			}
+		} finally {
+			busy = '';
+		}
+	}
+
 	async function setRemote() {
 		if (!remoteUrl.trim()) return;
 		busy = 'remote';
@@ -384,15 +431,68 @@
 			>
 				<History size={12} /> Working changes
 			</button>
-			{#each commits as c (c.hash)}
+			{#each commits as c, i (c.hash)}
 				<div class="border-b border-[var(--al-border)] px-2.5 py-1.5 text-xs {selectedCommit === c.hash ? 'bg-[var(--al-accent-weak)]' : 'hover:bg-[var(--al-panel-2)]'}">
 					<button class="block w-full text-left" onclick={() => loadDiff(c.hash)}>
 						<div class="truncate text-[var(--al-text)]">{c.message}</div>
-						<div class="mono text-[10px] text-[var(--al-muted)]">{c.short} · {c.author}</div>
+						<div class="mono text-[10px] text-[var(--al-muted)]">{c.short} · {c.author}{#if i === 0}<span class="uppercase"> · head</span>{/if}</div>
 					</button>
-					<button class="mt-1 inline-flex items-center gap-1 text-[10px] text-[var(--al-muted)] hover:text-[var(--al-accent)]" onclick={() => restore(c.hash)} disabled={busy === 'restore'}>
-						<RotateCcw size={10} /> Restore
-					</button>
+					<div class="mt-1 flex items-center gap-2">
+						<button class="inline-flex items-center gap-1 text-[10px] text-[var(--al-muted)] hover:text-[var(--al-accent)]" onclick={() => restore(c.hash)} disabled={busy === 'restore'}>
+							<RotateCcw size={10} /> Restore
+						</button>
+						{#if i === 0 && !undoing}
+							<!-- Only HEAD can be undone: dropping an older commit would mean
+							     rewriting everything on top of it. -->
+							<button
+								class="inline-flex items-center gap-1 text-[10px] text-[var(--al-muted)] hover:text-[var(--al-danger)]"
+								title="Drop this commit and keep its files as uncommitted changes (rewrites history)"
+								onclick={askUndo}
+								disabled={busy !== ''}
+							>
+								<Undo2 size={10} /> Undo commit
+							</button>
+						{/if}
+					</div>
+
+					{#if i === 0 && undoing}
+						<div
+							class="mt-1.5 rounded border p-2 text-[10px] leading-snug"
+							style="border-color:var(--al-danger);background:color-mix(in srgb, var(--al-danger) 10%, transparent);"
+						>
+							<div class="mb-1 flex items-center gap-1 font-semibold text-[var(--al-danger)]">
+								<AlertTriangle size={11} /> This rewrites history
+							</div>
+							<p class="mb-1.5 text-[var(--al-muted)]">
+								<span class="mono text-[var(--al-text)]">{c.short}</span> is dropped from the log.
+								Its files stay on disk as uncommitted changes, so nothing is lost and you can
+								commit again — but the commit itself disappears from the record.
+							</p>
+							{#if undoPushed || lastCommitPushed}
+								<p class="mb-1.5 text-[var(--al-danger)]">
+									This commit is already on <span class="mono">origin</span>. Undoing it locally
+									diverges from the remote, and merge here is fast-forward only — you would have
+									to force-push to reconcile.
+								</p>
+							{/if}
+							<div class="flex items-center gap-2">
+								<button
+									class="rounded px-2 py-0.5 font-semibold text-white"
+									style="background:var(--al-danger);"
+									onclick={() => undoLastCommit(undoPushed || lastCommitPushed)}
+									disabled={busy === 'undo'}
+								>
+									{#if busy === 'undo'}<Loader2 size={10} class="inline animate-spin" />{/if}
+									{undoPushed || lastCommitPushed ? 'Undo anyway' : 'Undo commit'}
+								</button>
+								<button
+									class="text-[var(--al-muted)] hover:text-[var(--al-text)]"
+									onclick={() => { undoing = false; undoPushed = false; }}
+									disabled={busy === 'undo'}>Cancel</button
+								>
+							</div>
+						</div>
+					{/if}
 				</div>
 			{/each}
 			{#if commits.length === 0}

@@ -16,6 +16,7 @@ import (
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	httpauth "github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -259,6 +260,88 @@ func stage(wt *gogit.Worktree, dir string, paths []string) error {
 	return nil
 }
 
+// ErrCommitPushed reports that the commit being undone is already on the
+// origin tracking ref, so dropping it locally would rewrite published history.
+// Callers may proceed by passing force.
+var ErrCommitPushed = errors.New("the last commit is already pushed to origin")
+
+// UndoLastCommit drops the newest commit while keeping every file on disk — the
+// equivalent of `git reset HEAD~1`, so the work reappears as uncommitted changes
+// the user can re-commit differently.
+//
+// ArcLoom otherwise only ever moves history forward (Restore commits a revert
+// rather than rewriting), which is why this is the single rewriting operation
+// and why it refuses a pushed commit unless force is set: undoing locally what
+// origin already has diverges the branch, and merge here is fast-forward only.
+//
+// The ROOT commit is handled too: there is no parent to reset onto, so HEAD's
+// branch ref is deleted and the index emptied, returning the repo to its
+// pre-first-commit state (an unborn branch with everything untracked) instead of
+// failing the way `git reset HEAD~1` does.
+func UndoLastCommit(dir string, force bool) (Commit, error) {
+	repo, err := gogit.PlainOpen(dir)
+	if err != nil {
+		return Commit{}, err
+	}
+	head, err := repo.Head()
+	if err != nil {
+		return Commit{}, fmt.Errorf("no commits to undo")
+	}
+	c, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		return Commit{}, err
+	}
+	// A pushed commit is only detectable when a tracking ref exists; ahead == 0
+	// with one present means origin already has this commit.
+	if !force {
+		if ahead, _ := aheadBehind(repo, head); ahead == 0 {
+			if _, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", head.Name().Short()), true); err == nil {
+				return Commit{}, ErrCommitPushed
+			}
+		}
+	}
+	undone := commitFrom(c)
+
+	if c.NumParents() == 0 {
+		// Root commit: drop the branch ref and empty the index. Files stay on
+		// disk and read back as untracked, which is what the next commit stages.
+		if err := repo.Storer.RemoveReference(head.Name()); err != nil {
+			return Commit{}, fmt.Errorf("remove %s: %w", head.Name(), err)
+		}
+		if err := repo.Storer.SetIndex(&index.Index{Version: 2}); err != nil {
+			return Commit{}, fmt.Errorf("clear index: %w", err)
+		}
+		return undone, nil
+	}
+
+	parent, err := c.Parent(0)
+	if err != nil {
+		return Commit{}, err
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		return Commit{}, err
+	}
+	// MixedReset moves the branch and resets the index but leaves the working
+	// tree alone — the undone content shows up as ordinary uncommitted changes.
+	// A hard reset here would silently delete the user's work.
+	if err := wt.Reset(&gogit.ResetOptions{Commit: parent.Hash, Mode: gogit.MixedReset}); err != nil {
+		return Commit{}, err
+	}
+	return undone, nil
+}
+
+func commitFrom(c *object.Commit) Commit {
+	return Commit{
+		Hash:    c.Hash.String(),
+		Short:   c.Hash.String()[:7],
+		Message: c.Message,
+		Author:  c.Author.Name,
+		Email:   c.Author.Email,
+		Date:    c.Author.When,
+	}
+}
+
 // Log returns up to limit commits, newest first.
 func Log(dir string, limit int) ([]Commit, error) {
 	repo, err := gogit.PlainOpen(dir)
@@ -281,14 +364,7 @@ func Log(dir string, limit int) ([]Commit, error) {
 		if limit > 0 && len(out) >= limit {
 			return storer("stop")
 		}
-		out = append(out, Commit{
-			Hash:    c.Hash.String(),
-			Short:   c.Hash.String()[:7],
-			Message: c.Message,
-			Author:  c.Author.Name,
-			Email:   c.Author.Email,
-			Date:    c.Author.When,
-		})
+		out = append(out, commitFrom(c))
 		return nil
 	})
 	return out, nil

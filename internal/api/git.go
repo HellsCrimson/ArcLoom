@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 
@@ -145,6 +146,34 @@ func (s *Server) handleGitDeleteBranch(w http.ResponseWriter, r *http.Request) {
 // model is re-read from the target branch's arcloom.yaml).
 func (s *Server) handleGitCheckout(w http.ResponseWriter, r *http.Request) {
 	s.gitReloadOp(w, r, git.SwitchBranch)
+}
+
+// handleGitUndoCommit drops the newest commit while keeping every file, so the
+// user can re-commit it differently (message, split, extra changes). This is the
+// only history-rewriting endpoint — everything else moves history forward — so
+// undoing a commit origin already has requires an explicit force: without it the
+// refusal comes back as 409 for the UI to escalate its confirmation.
+//
+// The working tree is untouched, so unlike restore/checkout/merge there is no
+// model to reload; the response is the commit that was undone.
+func (s *Server) handleGitUndoCommit(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var req struct {
+		Force bool `json:"force"`
+	}
+	// An empty body is valid (force defaults to false).
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	undone, err := git.UndoLastCommit(s.projectDir(id), req.Force)
+	if errors.Is(err, git.ErrCommitPushed) {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, undone)
 }
 
 // handleGitMerge fast-forward merges a branch into the current one and returns

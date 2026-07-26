@@ -46,6 +46,10 @@ export class StateImportBlockedError extends Error {
 	}
 }
 
+// CommitPushedError signals that undoing the last commit was refused because
+// origin already has it — rewriting it would diverge from the remote.
+export class CommitPushedError extends Error {}
+
 async function json<T>(res: Response): Promise<T> {
 	if (!res.ok) {
 		on401(res.status);
@@ -459,6 +463,21 @@ export const api = {
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ commit })
 			}).then((r) => json<Project>(r)),
+		// Drops the newest commit, keeping its files as uncommitted changes.
+		// Throws CommitPushedError (409) when origin already has the commit,
+		// unless force is passed — the caller escalates its confirmation.
+		undoCommit: async (id: string, force = false): Promise<GitCommit> => {
+			const r = await fetch(`/api/projects/${id}/git/undo-commit`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ force })
+			});
+			if (r.status === 409) {
+				const b = await r.json().catch(() => ({}) as { error?: string });
+				throw new CommitPushedError(b.error ?? 'the last commit is already pushed');
+			}
+			return json<GitCommit>(r);
+		},
 		setRemote: (id: string, url: string) =>
 			gitAction(`/api/projects/${id}/git/remote`, { url }),
 		push: (id: string, username: string, token: string) =>

@@ -51,6 +51,7 @@ var auditActions = map[string]string{
 	"DELETE /projects/{id}/git/branch":               "git.branch.delete",
 	"POST /projects/{id}/git/checkout":               "git.checkout",
 	"POST /projects/{id}/git/merge":                  "git.merge",
+	"POST /projects/{id}/git/undo-commit":            "git.commit.undo",
 	"PUT /projects/{id}/git/credentials":             "git.credentials.set",
 	"DELETE /projects/{id}/git/credentials":          "git.credentials.delete",
 	"PUT /projects/{id}/acl":                         "acl.set",
