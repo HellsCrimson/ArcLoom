@@ -25,19 +25,24 @@
 		depth?: number;
 	} = $props();
 
-	type Kind = 'object' | 'list' | 'string' | 'number' | 'bool';
+	type Kind = 'object' | 'list' | 'string' | 'number' | 'bool' | 'secret';
 
 	// The kind is read back from the value itself — nothing else records it.
+	// A secret is offered here rather than only behind the leaf's ƒx toggle: a
+	// token inside a provider config object is one of the main reasons to reach
+	// for one, and nobody finds it hidden two clicks deep.
 	const kind = $derived<Kind>(
-		value.entries !== undefined
-			? 'object'
-			: value.items !== undefined
-				? 'list'
-				: typeof value.literal === 'boolean'
-					? 'bool'
-					: typeof value.literal === 'number'
-						? 'number'
-						: 'string'
+		value.mode === 'secret'
+			? 'secret'
+			: value.entries !== undefined
+				? 'object'
+				: value.items !== undefined
+					? 'list'
+					: typeof value.literal === 'boolean'
+						? 'bool'
+						: typeof value.literal === 'number'
+							? 'number'
+							: 'string'
 	);
 
 	// Switching kind rewrites the node: shapes have nothing meaningful in common,
@@ -47,6 +52,21 @@
 	// as a string again — and an unset leaf is pruned on save, silently dropping
 	// the key the user just created.
 	function setKind(k: Kind) {
+		if (k === 'secret') {
+			value.mode = 'secret';
+			value.entries = undefined;
+			value.items = undefined;
+			value.literal = undefined;
+			return;
+		}
+		// Leaving a non-literal mode (secret / reference / expression, the last two
+		// reachable through the leaf's ƒx toggle) drops what only that mode used.
+		if (value.mode !== 'literal') {
+			value.mode = 'literal';
+			value.secretRef = undefined;
+			value.ref = undefined;
+			value.expr = undefined;
+		}
 		value.entries = k === 'object' ? (value.entries ?? []) : undefined;
 		value.items = k === 'list' ? (value.items ?? []) : undefined;
 		if (k === 'object' || k === 'list') {
@@ -63,10 +83,10 @@
 		name: '',
 		widget: kind === 'bool' ? 'checkbox' : kind === 'number' ? 'number' : 'text',
 		type: kind === 'bool' ? 'bool' : kind === 'number' ? 'number' : 'string',
+		sensitive: kind === 'secret',
 		required: false,
 		optional: true,
-		computed: false,
-		sensitive: false
+		computed: false
 	});
 
 	// Duplicate keys would collapse into one HCL attribute (the server rejects the
@@ -116,6 +136,7 @@
 		<option value="string">abc string</option>
 		<option value="number">123 number</option>
 		<option value="bool">✓ bool</option>
+		<option value="secret">🔒 secret</option>
 	</select>
 
 	{#if kind === 'object'}

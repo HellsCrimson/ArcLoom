@@ -41,9 +41,13 @@
 	];
 
 	// A primitive value in a compact collection collapses its mode toggle until
-	// the user opts into an advanced mode (or one is already set on load).
+	// the user opts into an advanced mode. A non-literal mode always expands it —
+	// tracked reactively, not just on mount, because the mode can be set from
+	// outside (the dynamic editor's kind selector picks "secret" directly) and a
+	// collapsed row would then hide the secret picker it needs to show.
 	const collapsible = $derived(compact && !isContainer(field));
-	let advanced = $state(value.mode !== 'literal');
+	let expanded = $state(false);
+	const advanced = $derived(expanded || value.mode !== 'literal');
 
 	function setMode(m: ValueMode) {
 		value.mode = m;
@@ -91,7 +95,7 @@
 			type="button"
 			class="flex-none rounded border border-[var(--al-border)] px-1.5 py-1 text-[11px] italic text-[var(--al-muted)] hover:text-[var(--al-text)]"
 			title="Use a reference, expression or secret instead of a literal"
-			onclick={() => (advanced = true)}
+			onclick={() => (expanded = true)}
 		>
 			ƒx
 		</button>
