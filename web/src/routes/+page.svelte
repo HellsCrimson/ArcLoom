@@ -1589,6 +1589,9 @@
 		title={activeModule ? `Module "${activeModule}" — variables, locals & outputs` : 'Variables, locals & outputs'}
 		bind:open={showConfig}
 		saving={busy === 'config'}
+		{references}
+		secrets={secretNames}
+		onCreateSecret={secretsWritable && auth.can('resources') ? createSecretInline : undefined}
 		onSave={saveConfig}
 	/>
 	<SecretsModal

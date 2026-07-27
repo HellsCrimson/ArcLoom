@@ -185,7 +185,11 @@
 		const agg = { create: 0, update: 0, replace: 0, delete: 0, total: 0 };
 		for (const c of planChanges) {
 			if (c.mode !== 'managed') continue;
-			if (c.moduleAddress !== pref && !c.moduleAddress?.startsWith(pref + '.')) continue;
+			// A for_each'd module call reports moduleAddress as 'module.team["alpha"]',
+			// so the instance key must be stripped here too — comparing it raw matches
+			// neither `module.team` nor `module.team.`, and the card read 0 changes.
+			const ma = stripIndex(c.moduleAddress ?? '');
+			if (ma !== pref && !ma.startsWith(pref + '.')) continue;
 			if (c.action in agg) {
 				agg[c.action as keyof typeof agg]++;
 				agg.total++;
