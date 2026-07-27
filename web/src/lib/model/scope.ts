@@ -84,3 +84,30 @@ export function providerForType(project: Project | null, type: string, fallback:
 export function providerVersionForSource(project: Project | null, source: string): string | undefined {
 	return project?.providers?.find((p) => p.source === source && p.version)?.version;
 }
+
+// referenceGroups buckets the reference picker's flat address list by what each
+// address IS, so a project with many resources still yields a readable
+// <optgroup> menu. The kind is derived from the address prefix rather than
+// carried alongside it — same trick as secretGroups() — which keeps the
+// `references: string[]` contract that every form editor is threaded with.
+//
+// Order is authoring order, not alphabetical: the values you parameterise a
+// resource with (variables, locals) come before the things you wire it to.
+const REFERENCE_GROUPS: { label: string; match: (ref: string) => boolean }[] = [
+	{ label: 'Variables', match: (r) => r.startsWith('var.') },
+	{ label: 'Locals', match: (r) => r.startsWith('local.') },
+	{ label: 'Modules', match: (r) => r.startsWith('module.') },
+	{ label: 'Data sources', match: (r) => r.startsWith('data.') },
+	{ label: 'Resources', match: () => true }
+];
+
+export function referenceGroups(refs: string[]): { group: string; refs: string[] }[] {
+	const buckets = new Map<string, string[]>();
+	for (const ref of refs) {
+		const label = REFERENCE_GROUPS.find((g) => g.match(ref))!.label;
+		buckets.set(label, [...(buckets.get(label) ?? []), ref]);
+	}
+	return REFERENCE_GROUPS.map((g) => ({ group: g.label, refs: buckets.get(g.label) ?? [] })).filter(
+		(g) => g.refs.length > 0
+	);
+}

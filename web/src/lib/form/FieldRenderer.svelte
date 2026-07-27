@@ -8,6 +8,7 @@
 	import PlainField from './PlainField.svelte';
 	import { ensureLiteralShape, isContainer } from './defaults';
 	import { joinSecretName, secretGroups } from '$lib/secretPath';
+	import { referenceGroups } from '$lib/model/scope';
 	import { Loader2, Plus } from 'lucide-svelte';
 
 	let {
@@ -118,10 +119,16 @@
 
 	{#if value.mode === 'reference'}
 		{#if references.length > 0}
+			<!-- Grouped by what the address is (variables / locals / modules /
+			     data / resources), like the secret picker below. -->
 			<select class={inputCls} bind:value={value.ref}>
 				<option value="" disabled selected={!value.ref}>Select a reference…</option>
-				{#each references as ref (ref)}
-					<option value={ref}>{ref}</option>
+				{#each referenceGroups(references) as g (g.group)}
+					<optgroup label={g.group}>
+						{#each g.refs as ref (ref)}
+							<option value={ref}>{ref}</option>
+						{/each}
+					</optgroup>
 				{/each}
 			</select>
 		{:else}

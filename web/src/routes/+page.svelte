@@ -216,16 +216,20 @@
 		providerSig; // track
 		if (project) void loadProviderUpdates();
 	});
+	// Everything referenceable from the ACTIVE scope. Variables and locals belong
+	// to whichever scope declares them — the root's were missing entirely, so
+	// `var.x` could only be reached by switching to Expression and typing it.
 	const references = $derived.by(() => {
 		const refs: string[] = [];
 		for (const r of savedResources) refs.push(`${r.type}.${r.name}.id`, `${r.type}.${r.name}.result`);
 		for (const d of savedDataSources) refs.push(`data.${d.type}.${d.name}.id`);
+		const scope = activeMod ?? project;
+		for (const v of scope?.variables ?? []) refs.push(`var.${v.name}`);
+		for (const l of scope?.locals ?? []) refs.push(`local.${l.name}`);
 		if (!activeMod) {
-			// From the root you can reference each module's outputs.
+			// From the root you can reference each module's outputs. (A module
+			// cannot reference the root's, so this stays root-only.)
 			for (const m of localModules) for (const o of m.outputs ?? []) refs.push(`module.${m.name}.${o.name}`);
-		} else {
-			// Inside a module you can reference its own input variables.
-			for (const v of activeMod.variables ?? []) refs.push(`var.${v.name}`);
 		}
 		return refs;
 	});

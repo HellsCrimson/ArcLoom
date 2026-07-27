@@ -1,8 +1,10 @@
 <script lang="ts">
-	import type { AttrValue, ProjectConfig } from '$lib/types';
+	import type { AttrValue, Field, ProjectConfig } from '$lib/types';
 	import Modal from './Modal.svelte';
 	import DynamicEditor from '$lib/form/DynamicEditor.svelte';
-	import { rawToDynamic } from '$lib/form/defaults';
+	import FieldRenderer from '$lib/form/FieldRenderer.svelte';
+	import { rawToDynamic, ensureLiteralShape, isContainer } from '$lib/form/defaults';
+	import { parseHclType } from '$lib/model/hcltype';
 	import { cleanAttr } from '$lib/form/attrs';
 	import { Plus, Trash2, Loader2, Braces, Code2 } from 'lucide-svelte';
 
@@ -56,11 +58,13 @@
 
 	// A value opens in the structural editor when it IS a structure — an already
 	// structural AttrValue, a container literal (how hclimport stores an all-literal
-	// `{ alpha = { … } }`, which used to render as one line of JSON), or a secret
-	// (whose text form is '' — rendering it as text silently wiped it on save).
-	// Scalars stay in the one-line HCL box: the common `default = "prod"` should
-	// not cost a kind selector.
-	function wantsStructured(av?: AttrValue): boolean {
+	// `{ alpha = { … } }`, which used to render as one line of JSON), a secret
+	// (whose text form is '' — rendering it as text silently wiped it on save), or
+	// a variable whose DECLARED TYPE is a container, so a freshly typed
+	// `map(object({…}))` opens ready to take entries. Scalars stay in the one-line
+	// HCL box: the common `default = "prod"` should not cost a kind selector.
+	function wantsStructured(av?: AttrValue, typed?: Field | null): boolean {
+		if (typed && isContainer(typed) && typed.widget !== 'dynamic') return true;
 		if (!av) return false;
 		if (av.mode === 'secret') return true;
 		if (av.entries !== undefined || av.items !== undefined) return true;
@@ -68,21 +72,32 @@
 	}
 
 	// Build both representations up front so the per-row toggle is lossless.
-	function toRow(av?: AttrValue): ValueRow {
-		const structured = wantsStructured(av);
+	// `type` is the variable's declared HCL type, when it has one.
+	function toRow(av?: AttrValue, type?: string): ValueRow {
+		const typed = parseHclType(type);
+		const structured = wantsStructured(av, typed);
 		return {
 			text: structured ? '' : attrText(av),
-			struct: structured ? structFrom(av!) : { mode: 'literal', entries: [] },
+			struct: structFrom(av, typed),
 			structured
 		};
 	}
-	// rawToDynamic lifts a container literal into entries/items; an AttrValue that
-	// is already structural (or a secret) is taken as-is.
-	function structFrom(av: AttrValue): AttrValue {
-		if (av.mode === 'literal' && av.entries === undefined && av.items === undefined) {
+	// With a parsed type, the shape comes from the TYPE (ensureLiteralShape walks
+	// the field, so an imported object literal is lifted into the declared
+	// attributes rather than only the keys that happen to be present). Without
+	// one, rawToDynamic infers it from the value.
+	function structFrom(av: AttrValue | undefined, typed?: Field | null): AttrValue {
+		const base: AttrValue = av
+			? JSON.parse(JSON.stringify(av))
+			: { mode: 'literal', ...(typed ? {} : { entries: [] }) };
+		if (typed) {
+			ensureLiteralShape(typed, base);
+			return base;
+		}
+		if (av && av.mode === 'literal' && av.entries === undefined && av.items === undefined) {
 			return rawToDynamic(av.literal);
 		}
-		return JSON.parse(JSON.stringify(av));
+		return base;
 	}
 	function rowToAttr(row: ValueRow): AttrValue | undefined {
 		return row.structured ? cleanAttr(row.struct) : textToAttr(row.text);
@@ -90,8 +105,14 @@
 	const rowFilled = (row: ValueRow) => rowToAttr(row) !== undefined;
 
 	// Toggling keeps the other representation untouched, so a mis-click is undone
-	// by clicking back rather than by retyping.
-	function toggleStructured(row: ValueRow) {
+	// by clicking back rather than by retyping. Turning it ON re-seeds the shape
+	// from the CURRENT type, which is what makes editing the type box and then
+	// switching produce the declared attributes rather than an empty object.
+	function toggleStructured(row: ValueRow, type?: string) {
+		if (!row.structured) {
+			const typed = parseHclType(type);
+			if (typed) ensureLiteralShape(typed, row.struct);
+		}
 		row.structured = !row.structured;
 	}
 
@@ -101,7 +122,7 @@
 		vars = (config.variables ?? []).map((v) => ({
 			name: v.name,
 			type: v.type ?? '',
-			def: toRow(v.default),
+			def: toRow(v.default, v.type),
 			description: v.description ?? '',
 			sensitive: !!v.sensitive
 		}));
@@ -155,23 +176,34 @@
   Structured mode drops onto its own line: a nested object needs the full width,
   and it grows vertically, so it cannot share the flex row with the name/type.
 -->
-{#snippet valueEditor(row: ValueRow, placeholder: string)}
+{#snippet valueEditor(row: ValueRow, placeholder: string, refs: string[] = references, type?: string)}
 	{#if row.structured}
+		{@const typed = parseHclType(type)}
 		<div class="min-w-0 flex-1">
-			<DynamicEditor bind:value={row.struct} {references} {secrets} {onCreateSecret} />
+			{#if typed}
+				<!-- The declared type drives the widgets: a map(object({…})) edits as
+				     keyed rows whose values already carry the declared attributes,
+				     instead of DynamicEditor's shape-from-the-value guess. -->
+				<FieldRenderer field={typed} bind:value={row.struct} references={refs} {secrets} {onCreateSecret} />
+			{:else}
+				<DynamicEditor bind:value={row.struct} references={refs} {secrets} {onCreateSecret} />
+			{/if}
 		</div>
 	{:else}
 		<input class={mono + ' min-w-0 flex-1'} {placeholder} bind:value={row.text} />
 	{/if}
 {/snippet}
 
-{#snippet structToggle(row: ValueRow)}
+{#snippet structToggle(row: ValueRow, type?: string)}
+	{@const typed = parseHclType(type)}
 	<button
 		class="shrink-0 rounded p-1 text-[var(--al-muted)] hover:text-[var(--al-accent)]"
-		onclick={() => toggleStructured(row)}
+		onclick={() => toggleStructured(row, type)}
 		title={row.structured
 			? 'Edit as raw HCL text'
-			: 'Edit as a structure (object / list) — for map or object values such as a for_each collection'}
+			: typed
+				? `Edit as a structure, using the declared type (${type})`
+				: 'Edit as a structure (object / list) — for map or object values such as a for_each collection'}
 		aria-label={row.structured ? 'Edit as raw HCL' : 'Edit as a structure'}
 	>
 		{#if row.structured}<Code2 size={13} />{:else}<Braces size={13} />{/if}
@@ -188,8 +220,10 @@
 					<div class="flex items-start gap-1.5">
 						<input class={mono + ' mt-0 w-28 shrink-0'} placeholder="name" bind:value={v.name} />
 						<input class={mono + ' w-28 shrink-0'} placeholder="type" bind:value={v.type} title={'HCL type, e.g. string or map(object({ name = string }))'} />
-						{@render valueEditor(v.def, 'default (HCL)')}
-						{@render structToggle(v.def)}
+						<!-- No references: a variable default must be a constant — Terraform
+						     forbids referring to any other value from it. -->
+						{@render valueEditor(v.def, 'default (HCL)', [], v.type)}
+						{@render structToggle(v.def, v.type)}
 						<label class="flex shrink-0 items-center gap-1 pt-1.5 text-[10px] text-[var(--al-muted)]" title="sensitive">
 							<input type="checkbox" class="h-3 w-3 accent-[var(--al-accent)]" bind:checked={v.sensitive} /> sens
 						</label>
@@ -197,7 +231,7 @@
 					</div>
 				{/each}
 			</div>
-			<button class={addBtn + ' mt-1.5'} onclick={() => (vars = [...vars, { name: '', type: 'string', def: toRow(undefined), description: '', sensitive: false }])}><Plus size={12} /> Add variable</button>
+			<button class={addBtn + ' mt-1.5'} onclick={() => (vars = [...vars, { name: '', type: 'string', def: toRow(undefined, 'string'), description: '', sensitive: false }])}><Plus size={12} /> Add variable</button>
 		</section>
 
 		<!-- Locals -->
