@@ -940,15 +940,30 @@
 		error = '';
 		busy = 'save';
 		try {
+			const alias = form.providerAlias.trim();
+			const before = providers.find((p) => p.key === form.providerKey && (p.alias ?? '') === alias);
+			const version = form.providerFormVersion.trim();
 			project = await api.setProviderConfig(project.id, form.providerKey, {
-				alias: form.providerAlias.trim() || undefined,
-				source: form.providerSource,
+				alias: alias || undefined,
+				// The form's own source, NOT form.providerSource — that one is the
+				// palette selector and the sidebar's add box binds to it.
+				source: form.providerFormSource.trim(),
+				// Always sent (never undefined) so clearing the box unpins.
+				version,
 				config: buildAttrs(form.values)
 			});
-			form.providerAlias = form.providerAlias.trim();
+			form.providerAlias = alias;
 			form.providerAliasNew = false;
 			await refreshProjects();
 			await refreshHcl();
+			// A different pin can mean a different schema (the schema cache keys on
+			// the version constraint), so reload it rather than leave stale fields.
+			if (before && (before.version ?? '') !== version) {
+				const updated = (project.providers ?? []).find(
+					(p) => p.key === form.providerKey && (p.alias ?? '') === alias
+				);
+				if (updated) await configureProvider(updated);
+			}
 		} catch (err) {
 			error = (err as Error).message;
 		} finally {

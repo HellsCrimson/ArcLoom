@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	goversion "github.com/hashicorp/go-version"
 
 	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
@@ -108,6 +109,24 @@ func (s *Server) handleSetProviderConfig(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, "invalid alias (must be an identifier)")
 		return
 	}
+	// The source is user-editable from the provider form, and it flows into a
+	// generated config AND becomes an HCL identifier via providerKeyFromSource,
+	// so it gets the same guard as every other provider route.
+	source := strings.TrimSpace(req.Source)
+	if source != "" && !validProviderSource(source) {
+		writeErr(w, http.StatusBadRequest, "invalid provider source (expected [host/][namespace/]type)")
+		return
+	}
+	// A malformed constraint would otherwise fail on every engine op instead of
+	// here — same reasoning as required_version in handleSetTerraform.
+	if req.Version != nil {
+		if v := strings.TrimSpace(*req.Version); v != "" {
+			if _, verr := goversion.NewConstraint(v); verr != nil {
+				writeErr(w, http.StatusBadRequest, "invalid version constraint: "+verr.Error())
+				return
+			}
+		}
+	}
 	config, err := attrsToModel(req.Config)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -118,18 +137,22 @@ func (s *Server) handleSetProviderConfig(w http.ResponseWriter, r *http.Request)
 		for i := range p.Providers {
 			if p.Providers[i].Key == key && p.Providers[i].Alias == req.Alias {
 				p.Providers[i].Config = config
-				if req.Source != "" {
-					p.Providers[i].Source = req.Source
+				if source != "" {
+					p.Providers[i].Source = source
 				}
-				if req.Version != "" {
-					p.Providers[i].Version = req.Version
+				// nil = leave the pin alone; "" = unpin.
+				if req.Version != nil {
+					p.Providers[i].Version = strings.TrimSpace(*req.Version)
 				}
 				return nil
 			}
 		}
 		// Instance not yet on the project: add it. An aliased instance inherits
 		// source/version from the key's default instance unless overridden.
-		source, version := req.Source, req.Version
+		version := ""
+		if req.Version != nil {
+			version = strings.TrimSpace(*req.Version)
+		}
 		for _, prov := range p.Providers {
 			if prov.Key == key && prov.Alias == "" {
 				if source == "" {

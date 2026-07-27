@@ -113,6 +113,31 @@
 			{/if}
 			{#if canResources}<button class={btnPrimary + ' ml-auto'} onclick={onSaveProvider} disabled={saving || (form.providerAliasNew && !form.providerAlias.trim())}><Save size={15} /> Save provider config</button>{/if}
 		</div>
+		<!--
+		  required_providers, edited where the data lives. ArcLoom keeps source and
+		  version on each ProviderInstance and hclgen assembles the terraform
+		  block's required_providers from them, so this IS that block's entry —
+		  there is no separate place to edit it.
+		-->
+		<div class="mb-4 flex flex-wrap items-end gap-3 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-3 py-2">
+			<span class="pb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--al-muted)]">required_providers</span>
+			<div>
+				<label for="provider-src" class="mb-1 block text-xs text-[var(--al-muted)]" title="registry address — [host/][namespace/]type">source</label>
+				<input id="provider-src" class="mono w-56 rounded-md border border-[var(--al-border)] bg-[var(--al-panel)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={form.providerFormSource} placeholder="hashicorp/null" disabled={!canResources} />
+			</div>
+			<div>
+				<label for="provider-ver" class="mb-1 block text-xs text-[var(--al-muted)]" title="version constraint, e.g. 3.2.1 or ~> 3.2 — empty means latest">version</label>
+				<input id="provider-ver" class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={form.providerFormVersion} placeholder="latest (unpinned)" disabled={!canResources} />
+			</div>
+			{#if form.providerFormVersion.trim() && canResources}
+				<button
+					class="pb-2 text-xs text-[var(--al-muted)] underline hover:text-[var(--al-accent)]"
+					onclick={() => (form.providerFormVersion = '')}
+					title="Remove the version constraint so the newest release is used"
+				>unpin</button>
+			{/if}
+			<span class="pb-1.5 text-[11px] text-[var(--al-muted)]">Saved with the config. One <span class="mono">required_providers</span> entry is emitted per provider key.</span>
+		</div>
 		{#if (form.schema.fields?.length ?? 0) === 0}
 			<p class="text-sm text-[var(--al-muted)]">This provider has no configurable arguments.</p>
 		{:else}

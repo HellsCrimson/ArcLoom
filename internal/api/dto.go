@@ -129,9 +129,13 @@ type providerRequest struct {
 // Alias selects (or creates) an aliased instance of the provider; empty targets
 // the default instance.
 type providerConfigRequest struct {
-	Alias   string                  `json:"alias,omitempty"`
-	Source  string                  `json:"source,omitempty"`
-	Version string                  `json:"version,omitempty"`
+	Alias  string `json:"alias,omitempty"`
+	Source string `json:"source,omitempty"` // "" leaves the stored source alone
+	// Version is a POINTER so the three cases stay distinct: absent = leave the
+	// pin alone (what every caller before the provider form did), "" = unpin
+	// explicitly, "x" = pin. With a plain string there was no way to clear a
+	// version constraint through this endpoint at all.
+	Version *string                 `json:"version,omitempty"`
 	Config  map[string]attrValueDTO `json:"config"`
 }
 

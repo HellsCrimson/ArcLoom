@@ -40,6 +40,14 @@ class ResourceFormStore {
 	// provider meta-arg ("aws.euwest"); '' = the type's default provider.
 	provider = $state('');
 
+	// The provider FORM's own source/version, separate from `providerSource`
+	// above — that one is the palette selector (it drives the schema fetch and
+	// the sidebar's add-provider box). Sharing the two meant typing a different
+	// source into the sidebar while a provider form was open, then saving,
+	// silently rewrote that provider's source.
+	providerFormSource = $state('');
+	providerFormVersion = $state('');
+
 	// Everything a project switch clears. Deliberately does NOT touch
 	// providerSource.
 	resetAll(): void {
@@ -49,6 +57,8 @@ class ResourceFormStore {
 		this.providerKey = '';
 		this.providerAlias = '';
 		this.providerAliasNew = false;
+		this.providerFormSource = '';
+		this.providerFormVersion = '';
 		this.formKind = 'resource';
 		this.values = {};
 		this.name = 'example';
@@ -73,6 +83,8 @@ class ResourceFormStore {
 		this.providerKey = '';
 		this.providerAlias = '';
 		this.providerAliasNew = false;
+		this.providerFormSource = '';
+		this.providerFormVersion = '';
 		this.formKind = 'resource';
 		this.values = {};
 	}
@@ -117,7 +129,9 @@ class ResourceFormStore {
 		this.providerKey = prov.key;
 		this.providerAlias = prov.alias ?? '';
 		this.providerAliasNew = false;
-		this.providerSource = prov.source;
+		this.providerSource = prov.source; // palette follows the provider being edited
+		this.providerFormSource = prov.source;
+		this.providerFormVersion = prov.version ?? '';
 		this.editingId = null;
 		this.selectedType = '';
 	}

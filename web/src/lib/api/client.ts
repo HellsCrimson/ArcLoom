@@ -83,6 +83,7 @@ export const api = {
 	setProviderConfig: (
 		projectId: string,
 		key: string,
+		// version: omit to leave the pin alone, '' to unpin, 'x' to pin.
 		body: { alias?: string; source?: string; version?: string; config: Record<string, AttrValue> }
 	) =>
 		fetch(`/api/projects/${projectId}/providers/${encodeURIComponent(key)}`, {
