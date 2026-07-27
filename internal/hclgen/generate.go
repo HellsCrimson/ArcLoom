@@ -273,9 +273,35 @@ func writeOutputBlock(body *hclwrite.Body, o model.Output) error {
 	return nil
 }
 
+// writeModuleMeta emits the count / for_each meta-arguments of a module call.
+// They lead the block, matching writeBlockWithKeyword's treatment of resources.
+func writeModuleMeta(b *hclwrite.Body, name, count, forEach string) error {
+	if count != "" && forEach != "" {
+		return fmt.Errorf("module %q: count and for_each are mutually exclusive", name)
+	}
+	if count != "" {
+		toks, err := tokensForExpr(count)
+		if err != nil {
+			return fmt.Errorf("module %q count: %w", name, err)
+		}
+		b.SetAttributeRaw("count", toks)
+	}
+	if forEach != "" {
+		toks, err := tokensForExpr(forEach)
+		if err != nil {
+			return fmt.Errorf("module %q for_each: %w", name, err)
+		}
+		b.SetAttributeRaw("for_each", toks)
+	}
+	return nil
+}
+
 func writeModuleBlock(body *hclwrite.Body, m model.Module) error {
 	blk := body.AppendNewBlock("module", []string{m.Name})
 	b := blk.Body()
+	if err := writeModuleMeta(b, m.Name, m.Count, m.ForEach); err != nil {
+		return err
+	}
 	b.SetAttributeValue("source", cty.StringVal(m.Source))
 	if m.Version != "" {
 		b.SetAttributeValue("version", cty.StringVal(m.Version))
@@ -288,6 +314,9 @@ func writeModuleBlock(body *hclwrite.Body, m model.Module) error {
 func writeLocalModuleCall(body *hclwrite.Body, lm model.LocalModule) error {
 	blk := body.AppendNewBlock("module", []string{lm.Name})
 	b := blk.Body()
+	if err := writeModuleMeta(b, lm.Name, lm.Count, lm.ForEach); err != nil {
+		return err
+	}
 	b.SetAttributeValue("source", cty.StringVal("./modules/"+lm.Name))
 	return writeAttrs(b, lm.Inputs)
 }

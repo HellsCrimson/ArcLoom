@@ -709,6 +709,22 @@
 	{/if}
 {/snippet}
 
+<!--
+  multiPill — the ×N / ∀ multiplicity badge. Shared by resource/data cards and
+  by all three module node shapes (expanded box, collapsed box, registry card),
+  so a module's count/for_each reads exactly like a resource's on the canvas.
+  Positioned absolute, so the caller's node must be the positioned ancestor.
+-->
+{#snippet multiPill(multi: { label: string; title: string } | undefined, color: string)}
+	{#if multi}
+		<div
+			class="font-mono"
+			title={multi.title}
+			style="position:absolute;right:-7px;bottom:-9px;padding:2px 6px;border-radius:8px;background:#0d1117;border:1px solid rgba(255,255,255,0.18);font-size:10px;font-weight:800;color:{color};z-index:4;pointer-events:none;"
+		>{multi.label}</div>
+	{/if}
+{/snippet}
+
 {#snippet card(id: string, x: number, y: number, name: string, type: string, color: string, letter: string, selected: boolean, draggable: boolean, scope: string | undefined, change: string | undefined, multi: { label: string; title: string } | undefined, kind: ResourceKind = 'resource')}
 	{@const isData = kind === 'data'}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -758,13 +774,7 @@
 				style="position:absolute;left:-7px;top:-7px;width:16px;height:16px;border-radius:50%;background:{ACTION_COLOR[change]};color:#0a0e15;font-size:11px;font-weight:800;line-height:1;display:flex;align-items:center;justify-content:center;z-index:4;"
 			>{ACTION_SYMBOL[change]}</div>
 		{/if}
-		{#if multi}
-			<div
-				class="font-mono"
-				title={multi.title}
-				style="position:absolute;right:-7px;bottom:-9px;padding:2px 6px;border-radius:8px;background:#0d1117;border:1px solid rgba(255,255,255,0.18);font-size:10px;font-weight:800;color:{color};z-index:4;pointer-events:none;"
-			>{multi.label}</div>
-		{/if}
+		{@render multiPill(multi, color)}
 		<div title="Drag to connect (depends_on{scope ? ', within this module' : ''})" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'out', scope)} onmouseup={(e) => onDotUp(e, id, 'out', scope)}></div>
 		<div title="Drop a connection here" role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{color};border:2px solid #0a0e15;cursor:crosshair;z-index:3;" onmousedown={(e) => onDotDown(e, id, 'in', scope)} onmouseup={(e) => onDotUp(e, id, 'in', scope)}></div>
 		<!-- annotation badge: solid when a note exists, otherwise revealed on card hover -->
@@ -919,6 +929,7 @@
 							<div class="pointer-events-none absolute inset-x-0 flex justify-center text-[11px] text-white/25" style="top:{MOD_HEADER_H + 12}px;">empty module</div>
 						{/if}
 						{@render modBadge(moduleChangeCounts(mb.name))}
+						{@render multiPill(multiBadge(mb.lm), accent)}
 					</div>
 				{:else}
 					<!-- collapsed module node -->
@@ -942,6 +953,7 @@
 						<div title="Drag to connect (depends_on)" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{accent};border:2px solid #0a0e15;z-index:3;"></div>
 						<div role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{accent};border:2px solid #0a0e15;z-index:3;"></div>
 						{@render modBadge(moduleChangeCounts(mb.name))}
+						{@render multiPill(multiBadge(mb.lm), accent)}
 					</div>
 				{/if}
 			{/each}
@@ -996,6 +1008,7 @@
 					<div role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{REGISTRY_MODULE_COLOR};border:2px solid #0a0e15;z-index:3;"></div>
 					<div role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{REGISTRY_MODULE_COLOR};border:2px solid #0a0e15;z-index:3;"></div>
 					{@render modBadge(moduleChangeCounts(node.name))}
+					{@render multiPill(multiBadge(node), REGISTRY_MODULE_COLOR)}
 				</div>
 			{/each}
 

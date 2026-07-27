@@ -651,8 +651,11 @@
 		form.resetForm();
 	}
 
-	// Draft values for the module-inputs modal (raw HCL text per variable).
+	// Draft values for the module-inputs modal (raw HCL text per variable) plus
+	// the call's count/for_each meta-args, which the save must always resend.
 	let inputDraft = $state<Record<string, string>>({});
+	let inputCount = $state('');
+	let inputForEach = $state('');
 	$effect(() => {
 		if (showInputs && activeMod) {
 			const d: Record<string, string> = {};
@@ -660,6 +663,8 @@
 				d[v.name] = attrToText(activeMod.inputs?.[v.name]);
 			}
 			inputDraft = d;
+			inputCount = activeMod.count ?? '';
+			inputForEach = activeMod.forEach ?? '';
 		}
 	});
 
@@ -671,6 +676,8 @@
 	let rmSource = $state('');
 	let rmVersion = $state('');
 	let rmRows = $state<{ key: string; expr: string }[]>([]);
+	let rmCount = $state('');
+	let rmForEach = $state('');
 
 	function openRegModule(m?: Module) {
 		rmEditing = m?.name ?? null;
@@ -678,6 +685,8 @@
 		rmSource = m?.source ?? '';
 		rmVersion = m?.version ?? '';
 		rmRows = m?.config ? Object.entries(m.config).map(([key, av]) => ({ key, expr: attrToText(av) })) : [];
+		rmCount = m?.count ?? '';
+		rmForEach = m?.forEach ?? '';
 		showRegModule = true;
 	}
 
@@ -695,7 +704,9 @@
 				name: rmName.trim(),
 				source: rmSource.trim(),
 				version: rmVersion.trim() || undefined,
-				config
+				config,
+				count: rmCount.trim(),
+				forEach: rmForEach.trim()
 			});
 			await refreshProjects();
 			await refreshHcl();
@@ -725,14 +736,19 @@
 			const t = (text ?? '').trim();
 			if (t) inputs[k] = { mode: 'expression', expr: t };
 		}
-		saveModuleInputs(inputs);
+		saveModuleInputs(inputs, { count: inputCount.trim(), forEach: inputForEach.trim() });
 	}
 
-	async function saveModuleInputs(inputs: Record<string, AttrValue>) {
+	// meta is REQUIRED: this replaces the whole module call, so a caller that
+	// omitted count/forEach would silently drop them.
+	async function saveModuleInputs(
+		inputs: Record<string, AttrValue>,
+		meta: { count: string; forEach: string }
+	) {
 		if (!project || !activeModule) return;
 		busy = 'inputs';
 		try {
-			project = await api.setModuleInputs(project.id, activeModule, inputs);
+			project = await api.setModuleInputs(project.id, activeModule, inputs, meta);
 			await refreshProjects();
 			await refreshHcl();
 			showInputs = false;
@@ -1682,6 +1698,8 @@
 		bind:source={rmSource}
 		bind:version={rmVersion}
 		bind:rows={rmRows}
+		bind:count={rmCount}
+		bind:forEach={rmForEach}
 		saving={busy === 'regmodule'}
 		onSave={saveRegModule}
 	/>
@@ -1693,6 +1711,8 @@
 			moduleName={activeMod.name}
 			variables={activeMod.variables ?? []}
 			bind:draft={inputDraft}
+			bind:count={inputCount}
+			bind:forEach={inputForEach}
 			saving={busy === 'inputs'}
 			onSave={submitInputs}
 		/>

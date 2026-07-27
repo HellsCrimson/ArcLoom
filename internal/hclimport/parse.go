@@ -225,6 +225,11 @@ func linkLocalModules(res *Result, locals map[string]*model.LocalModule, order *
 		if lm.Inputs == nil && len(m.Config) > 0 {
 			lm.Inputs = m.Config
 		}
+		// The call's meta-args ride with its arguments: same first-call-wins
+		// rule, so a second call to the same folder can't overwrite them.
+		if lm.Count == "" && lm.ForEach == "" {
+			lm.Count, lm.ForEach = m.Count, m.ForEach
+		}
 		if m.Name != folder {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("module call %q references %q; imported as local module %q (ArcLoom couples the call name to the folder)", m.Name, m.Source, folder))
 		}
@@ -439,6 +444,12 @@ func importModule(blk *hclsyntax.Block, src []byte) model.Module {
 			m.Source = literalString(attr.Expr)
 		case "version":
 			m.Version = literalString(attr.Expr)
+		// count / for_each are meta-arguments of the call, not module inputs:
+		// keep them as raw expression text, like importResource does.
+		case "count":
+			m.Count = rawSource(attr.Expr, src)
+		case "for_each":
+			m.ForEach = rawSource(attr.Expr, src)
 		default:
 			m.Config[name] = importExpr(attr.Expr, src)
 		}

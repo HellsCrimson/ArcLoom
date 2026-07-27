@@ -22,6 +22,8 @@
 		source = $bindable(''),
 		version = $bindable(''),
 		rows = $bindable<{ key: string; expr: string }[]>([]),
+		count = $bindable(''),
+		forEach = $bindable(''),
 		saving = false,
 		onSave
 	}: {
@@ -31,6 +33,8 @@
 		source?: string;
 		version?: string;
 		rows?: { key: string; expr: string }[];
+		count?: string;
+		forEach?: string;
 		saving?: boolean;
 		onSave: () => void;
 	} = $props();
@@ -51,6 +55,19 @@
 				<label for="rm-version" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Version</label>
 				<input id="rm-version" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="~> 5.0" bind:value={version} />
 			</div>
+		</div>
+		<div class="flex items-end gap-3">
+			<div>
+				<label for="rm-count" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]" title="count meta-argument — an HCL expression, e.g. 3 or var.replicas">count</label>
+				<input id="rm-count" class="mono w-28 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" placeholder="3 · var.n" bind:value={count} disabled={forEach.trim() !== ''} />
+			</div>
+			<div>
+				<label for="rm-foreach" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]" title="for_each meta-argument — a set or map expression, e.g. var.teams">for_each</label>
+				<input id="rm-foreach" class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" placeholder="var.teams · toset([…])" bind:value={forEach} disabled={count.trim() !== ''} />
+			</div>
+			{#if count.trim() !== '' || forEach.trim() !== ''}
+				<p class="pb-1.5 text-xs text-[var(--al-muted)]">Inputs can use <span class="mono">{count.trim() !== '' ? 'count.index' : 'each.key'}</span>.</p>
+			{/if}
 		</div>
 		<div>
 			<div class="mb-1 flex items-center justify-between">

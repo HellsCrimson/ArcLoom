@@ -51,6 +51,12 @@ type LocalModule struct {
 	// Inputs are the values the root passes to this module (keyed by the
 	// module's variable names).
 	Inputs map[string]AttrValue `json:"inputs,omitempty" yaml:"inputs,omitempty"`
+	// Count and ForEach are the count / for_each meta-arguments on the root's
+	// call to this module, stored as raw HCL expressions. At most one may be
+	// set. They belong to the *call*, not the module body — the module's own
+	// resources see them only through `each.*` / `count.index` in Inputs.
+	Count   string `json:"count,omitempty" yaml:"count,omitempty"`
+	ForEach string `json:"forEach,omitempty" yaml:"forEach,omitempty"`
 }
 
 // Variable is an input variable (variable "name" {}).
@@ -82,6 +88,12 @@ type Module struct {
 	Source  string               `json:"source" yaml:"source"`
 	Version string               `json:"version,omitempty" yaml:"version,omitempty"`
 	Config  map[string]AttrValue `json:"config,omitempty" yaml:"config,omitempty"`
+	// Count and ForEach are the count / for_each meta-arguments, stored as raw
+	// HCL expressions ("var.teams", `toset(["a", "b"])`). At most one may be
+	// set. Without these fields an imported for_each survives only as a fake
+	// Config entry, which the inputs form then silently deletes.
+	Count   string `json:"count,omitempty" yaml:"count,omitempty"`
+	ForEach string `json:"forEach,omitempty" yaml:"forEach,omitempty"`
 }
 
 // ProviderInstance is a configured provider within a project.

@@ -298,7 +298,14 @@ export const api = {
 
 	setRegistryModule: (
 		projectId: string,
-		body: { name: string; source: string; version?: string; config: Record<string, AttrValue> }
+		body: {
+			name: string;
+			source: string;
+			version?: string;
+			config: Record<string, AttrValue>;
+			count?: string;
+			forEach?: string;
+		}
 	) =>
 		fetch(`/api/projects/${projectId}/modules/registry`, {
 			method: 'PUT',
@@ -311,11 +318,18 @@ export const api = {
 			method: 'DELETE'
 		}).then((r) => json<Project>(r)),
 
-	setModuleInputs: (projectId: string, name: string, inputs: Record<string, AttrValue>) =>
+	// Replaces the whole module call, so count/forEach must always be resent —
+	// omitting them clears them, exactly like the resource upsert.
+	setModuleInputs: (
+		projectId: string,
+		name: string,
+		inputs: Record<string, AttrValue>,
+		meta?: { count?: string; forEach?: string }
+	) =>
 		fetch(`/api/projects/${projectId}/modules/local/${encodeURIComponent(name)}/inputs`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ inputs })
+			body: JSON.stringify({ inputs, count: meta?.count ?? '', forEach: meta?.forEach ?? '' })
 		}).then((r) => json<Project>(r)),
 
 	upsertResource: (

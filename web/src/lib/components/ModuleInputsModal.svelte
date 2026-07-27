@@ -17,6 +17,8 @@
 		moduleName,
 		variables,
 		draft = $bindable<Record<string, string>>({}),
+		count = $bindable(''),
+		forEach = $bindable(''),
 		saving = false,
 		onSave
 	}: {
@@ -24,12 +26,31 @@
 		moduleName: string;
 		variables: Variable[];
 		draft?: Record<string, string>;
+		count?: string;
+		forEach?: string;
 		saving?: boolean;
 		onSave: () => void;
 	} = $props();
 </script>
 
 <Modal title={`Module "${moduleName}" — inputs from root`} bind:open>
+	<!--
+	  Meta-args sit ABOVE the variables branch: a module can carry for_each while
+	  declaring no variables of its own, and that must still be editable.
+	-->
+	<div class="mb-3 flex items-end gap-3 border-b border-[var(--al-border)] pb-3">
+		<div>
+			<label for="module-count" class="mb-1 block text-xs text-[var(--al-muted)]" title="count meta-argument on the module call — an HCL expression, e.g. 3 or var.replicas">count</label>
+			<input id="module-count" class="mono w-28 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" bind:value={count} placeholder="3 · var.n" disabled={forEach.trim() !== ''} />
+		</div>
+		<div>
+			<label for="module-foreach" class="mb-1 block text-xs text-[var(--al-muted)]" title="for_each meta-argument on the module call — a set or map expression, e.g. var.teams">for_each</label>
+			<input id="module-foreach" class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" bind:value={forEach} placeholder="var.teams · toset([…])" disabled={count.trim() !== ''} />
+		</div>
+		{#if count.trim() !== '' || forEach.trim() !== ''}
+			<p class="pb-1.5 text-xs text-[var(--al-muted)]">Inputs can use <span class="mono">{count.trim() !== '' ? 'count.index' : 'each.key'}</span>.</p>
+		{/if}
+	</div>
 	{#if variables.length === 0}
 		<p class="text-sm text-[var(--al-muted)]">This module has no variables yet. Add variables in the module's Variables panel, then set their values here.</p>
 	{:else}

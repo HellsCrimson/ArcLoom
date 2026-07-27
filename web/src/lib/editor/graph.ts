@@ -141,8 +141,17 @@ export function crossScopeEdges(project: Project): Edge[] {
 			}
 		}
 	};
-	for (const lm of project.localModules ?? []) scanInputs(lm.name, Object.values(lm.inputs ?? {}));
-	for (const m of project.modules ?? []) scanInputs(m.name, Object.values(m.config ?? {}));
+	// count / for_each on a module call are expressions too and may reference a
+	// root resource (`for_each = toset(aws_subnet.main[*].id)`), so they are
+	// scanned alongside the inputs — mirroring deriveEdges for resources.
+	const metaValues = (meta: { count?: string; forEach?: string }): AttrValue[] =>
+		[meta.count, meta.forEach]
+			.filter((t): t is string => !!t)
+			.map((expr) => ({ mode: 'expression', expr }) as AttrValue);
+	for (const lm of project.localModules ?? [])
+		scanInputs(lm.name, [...Object.values(lm.inputs ?? {}), ...metaValues(lm)]);
+	for (const m of project.modules ?? [])
+		scanInputs(m.name, [...Object.values(m.config ?? {}), ...metaValues(m)]);
 	return edges;
 }
 

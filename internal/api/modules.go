@@ -114,12 +114,36 @@ func (s *Server) handleDeleteLocalModule(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, p)
 }
 
-// handleSetModuleInputs sets the input values the root passes to a local module.
+// validateModuleMeta checks the count / for_each meta-args of a module call:
+// mutually exclusive, and each a parseable HCL expression (store persist
+// swallows generation errors, so a typo has to fail here).
+func validateModuleMeta(count, forEach string) error {
+	if count != "" && forEach != "" {
+		return errors.New("count and for_each are mutually exclusive")
+	}
+	if count != "" {
+		if err := hclgen.ValidateExpr(count); err != nil {
+			return errors.New("count: " + err.Error())
+		}
+	}
+	if forEach != "" {
+		if err := hclgen.ValidateExpr(forEach); err != nil {
+			return errors.New("for_each: " + err.Error())
+		}
+	}
+	return nil
+}
+
+// handleSetModuleInputs sets the input values the root passes to a local module,
+// plus the call's count / for_each meta-args. Like the resource upsert this
+// REPLACES the call's arguments, so the form must always resend count/forEach.
 func (s *Server) handleSetModuleInputs(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	name := chi.URLParam(r, "name")
 	var req struct {
-		Inputs map[string]attrValueDTO `json:"inputs"`
+		Inputs  map[string]attrValueDTO `json:"inputs"`
+		Count   string                  `json:"count"`
+		ForEach string                  `json:"forEach"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
@@ -130,10 +154,17 @@ func (s *Server) handleSetModuleInputs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	count, forEach := strings.TrimSpace(req.Count), strings.TrimSpace(req.ForEach)
+	if err := validateModuleMeta(count, forEach); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	err = s.store.Update(id, func(p *model.Project) error {
 		for i := range p.LocalModules {
 			if p.LocalModules[i].Name == name {
 				p.LocalModules[i].Inputs = inputs
+				p.LocalModules[i].Count = count
+				p.LocalModules[i].ForEach = forEach
 				return nil
 			}
 		}
@@ -164,6 +195,8 @@ func (s *Server) handleSetRegistryModule(w http.ResponseWriter, r *http.Request)
 		Source  string                  `json:"source"`
 		Version string                  `json:"version,omitempty"`
 		Config  map[string]attrValueDTO `json:"config"`
+		Count   string                  `json:"count,omitempty"`
+		ForEach string                  `json:"forEach,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
@@ -193,6 +226,11 @@ func (s *Server) handleSetRegistryModule(w http.ResponseWriter, r *http.Request)
 	if len(config) == 0 {
 		config = nil
 	}
+	count, forEach := strings.TrimSpace(req.Count), strings.TrimSpace(req.ForEach)
+	if err := validateModuleMeta(count, forEach); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	err = s.store.Update(id, func(p *model.Project) error {
 		// A module call name must be unique across registry AND local modules
@@ -202,7 +240,7 @@ func (s *Server) handleSetRegistryModule(w http.ResponseWriter, r *http.Request)
 				return errDuplicate
 			}
 		}
-		m := model.Module{Name: req.Name, Source: strings.TrimSpace(req.Source), Version: strings.TrimSpace(req.Version), Config: config}
+		m := model.Module{Name: req.Name, Source: strings.TrimSpace(req.Source), Version: strings.TrimSpace(req.Version), Config: config, Count: count, ForEach: forEach}
 		for i := range p.Modules {
 			if p.Modules[i].Name == req.Name {
 				p.Modules[i] = m

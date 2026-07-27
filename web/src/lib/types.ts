@@ -139,6 +139,9 @@ export interface Module {
 	source: string;
 	version?: string;
 	config?: Record<string, AttrValue>;
+	// count / for_each meta-args on the module call (raw HCL, mutually exclusive).
+	count?: string;
+	forEach?: string;
 }
 
 export interface LocalModule {
@@ -149,6 +152,9 @@ export interface LocalModule {
 	resources: Resource[];
 	outputs?: Output[];
 	inputs?: Record<string, AttrValue>;
+	// count / for_each on the root's call to this module (not on its body).
+	count?: string;
+	forEach?: string;
 }
 
 // Backend configures remote state storage (terraform { backend "type" {...} }).
