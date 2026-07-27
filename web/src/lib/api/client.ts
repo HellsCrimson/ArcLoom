@@ -313,6 +313,20 @@ export const api = {
 			body: JSON.stringify(body)
 		}).then((r) => json<Project>(r)),
 
+	// Companion files (templates/scripts reached via file()/templatefile()).
+	// Upsert keys on `path`; pass oldPath to rename in a single update.
+	setFile: (projectId: string, body: { path: string; oldPath?: string; content: string }) =>
+		fetch(`/api/projects/${projectId}/files`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body)
+		}).then((r) => json<Project>(r)),
+
+	deleteFile: (projectId: string, path: string) =>
+		fetch(`/api/projects/${projectId}/files?path=${encodeURIComponent(path)}`, {
+			method: 'DELETE'
+		}).then((r) => json<Project>(r)),
+
 	deleteRegistryModule: (projectId: string, name: string) =>
 		fetch(`/api/projects/${projectId}/modules/registry/${encodeURIComponent(name)}`, {
 			method: 'DELETE'

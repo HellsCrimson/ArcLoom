@@ -12,6 +12,7 @@
 	import TerraformBlockModal from '$lib/components/TerraformBlockModal.svelte';
 	import NewModuleModal from '$lib/components/NewModuleModal.svelte';
 	import RegistryModuleModal from '$lib/components/RegistryModuleModal.svelte';
+	import FileModal from '$lib/components/FileModal.svelte';
 	import ModuleInputsModal from '$lib/components/ModuleInputsModal.svelte';
 	import ImportHclModal from '$lib/components/ImportHclModal.svelte';
 	import ImportStateModal from '$lib/components/ImportStateModal.svelte';
@@ -43,7 +44,7 @@
 	import { form } from '$lib/stores/resourceForm.svelte';
 	import EditorView from '$lib/editor/EditorView.svelte';
 	import HclView from '$lib/editor/HclView.svelte';
-	import type { ProjectConfig as ProjectConfigT, SecretMeta } from '$lib/types';
+	import type { ProjectConfig as ProjectConfigT, ProjectFile, SecretMeta } from '$lib/types';
 	import {
 		Boxes, Plus, Trash2, FolderGit2, Settings, Undo2, Redo2, AlertTriangle, Search
 	} from 'lucide-svelte';
@@ -328,6 +329,7 @@
 		openPolicy: () => (showPolicy = true),
 		openNotify: () => (showNotify = true),
 		openTerraform: () => openBackend(),
+		openNewFile: () => openFile(),
 		openEnvironments: () => (showEnvironments = true),
 		openImportHcl: () => { importMsg = ''; showImportHcl = true; },
 		openImportState: () => { importMsg = ''; showImportState = true; },
@@ -667,6 +669,54 @@
 			inputForEach = activeMod.forEach ?? '';
 		}
 	});
+
+	// ---- companion files (templates/scripts for file()/templatefile()) ----
+	// Scope-independent: a path under modules/<name>/ targets that module, so
+	// these are NOT filtered by activeModule.
+	const files = $derived(project?.files ?? []);
+	let showFile = $state(false);
+	let fileEditing = $state<string | null>(null); // original path when editing
+	let filePath = $state('');
+	let fileContent = $state('');
+
+	function openFile(f?: ProjectFile) {
+		fileEditing = f?.path ?? null;
+		filePath = f?.path ?? '';
+		fileContent = f?.content ?? '';
+		showFile = true;
+	}
+
+	async function saveFile() {
+		if (!project || !filePath.trim()) return;
+		busy = 'file';
+		error = '';
+		try {
+			// oldPath renames server-side in one update, so a rename can never
+			// leave the previous path behind as a stale copy.
+			project = await api.setFile(project.id, {
+				path: filePath.trim(),
+				oldPath: fileEditing && fileEditing !== filePath.trim() ? fileEditing : undefined,
+				content: fileContent
+			});
+			await refreshHcl();
+			showFile = false;
+		} catch (err) {
+			error = (err as Error).message;
+		} finally {
+			busy = '';
+		}
+	}
+
+	async function deleteFile(path: string) {
+		if (!project) return;
+		if (!confirm(`Remove file "${path}" from the project?`)) return;
+		try {
+			project = await api.deleteFile(project.id, path);
+			await refreshHcl();
+		} catch (err) {
+			error = (err as Error).message;
+		}
+	}
 
 	// ---- registry/external modules ----
 	const registryModules = $derived(project?.modules ?? []);
@@ -1476,6 +1526,7 @@
 			{bumping}
 			{localModules}
 			{registryModules}
+			{files}
 			{activeModule}
 			addingProvider={busy === 'provider'}
 			canResources={auth.can('resources')}
@@ -1493,6 +1544,8 @@
 			onOpenInputs={() => (showInputs = true)}
 			onOpenRegistryModule={openRegModule}
 			onDeleteRegistryModule={deleteRegModule}
+			onOpenFile={openFile}
+			onDeleteFile={deleteFile}
 		/>
 		<ResizeHandle
 			orientation="vertical"
@@ -1692,6 +1745,16 @@
 
 	<!-- New module modal -->
 	<NewModuleModal bind:open={showNewModule} bind:name={nmName} saving={busy === 'module'} onCreate={createModule} />
+
+	<!-- Companion file modal (add / edit) -->
+	<FileModal
+		bind:open={showFile}
+		editing={fileEditing}
+		bind:path={filePath}
+		bind:content={fileContent}
+		saving={busy === 'file'}
+		onSave={saveFile}
+	/>
 
 	<!-- Registry module modal (add / edit) -->
 	<RegistryModuleModal

@@ -35,6 +35,24 @@ type Project struct {
 	Modules      []Module           `json:"modules,omitempty" yaml:"modules,omitempty"`
 	LocalModules []LocalModule      `json:"localModules,omitempty" yaml:"localModules,omitempty"`
 	Outputs      []Output           `json:"outputs,omitempty" yaml:"outputs,omitempty"`
+	// Files are user-authored companion files (cloud-init templates, scripts,
+	// JSON policy documents) that HCL references via file()/templatefile().
+	// They live in the model — not loose on disk — so they ride along with
+	// generation, Git and undo like everything else the UI edits.
+	Files []ProjectFile `json:"files,omitempty" yaml:"files,omitempty"`
+}
+
+// ProjectFile is a companion file emitted next to the generated HCL. Path is
+// relative to the generated/ directory (and therefore to the run workspace's
+// root module), so "templates/cloud-init.tftpl" is reachable as
+// `${path.module}/templates/cloud-init.tftpl`, and "modules/<name>/x.tftpl"
+// resolves under that local module's own path.module.
+//
+// Content is text: these are templates and scripts, and the model is YAML/JSON
+// all the way down. Binary payloads are deliberately unsupported.
+type ProjectFile struct {
+	Path    string `json:"path" yaml:"path"`
+	Content string `json:"content" yaml:"content"`
 }
 
 // LocalModule is a child module authored in-project as a subfolder

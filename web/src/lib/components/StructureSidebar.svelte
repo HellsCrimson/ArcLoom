@@ -5,10 +5,10 @@
 	// Reads the resource-form store directly for the type/edit highlight states;
 	// everything else arrives as data + callbacks (permission is a boolean, never
 	// an auth import).
-	import type { LocalModule, Module, Project, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
+	import type { LocalModule, Module, Project, ProjectFile, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
 	import { btnGhost, iconBtn } from '$lib/styles';
 	import { form } from '$lib/stores/resourceForm.svelte';
-	import { Loader2, Plus, Trash2, FolderGit2, Folder, Settings, Package, ArrowUp } from 'lucide-svelte';
+	import { Loader2, Plus, Trash2, FolderGit2, Folder, Settings, Package, ArrowUp, FileCode } from 'lucide-svelte';
 
 	let {
 		width,
@@ -18,6 +18,7 @@
 		bumping,
 		localModules,
 		registryModules,
+		files,
 		activeModule,
 		addingProvider = false,
 		canResources = false,
@@ -34,7 +35,9 @@
 		onDeleteModule,
 		onOpenInputs,
 		onOpenRegistryModule,
-		onDeleteRegistryModule
+		onDeleteRegistryModule,
+		onOpenFile,
+		onDeleteFile
 	}: {
 		width: number;
 		project: Project | null;
@@ -43,6 +46,7 @@
 		bumping: string;
 		localModules: LocalModule[];
 		registryModules: Module[];
+		files: ProjectFile[];
 		activeModule: string | null;
 		addingProvider?: boolean;
 		canResources?: boolean;
@@ -60,6 +64,8 @@
 		onOpenInputs: () => void;
 		onOpenRegistryModule: (m?: Module) => void;
 		onDeleteRegistryModule: (name: string) => void;
+		onOpenFile: (f?: ProjectFile) => void;
+		onDeleteFile: (path: string) => void;
 	} = $props();
 </script>
 
@@ -217,6 +223,35 @@
 					<button class="px-1 opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteRegistryModule(m.name)} aria-label="Delete registry module"><Trash2 size={12} /></button>
 				</div>
 			{/each}
+		</div>
+
+		<!--
+		  Companion files: templates/scripts referenced with file()/templatefile().
+		  Scope-independent (a path under modules/<name>/ targets that module), so
+		  this sits below the whole tree rather than inside a scope.
+		-->
+		<div class="mt-3">
+			<div class="mb-1 flex items-center justify-between">
+				<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Files</span>
+				{#if canResources}
+					<button class={iconBtn} title="Add file (template, script, JSON)" aria-label="Add file" onclick={() => onOpenFile()}><Plus size={14} /></button>
+				{/if}
+			</div>
+			{#if files.length === 0}
+				<p class="px-2 text-[11px] text-[var(--al-muted)]">No files. Add a template or script to reference with <span class="mono">templatefile()</span>.</p>
+			{:else}
+				{#each files as f (f.path)}
+					<div class="group flex items-center">
+						<button class="flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]" onclick={() => onOpenFile(f)} title={f.path}>
+							<FileCode size={12} style="color:#7ad1a8" />
+							<span class="truncate">{f.path}</span>
+						</button>
+						{#if canResources}
+							<button class="px-1 text-[var(--al-muted)] opacity-0 hover:text-[var(--al-danger)] group-hover:opacity-100" onclick={() => onDeleteFile(f.path)} aria-label="Delete file"><Trash2 size={12} /></button>
+						{/if}
+					</div>
+				{/each}
+			{/if}
 		</div>
 	{:else}
 		<p class="text-xs text-[var(--al-muted)]">Create a project to begin.</p>

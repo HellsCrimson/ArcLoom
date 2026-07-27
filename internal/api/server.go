@@ -212,6 +212,8 @@ func (s *Server) Handler() http.Handler {
 				r.Put("/projects/{id}/modules/local/{name}/inputs", s.handleSetModuleInputs)
 				r.Put("/projects/{id}/modules/registry", s.handleSetRegistryModule)
 				r.Delete("/projects/{id}/modules/registry/{name}", s.handleDeleteRegistryModule)
+				r.Put("/projects/{id}/files", s.handleSetFile)
+				r.Delete("/projects/{id}/files", s.handleDeleteFile)
 				r.Put("/projects/{id}/backend", s.handleSetBackend)
 				r.Put("/projects/{id}/terraform", s.handleSetTerraform)
 				r.Put("/projects/{id}/secrets/{name}", s.handleSetSecret)

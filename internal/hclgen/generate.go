@@ -367,8 +367,15 @@ func GenerateModuleFile(lm model.LocalModule) ([]byte, error) {
 }
 
 // GenerateFiles renders the whole project as a set of files keyed by path
-// relative to the generated/ directory: "main.tf" plus one
-// "modules/<name>/main.tf" per local module.
+// relative to the generated/ directory: "main.tf", one
+// "modules/<name>/main.tf" per local module, and the project's companion files
+// (templates/scripts referenced by file()/templatefile()).
+//
+// Companion files ride in this map deliberately: it is the single funnel into
+// both store.Disk.persist (the on-disk project, hence Git) and every runner
+// operation, so nothing downstream needs to know they exist. They are written
+// LAST so a bad path can never displace generated HCL — paths are validated on
+// the way in (model.ValidateFilePath), and this is the backstop.
 func GenerateFiles(p *model.Project) (map[string][]byte, error) {
 	root, err := Generate(p)
 	if err != nil {
@@ -381,6 +388,16 @@ func GenerateFiles(p *model.Project) (map[string][]byte, error) {
 			return nil, fmt.Errorf("module %q: %w", lm.Name, err)
 		}
 		files["modules/"+lm.Name+"/main.tf"] = mf
+	}
+	for _, f := range p.Files {
+		clean, err := model.ValidateFilePath(f.Path)
+		if err != nil {
+			return nil, fmt.Errorf("file %q: %w", f.Path, err)
+		}
+		if _, taken := files[clean]; taken {
+			return nil, fmt.Errorf("file %q: path is generated from the model", clean)
+		}
+		files[clean] = []byte(f.Content)
 	}
 	return files, nil
 }

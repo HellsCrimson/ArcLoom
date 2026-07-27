@@ -42,6 +42,7 @@ export interface CommandActions {
 	openPolicy(): void;
 	openNotify(): void;
 	openTerraform(): void;
+	openNewFile(): void;
 	openEnvironments(): void;
 	openImportHcl(): void;
 	openImportState(): void;
@@ -92,6 +93,7 @@ export function buildPaletteItems(a: {
 			items.push({ id: 'cmd:notify', label: 'Notifications', group: 'commands', run: actions.openNotify });
 			items.push({ id: 'cmd:terraform', label: 'Terraform block (required_version, backend)', group: 'commands', run: actions.openTerraform });
 			items.push({ id: 'cmd:environments', label: 'Environments', group: 'commands', run: actions.openEnvironments });
+			items.push({ id: 'cmd:new-file', label: 'Add file (template / script)', group: 'commands', run: actions.openNewFile });
 			items.push({ id: 'cmd:import-hcl', label: 'Import HCL', group: 'commands', run: actions.openImportHcl });
 			items.push({ id: 'cmd:import-state', label: 'Import state', group: 'commands', run: actions.openImportState });
 		}

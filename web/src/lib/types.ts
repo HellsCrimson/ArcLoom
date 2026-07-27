@@ -163,6 +163,16 @@ export interface Backend {
 	config?: Record<string, AttrValue>;
 }
 
+/**
+ * A companion file emitted next to the generated HCL — a template, script or
+ * JSON document referenced with file()/templatefile(). `path` is relative to
+ * the root module, so "templates/x.tftpl" is `${path.module}/templates/x.tftpl`.
+ */
+export interface ProjectFile {
+	path: string;
+	content: string;
+}
+
 export interface Project {
 	id: string;
 	name: string;
@@ -178,6 +188,7 @@ export interface Project {
 	modules?: Module[];
 	localModules?: LocalModule[];
 	outputs?: Output[];
+	files?: ProjectFile[];
 }
 
 // ProjectConfig is the editable subset (variables / locals / outputs).
