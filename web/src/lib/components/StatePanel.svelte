@@ -2,7 +2,7 @@
 	import Modal from './Modal.svelte';
 	import type { DriftInfo, StateEntry } from '$lib/api/client';
 	import type { DriftConfig } from '$lib/types';
-	import { Loader2, RefreshCw, PenLine, Trash2, Settings, AlertTriangle, CheckCircle2, Check, Biohazard, HeartPulse, LockOpen } from 'lucide-svelte';
+	import { Loader2, RefreshCw, PenLine, Trash2, Settings, AlertTriangle, CheckCircle2, Check, Biohazard, HeartPulse, LockOpen, ChevronRight, ChevronDown, Folder } from 'lucide-svelte';
 
 	let {
 		open = $bindable(false),
@@ -43,6 +43,37 @@
 		/** Release a lock a crashed run left behind. */
 		onForceUnlock?: (lockId: string) => void;
 	} = $props();
+
+	// ── What a count / for_each actually expanded to ─────────────────────────
+	// The state is the only authoritative answer: the config says `for_each =
+	// var.teams`, the plan only lists resources that CHANGE, but the state lists
+	// every instance that exists. Two levels are collapsed here:
+	//   * a MODULE call with for_each puts each instance in the address as
+	//     `module.team["alpha"]`, so entries are grouped by that;
+	//   * a RESOURCE with count/for_each carries its index keys in `instances`,
+	//     which used to be a hover-only tooltip behind a "×N" badge.
+
+	/** Group key -> label. "" is the root module. */
+	const groups = $derived.by(() => {
+		const m = new Map<string, StateEntry[]>();
+		for (const e of entries) {
+			const k = e.module ?? '';
+			const list = m.get(k);
+			if (list) list.push(e);
+			else m.set(k, [e]);
+		}
+		// Root first, then module instances alphabetically, so the tree is stable.
+		return [...m.entries()].sort(([a], [b]) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)));
+	});
+
+	// Collapsed module groups and expanded instance lists, both keyed by address.
+	let collapsed = $state<Record<string, boolean>>({});
+	let openInstances = $state<Record<string, boolean>>({});
+	const toggleGroup = (k: string) => (collapsed[k] = !collapsed[k]);
+	const toggleInstances = (addr: string) => (openInstances[addr] = !openInstances[addr]);
+
+	/** The engine address of one instance: `x.y[0]` / `x.y["a"]`. */
+	const instanceAddr = (e: StateEntry, key: string) => `${e.address}[${key}]`;
 
 	// Editable copy of the drift schedule, re-seeded whenever fresh info loads.
 	let driftEnabled = $state(false);
@@ -86,18 +117,10 @@
 			onAcceptDrift?.();
 	}
 
-	// Taint acts on ONE instance, so a counted / for_each resource needs an index.
-	// The row knows its keys; ask which one rather than guessing.
-	function askTaint(e: StateEntry) {
-		let address = e.address;
-		if (e.instances?.length) {
-			const key = window.prompt(
-				`Which instance of ${e.address}?\n\nKeys: ${e.instances.join(', ')}`,
-				e.instances[0]
-			);
-			if (!key) return;
-			address = `${e.address}[${key.trim()}]`;
-		}
+	// Taint acts on ONE instance. It used to open a window.prompt listing the
+	// keys, because there was no instance picker anywhere in the product; now the
+	// expanded instance rows ARE the picker, so this just takes a full address.
+	function askTaint(address: string) {
 		if (
 			confirm(
 				`Mark ${address} as damaged?\n\nNothing changes now — the next apply destroys and recreates it.`
@@ -276,44 +299,104 @@
 		</p>
 	{:else}
 		<ul class="max-h-80 space-y-0.5 overflow-y-auto">
-			{#each entries as e (e.address)}
-				<li class="group flex items-center gap-2 rounded px-2 py-1 hover:bg-[var(--al-panel-2)]">
-					<span
-						class="w-14 flex-none rounded px-1 py-0.5 text-center font-mono text-[10px] font-bold uppercase"
-						style="background:{e.mode === 'data' ? '#56d4bc' : '#4c8dff'}22;color:{e.mode === 'data' ? '#56d4bc' : '#4c8dff'};"
-					>{e.mode === 'data' ? 'data' : 'res'}</span>
-					<span class="mono min-w-0 flex-1 truncate text-xs text-[var(--al-text)]" title={e.address}>{e.address}</span>
-					{#if e.instances?.length}
-						<span class="mono flex-none text-[10px] text-[var(--al-muted)]" title={e.instances.map((i) => `[${i}]`).join(' ')}>×{e.instances.length}</span>
-					{/if}
-					{#if e.tainted?.length}
-						<span
-							class="flex-none rounded px-1 py-0.5 text-[10px] font-semibold"
-							style="background:#e3b34122;color:#e3b341;"
-							title={`Marked damaged — the next apply replaces ${e.tainted.join(', ')}`}
-						>tainted{e.tainted.length > 1 ? ` ×${e.tainted.length}` : ''}</span>
-					{/if}
-					{#if canDeploy}
-						<span class="flex flex-none items-center gap-1">
-							{#each e.tainted ?? [] as addr (addr)}
+			{#each groups as [key, groupEntries] (key)}
+				{#if key !== ''}
+					<!-- One module INSTANCE: a for_each'd module call appears once per
+					     key, as module.team["alpha"] — this is where those items become
+					     visible instead of being a prefix buried in each address. -->
+					<li>
+						<button
+							class="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left hover:bg-[var(--al-panel-2)]"
+							onclick={() => toggleGroup(key)}
+							title="{groupEntries.length} resource{groupEntries.length === 1 ? '' : 's'} in {key}"
+						>
+							{#if collapsed[key]}<ChevronRight size={12} class="flex-none text-[var(--al-muted)]" />{:else}<ChevronDown size={12} class="flex-none text-[var(--al-muted)]" />{/if}
+							<Folder size={12} style="color:#7aa2f7" class="flex-none" />
+							<span class="mono min-w-0 flex-1 truncate text-xs text-[var(--al-text)]">{key}</span>
+							<span class="mono flex-none text-[10px] text-[var(--al-muted)]">{groupEntries.length}</span>
+						</button>
+					</li>
+				{/if}
+				{#if key === '' || !collapsed[key]}
+					{#each groupEntries as e (e.address)}
+						{@const expandable = (e.instances?.length ?? 0) > 0}
+						{@const shown = !!openInstances[e.address]}
+						<li class="group flex items-center gap-2 rounded px-2 py-1 hover:bg-[var(--al-panel-2)]" class:pl-5={key !== ''}>
+							{#if expandable}
 								<button
-									class="text-[#e3b341] hover:brightness-125 disabled:opacity-40"
-									title={`Clear the tainted mark on ${addr} (keeps the resource)`}
-									aria-label="Untaint"
-									onclick={() => askUntaint(addr)}
-									disabled={busy}
-								><HeartPulse size={13} /></button>
-							{/each}
-						</span>
-						<span class="flex flex-none items-center gap-1 opacity-0 group-hover:opacity-100">
-							{#if e.mode !== 'data' && onTaint}
-								<button class="text-[var(--al-muted)] hover:text-[#e3b341] disabled:opacity-40" title="Mark damaged — the next apply replaces it" aria-label="Taint" onclick={() => askTaint(e)} disabled={busy}><Biohazard size={13} /></button>
+									class="flex-none text-[var(--al-muted)] hover:text-[var(--al-text)]"
+									onclick={() => toggleInstances(e.address)}
+									title={shown ? 'Hide instances' : `Show the ${e.instances!.length} instances this expanded to`}
+									aria-label={shown ? 'Hide instances' : 'Show instances'}
+								>
+									{#if shown}<ChevronDown size={12} />{:else}<ChevronRight size={12} />{/if}
+								</button>
 							{/if}
-							<button class="text-[var(--al-muted)] hover:text-[var(--al-accent)] disabled:opacity-40" title="Move / rename in state" aria-label="Move in state" onclick={() => askMv(e.address)} disabled={busy}><PenLine size={13} /></button>
-							<button class="text-[var(--al-muted)] hover:text-[var(--al-danger)] disabled:opacity-40" title="Remove from state (does not destroy)" aria-label="Remove from state" onclick={() => askRm(e.address)} disabled={busy}><Trash2 size={13} /></button>
-						</span>
-					{/if}
-				</li>
+							<span
+								class="w-14 flex-none rounded px-1 py-0.5 text-center font-mono text-[10px] font-bold uppercase"
+								style="background:{e.mode === 'data' ? '#56d4bc' : '#4c8dff'}22;color:{e.mode === 'data' ? '#56d4bc' : '#4c8dff'};"
+							>{e.mode === 'data' ? 'data' : 'res'}</span>
+							<span class="mono min-w-0 flex-1 truncate text-xs text-[var(--al-text)]" title={e.address}>{e.address}</span>
+							{#if expandable}
+								<button
+									class="mono flex-none rounded px-1 text-[10px] text-[var(--al-muted)] hover:text-[var(--al-accent)]"
+									onclick={() => toggleInstances(e.address)}
+									title="Expanded to {e.instances!.length} instances — click to list them"
+								>×{e.instances!.length}</button>
+							{/if}
+							{#if e.tainted?.length}
+								<span
+									class="flex-none rounded px-1 py-0.5 text-[10px] font-semibold"
+									style="background:#e3b34122;color:#e3b341;"
+									title={`Marked damaged — the next apply replaces ${e.tainted.join(', ')}`}
+								>tainted{e.tainted.length > 1 ? ` ×${e.tainted.length}` : ''}</span>
+							{/if}
+							{#if canDeploy}
+								<span class="flex flex-none items-center gap-1 opacity-0 group-hover:opacity-100">
+									<!-- Taint is per-instance, so an expandable resource offers it on
+									     its instance rows instead of here. mv / rm act on the whole
+									     resource (state rm removes every instance), which is still
+									     the right granularity at this level. -->
+									{#if e.mode !== 'data' && onTaint && !expandable}
+										<button class="text-[var(--al-muted)] hover:text-[#e3b341] disabled:opacity-40" title="Mark damaged — the next apply replaces it" aria-label="Taint" onclick={() => askTaint(e.address)} disabled={busy}><Biohazard size={13} /></button>
+									{/if}
+									<button class="text-[var(--al-muted)] hover:text-[var(--al-accent)] disabled:opacity-40" title="Move / rename in state" aria-label="Move in state" onclick={() => askMv(e.address)} disabled={busy}><PenLine size={13} /></button>
+									<button class="text-[var(--al-muted)] hover:text-[var(--al-danger)] disabled:opacity-40" title={expandable ? 'Remove all instances from state (does not destroy)' : 'Remove from state (does not destroy)'} aria-label="Remove from state" onclick={() => askRm(e.address)} disabled={busy}><Trash2 size={13} /></button>
+								</span>
+							{/if}
+						</li>
+
+						{#if expandable && shown}
+							{#each e.instances ?? [] as ikey (ikey)}
+								{@const addr = instanceAddr(e, ikey)}
+								{@const isTainted = (e.tainted ?? []).includes(addr)}
+								<li
+									class="group flex items-center gap-2 rounded py-0.5 pr-2 text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]"
+									style="padding-left:{key !== '' ? 44 : 32}px;"
+								>
+									<span class="mono min-w-0 flex-1 truncate text-[11px]" title={addr}>{addr}</span>
+									{#if isTainted}
+										<span class="flex-none rounded px-1 text-[10px] font-semibold" style="background:#e3b34122;color:#e3b341;">tainted</span>
+									{/if}
+									{#if canDeploy}
+										<span class="flex flex-none items-center gap-1">
+											{#if isTainted}
+												<button class="text-[#e3b341] hover:brightness-125 disabled:opacity-40" title={`Clear the tainted mark on ${addr} (keeps the resource)`} aria-label="Untaint" onclick={() => askUntaint(addr)} disabled={busy}><HeartPulse size={13} /></button>
+											{/if}
+										</span>
+										<span class="flex flex-none items-center gap-1 opacity-0 group-hover:opacity-100">
+											{#if e.mode !== 'data' && onTaint && !isTainted}
+												<button class="text-[var(--al-muted)] hover:text-[#e3b341] disabled:opacity-40" title={`Mark ${addr} damaged — the next apply replaces just this instance`} aria-label="Taint instance" onclick={() => askTaint(addr)} disabled={busy}><Biohazard size={13} /></button>
+											{/if}
+											<button class="text-[var(--al-muted)] hover:text-[var(--al-accent)] disabled:opacity-40" title={`Move / rename ${addr} in state`} aria-label="Move instance in state" onclick={() => askMv(addr)} disabled={busy}><PenLine size={13} /></button>
+											<button class="text-[var(--al-muted)] hover:text-[var(--al-danger)] disabled:opacity-40" title={`Remove just ${addr} from state (does not destroy)`} aria-label="Remove instance from state" onclick={() => askRm(addr)} disabled={busy}><Trash2 size={13} /></button>
+										</span>
+									{/if}
+								</li>
+							{/each}
+						{/if}
+					{/each}
+				{/if}
 			{/each}
 		</ul>
 	{/if}
