@@ -8,6 +8,7 @@
 	import type { LocalModule, Module, Project, ProjectFile, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
 	import { btnGhost, iconBtn } from '$lib/styles';
 	import { form } from '$lib/stores/resourceForm.svelte';
+	import { multiBadge, type MultiBadge } from '$lib/model/multiplicity';
 	import { Loader2, Plus, Trash2, FolderGit2, Folder, Settings, Package, ArrowUp, FileCode } from 'lucide-svelte';
 
 	let {
@@ -68,6 +69,24 @@
 		onDeleteFile: (path: string) => void;
 	} = $props();
 </script>
+
+<!--
+  multi — the ×N / ∀ multiplicity pill, the sidebar twin of the canvas card's
+  multiPill. Every row in the structure tree lists ONE entry per block, so
+  without this a count/for_each'd resource (or a repeated module call, where
+  the whole folder multiplies) reads as a single object and the tree
+  under-reports the project. `note` prefixes the tooltip for the module rows,
+  whose multiplicity applies to everything inside them.
+-->
+{#snippet multi(m: MultiBadge | undefined, note = '')}
+	{#if m}
+		<span
+			class="mono ml-1 shrink-0 rounded-full px-1.5 py-px text-[10px] font-semibold"
+			style="border:1px solid var(--al-border);background:var(--al-accent-weak);color:var(--al-accent);"
+			title={note + m.title}
+		>{m.label}</span>
+	{/if}
+{/snippet}
 
 <aside
 	class="shrink-0 space-y-3 overflow-y-auto border-r border-[var(--al-border)] bg-[var(--al-panel)] p-3"
@@ -171,13 +190,15 @@
 				<ul class="mb-1 ml-3 space-y-0.5 border-l border-[var(--al-border)] pl-2">
 					{#each project.resources as r (r.id)}
 						<li class="group flex items-center">
-							<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px] {form.editingId === r.id ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}" onclick={() => onEditResource(r)} title="Edit {r.type}.{r.name}">{r.type}.{r.name}</button>
+							<button class="mono min-w-0 flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px] {form.editingId === r.id ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}" onclick={() => onEditResource(r)} title="Edit {r.type}.{r.name}">{r.type}.{r.name}</button>
+							{@render multi(multiBadge(r))}
 							<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteResource(r.id)} aria-label="Delete"><Trash2 size={11} /></button>
 						</li>
 					{/each}
 					{#each project.dataSources ?? [] as d (d.id)}
 						<li class="group flex items-center">
-							<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px]" style="color:{form.editingId === d.id ? 'var(--al-accent)' : '#56d4bc'};opacity:{form.editingId === d.id ? 1 : 0.85};" onclick={() => onEditResource(d, 'data')} title="Edit data.{d.type}.{d.name}">data.{d.type}.{d.name}</button>
+							<button class="mono min-w-0 flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px]" style="color:{form.editingId === d.id ? 'var(--al-accent)' : '#56d4bc'};opacity:{form.editingId === d.id ? 1 : 0.85};" onclick={() => onEditResource(d, 'data')} title="Edit data.{d.type}.{d.name}">data.{d.type}.{d.name}</button>
+							{@render multi(multiBadge(d))}
 							<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteResource(d.id, 'data')} aria-label="Delete"><Trash2 size={11} /></button>
 						</li>
 					{/each}
@@ -188,8 +209,9 @@
 			{#each localModules as m (m.name)}
 				<div class="group flex items-center">
 					<button class="flex flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs {activeModule === m.name ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => onSelectScope(m.name)}>
-						<FolderGit2 size={12} /> modules/{m.name}
+						<FolderGit2 size={12} /> <span class="truncate">modules/{m.name}</span>
 						<span class="ml-auto text-[10px]">{(m.resources ?? []).length}</span>
+						{@render multi(multiBadge(m), 'This module call is repeated — every block inside it is created once per instance.\n')}
 					</button>
 					<button class="px-1 opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteModule(m.name)} aria-label="Delete module"><Trash2 size={12} /></button>
 				</div>
@@ -197,13 +219,15 @@
 					<ul class="mb-1 ml-3 space-y-0.5 border-l border-[var(--al-border)] pl-2">
 						{#each m.resources ?? [] as r (r.id)}
 							<li class="group flex items-center">
-								<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px] {form.editingId === r.id ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}" onclick={() => onEditResource(r)} title="Edit {r.type}.{r.name}">{r.type}.{r.name}</button>
+								<button class="mono min-w-0 flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px] {form.editingId === r.id ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}" onclick={() => onEditResource(r)} title="Edit {r.type}.{r.name}">{r.type}.{r.name}</button>
+								{@render multi(multiBadge(r))}
 								<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteResource(r.id)} aria-label="Delete"><Trash2 size={11} /></button>
 							</li>
 						{/each}
 						{#each m.dataSources ?? [] as d (d.id)}
 							<li class="group flex items-center">
-								<button class="mono flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px]" style="color:{form.editingId === d.id ? 'var(--al-accent)' : '#56d4bc'};opacity:{form.editingId === d.id ? 1 : 0.85};" onclick={() => onEditResource(d, 'data')} title="Edit data.{d.type}.{d.name}">data.{d.type}.{d.name}</button>
+								<button class="mono min-w-0 flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px]" style="color:{form.editingId === d.id ? 'var(--al-accent)' : '#56d4bc'};opacity:{form.editingId === d.id ? 1 : 0.85};" onclick={() => onEditResource(d, 'data')} title="Edit data.{d.type}.{d.name}">data.{d.type}.{d.name}</button>
+								{@render multi(multiBadge(d))}
 								<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteResource(d.id, 'data')} aria-label="Delete"><Trash2 size={11} /></button>
 							</li>
 						{/each}
@@ -218,7 +242,8 @@
 			{#each registryModules as m (m.name)}
 				<div class="group flex items-center">
 					<button class="flex flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]" onclick={() => onOpenRegistryModule(m)} title="{m.source}{m.version ? ' @ ' + m.version : ''}">
-						<Package size={12} style="color:#c297ff" /> module.{m.name}
+						<Package size={12} style="color:#c297ff" /> <span class="truncate">module.{m.name}</span>
+						{@render multi(multiBadge(m), 'This module call is repeated — every block inside it is created once per instance.\n')}
 					</button>
 					<button class="px-1 opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteRegistryModule(m.name)} aria-label="Delete registry module"><Trash2 size={12} /></button>
 				</div>

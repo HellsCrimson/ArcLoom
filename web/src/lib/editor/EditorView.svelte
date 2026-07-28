@@ -8,6 +8,7 @@
 		type Edge, type LayoutMode
 	} from './graph';
 	import HclView from './HclView.svelte';
+	import { multiBadge } from '$lib/model/multiplicity';
 	import { X, Plus, Minus, Search, Loader2, Network, Rows3, LayoutGrid, CircleDashed, Group, Folder, FolderOpen, ChevronRight, ChevronDown, Play, Package, Magnet, MessageSquare, Trash2 } from 'lucide-svelte';
 
 	const LAYOUT_ICONS: Record<LayoutMode, typeof Network> = {
@@ -686,23 +687,6 @@
 		const pool = paletteKind === 'data' ? paletteDataTypes : paletteTypes;
 		return typeFilter ? pool.filter((t) => t.includes(typeFilter)) : pool;
 	});
-
-	// multiBadge summarizes a resource's count / for_each for its canvas card:
-	// a literal count shows "×3", anything else "×N" / "∀" with the expression
-	// in the tooltip. The count is read from the CONFIG, so it is only a real
-	// number when the expression is one — what a for_each actually expanded to
-	// is knowable solely from the state, hence the pointer to the State panel
-	// (the plan lists instances too, but only those that change).
-	const EXPANSION_HINT = '\nOpen State to list the instances this expanded to.';
-	function multiBadge(r: Pick<Resource, 'count' | 'forEach'>): { label: string; title: string } | undefined {
-		if (r.count) {
-			const literal = /^\d+$/.test(r.count.trim());
-			const n = literal ? r.count.trim() : 'N';
-			return { label: `×${n}`, title: `count = ${r.count}` + (literal ? '' : EXPANSION_HINT) };
-		}
-		if (r.forEach) return { label: '∀', title: `for_each = ${r.forEach}` + EXPANSION_HINT };
-		return undefined;
-	}
 
 	const gridBg = 'radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px)';
 </script>
