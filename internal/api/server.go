@@ -207,11 +207,12 @@ func (s *Server) Handler() http.Handler {
 				r.Put("/projects/{id}/providers/{key}", s.handleSetProviderConfig)
 				r.Delete("/projects/{id}/providers/{key}", s.handleDeleteProviderInstance)
 				r.Put("/projects/{id}/config", s.handleSetConfig)
+				// modules/local/* is the DEFINITION (a modules/<name>/ folder);
+				// modules/call/* is a USE of one (or of a registry module).
 				r.Post("/projects/{id}/modules/local", s.handleCreateLocalModule)
 				r.Delete("/projects/{id}/modules/local/{name}", s.handleDeleteLocalModule)
-				r.Put("/projects/{id}/modules/local/{name}/inputs", s.handleSetModuleInputs)
-				r.Put("/projects/{id}/modules/registry", s.handleSetRegistryModule)
-				r.Delete("/projects/{id}/modules/registry/{name}", s.handleDeleteRegistryModule)
+				r.Put("/projects/{id}/modules/call", s.handleSetModuleCall)
+				r.Delete("/projects/{id}/modules/call/{name}", s.handleDeleteModuleCall)
 				r.Put("/projects/{id}/files", s.handleSetFile)
 				r.Delete("/projects/{id}/files", s.handleDeleteFile)
 				r.Put("/projects/{id}/backend", s.handleSetBackend)

@@ -2,7 +2,7 @@
 	import type { Project, Resource, ResourceKind } from '$lib/types';
 	import type { PlanChange } from '$lib/api/client';
 	import {
-		deriveEdges, crossScopeEdges, interiorLayout, modId, rmodId, typeColor, typeLetter, baseAddr,
+		deriveEdges, crossScopeEdges, interiorLayout, modId, rmodId, localFolder, typeColor, typeLetter, baseAddr,
 		layoutPositions, layoutMissing, LAYOUTS,
 		NODE_W, NODE_H, DOT_Y, MOD_HEADER_H, ACTION_COLOR, ACTION_SYMBOL, DATA_COLOR, REGISTRY_MODULE_COLOR,
 		type Edge, type LayoutMode
@@ -32,7 +32,7 @@
 		onDeleteResource,
 		onRenameResource,
 		onSetDependsOn,
-		onEditRegistryModule,
+		onEditModuleCall,
 		onClose
 	}: {
 		project: Project;
@@ -47,7 +47,7 @@
 		onDeleteResource: (id: string, module?: string) => void | Promise<void>;
 		onRenameResource: (id: string, name: string, module?: string) => void;
 		onSetDependsOn: (id: string, deps: string[], module?: string) => void;
-		onEditRegistryModule?: (name: string) => void;
+		onEditModuleCall?: (name: string) => void;
 		onClose: () => void;
 	} = $props();
 
@@ -107,8 +107,16 @@
 	// whole canvas render — the Editor button lit up and no graph appeared.
 	const providerKeys = $derived([...new Set(project.providers.map((p) => p.key))]);
 
+	// Definitions (modules/<name>/ folders) and calls (`module "<name>"` blocks)
+	// are separate lists: one box per definition, one card per call, and a call
+	// resolves to its definition through localFolder(source) — never by name.
 	const localModules = $derived(project.localModules ?? []);
-	const registryModules = $derived(project.modules ?? []);
+	const moduleCalls = $derived(project.modules ?? []);
+	// Every call name that uses a given definition; the plan reports changes
+	// under the CALL's address, so a definition box has to look at all of them.
+	function callNamesFor(folder: string): string[] {
+		return moduleCalls.filter((m) => localFolder(m) === folder).map((m) => m.name);
+	}
 	const rootDataSources = $derived(project.dataSources ?? []);
 
 	// lookupNode resolves a node id to its resource and depends_on address in a
@@ -181,14 +189,33 @@
 		return out;
 	});
 	// Aggregate pending actions per local module (covers nested addresses too).
-	function moduleChangeCounts(name: string) {
-		const pref = `module.${name}`;
+	// Plan counts for a definition box: the sum over every call that uses it,
+	// since one box stands for a definition that may be called several times.
+	function moduleChangeCounts(folder: string) {
+		const prefixes = callNamesFor(folder).map((n) => `module.${n}`);
 		const agg = { create: 0, update: 0, replace: 0, delete: 0, total: 0 };
+		if (prefixes.length === 0) return agg;
 		for (const c of planChanges) {
 			if (c.mode !== 'managed') continue;
 			// A for_each'd module call reports moduleAddress as 'module.team["alpha"]',
 			// so the instance key must be stripped here too — comparing it raw matches
 			// neither `module.team` nor `module.team.`, and the card read 0 changes.
+			const ma = stripIndex(c.moduleAddress ?? '');
+			if (!prefixes.some((p) => ma === p || ma.startsWith(p + '.'))) continue;
+			if (c.action in agg) {
+				agg[c.action as keyof typeof agg]++;
+				agg.total++;
+			}
+		}
+		return agg;
+	}
+
+	// Plan counts for ONE call card.
+	function callChangeCounts(name: string) {
+		const pref = `module.${name}`;
+		const agg = { create: 0, update: 0, replace: 0, delete: 0, total: 0 };
+		for (const c of planChanges) {
+			if (c.mode !== 'managed') continue;
 			const ma = stripIndex(c.moduleAddress ?? '');
 			if (ma !== pref && !ma.startsWith(pref + '.')) continue;
 			if (c.action in agg) {
@@ -197,6 +224,16 @@
 			}
 		}
 		return agg;
+	}
+
+	// changeForChild finds a plan change for a module-interior card under ANY
+	// call to that definition (first match wins — the box is shared).
+	function changeForChild(folder: string, addr: string): string | undefined {
+		for (const n of callNamesFor(folder)) {
+			const c = changeByAddr.get(`module.${n}.${addr}`);
+			if (c) return c;
+		}
+		return undefined;
 	}
 	const planCounts = $derived.by(() => {
 		const agg = { create: 0, update: 0, replace: 0, delete: 0, total: 0 };
@@ -274,7 +311,7 @@
 		...project.resources,
 		...rootDataSources,
 		...localModules.map((lm) => ({ id: modId(lm.name), type: 'module', name: lm.name, attrs: {} })),
-		...registryModules.map((m) => ({ id: rmodId(m.name), type: 'module', name: m.name, attrs: {} })),
+		...moduleCalls.map((m) => ({ id: rmodId(m.name), type: 'module', name: m.name, attrs: {} })),
 		...ghosts.map((g) => ({ id: `ghost:${g.address}`, type: g.type, name: g.name, attrs: {} }))
 	]);
 	const macroEdges = $derived<Edge[]>([...deriveEdges(project.resources, rootDataSources), ...crossScopeEdges(project)]);
@@ -305,6 +342,7 @@
 				name: lm.name,
 				id: modId(lm.name),
 				count: children.length,
+				uses: callNamesFor(lm.name).length,
 				open,
 				interior,
 				pos,
@@ -330,11 +368,22 @@
 		})
 	);
 
-	// Registry module cards (non-expandable; violet accent).
-	const registryNodes = $derived(
-		registryModules.map((m) => {
+	// Module call cards (non-expandable). A local call is tinted with the app
+	// accent and a registry one violet, so at a glance you can tell a use of an
+	// in-project module from a use of someone else's.
+	const callNodes = $derived(
+		moduleCalls.map((m) => {
 			const pos = positions[rmodId(m.name)] ?? { x: 40, y: 40 };
-			return { ...m, id: rmodId(m.name), x: pos.x, y: pos.y, selected: selected.includes(rmodId(m.name)) };
+			const folder = localFolder(m);
+			return {
+				...m,
+				folder,
+				color: folder ? accent : REGISTRY_MODULE_COLOR,
+				id: rmodId(m.name),
+				x: pos.x,
+				y: pos.y,
+				selected: selected.includes(rmodId(m.name))
+			};
 		})
 	);
 
@@ -365,7 +414,7 @@
 		const m = new Map<string, { x: number; y: number; w: number; h: number; color: string }>();
 		for (const n of rootNodes) m.set(n.id, { x: n.x, y: n.y, w: NODE_W, h: NODE_H, color: n.color });
 		for (const n of rootDataNodes) m.set(n.id, { x: n.x, y: n.y, w: NODE_W, h: NODE_H, color: n.color });
-		for (const n of registryNodes) m.set(n.id, { x: n.x, y: n.y, w: NODE_W, h: NODE_H, color: REGISTRY_MODULE_COLOR });
+		for (const n of callNodes) m.set(n.id, { x: n.x, y: n.y, w: NODE_W, h: NODE_H, color: n.color });
 		for (const mb of moduleBoxes) m.set(mb.id, { x: mb.pos.x, y: mb.pos.y, w: mb.w, h: mb.h, color: accent });
 		return m;
 	});
@@ -914,15 +963,14 @@
 							role="presentation"
 						>
 							<FolderOpen size={14} style="color:{accent};flex:none;" />
-							<span style="font-size:12px;font-weight:700;color:#e6e9ef;">module.{mb.name}</span>
-							<span style="font-size:10px;color:#6b7480;">{mb.count} block{mb.count === 1 ? '' : 's'}</span>
+							<span class="font-mono" style="font-size:12px;font-weight:700;color:#e6e9ef;">modules/{mb.name}</span>
+							<span style="font-size:10px;color:#6b7480;">{mb.count} block{mb.count === 1 ? '' : 's'} · {mb.uses} use{mb.uses === 1 ? '' : 's'}</span>
 							<ChevronDown size={13} style="color:#6b7480;margin-left:auto;" />
 						</div>
 						{#if mb.count === 0}
 							<div class="pointer-events-none absolute inset-x-0 flex justify-center text-[11px] text-white/25" style="top:{MOD_HEADER_H + 12}px;">empty module</div>
 						{/if}
 						{@render modBadge(moduleChangeCounts(mb.name))}
-						{@render multiPill(multiBadge(mb.lm), accent)}
 					</div>
 				{:else}
 					<!-- collapsed module node -->
@@ -939,14 +987,20 @@
 							<div style="width:22px;height:22px;border-radius:6px;background:{accent}22;color:{accent};display:flex;align-items:center;justify-content:center;flex:none;"><Folder size={13} /></div>
 							<div style="min-width:0;">
 								<div style="font-size:13px;font-weight:700;color:#e6e9ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{mb.name}</div>
-								<div class="font-mono" style="font-size:10px;color:#6b7480;">module · {mb.count} block{mb.count === 1 ? '' : 's'}</div>
+								<div class="font-mono" style="font-size:10px;color:#6b7480;">modules/ · {mb.count} block{mb.count === 1 ? '' : 's'}</div>
 							</div>
 							<ChevronRight size={14} style="color:#6b7480;margin-left:auto;flex:none;" />
 						</div>
 						<div title="Drag to connect (depends_on)" role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{accent};border:2px solid #0a0e15;z-index:3;"></div>
 						<div role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{accent};border:2px solid #0a0e15;z-index:3;"></div>
 						{@render modBadge(moduleChangeCounts(mb.name))}
-						{@render multiPill(multiBadge(mb.lm), accent)}
+						{#if mb.uses === 0}
+							<div
+								class="font-mono"
+								title="Defined but never called — add a module call to use it"
+								style="position:absolute;right:-7px;bottom:-9px;padding:2px 6px;border-radius:8px;background:#0d1117;border:1px dashed rgba(255,255,255,0.22);font-size:10px;font-weight:700;color:#6b7480;z-index:4;pointer-events:none;"
+							>unused</div>
+						{/if}
 					</div>
 				{/if}
 			{/each}
@@ -979,29 +1033,34 @@
 				{/if}
 			</svg>
 
-			<!-- registry/external module calls -->
-			{#each registryNodes as node (node.id)}
+			<!--
+			  Module CALL cards — one per `module "<name>"` block, local and
+			  registry alike. The multiplicity pill lives here (count/for_each is
+			  a property of the call), and a local call is joined by an edge to
+			  the definition box it uses.
+			-->
+			{#each callNodes as node (node.id)}
 				<!-- svelte-ignore a11y_click_events_have_key_events -->
 				<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 				<div
 					role="button"
 					tabindex="-1"
-					style="position:absolute;left:{node.x}px;top:{node.y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:#171226;border:1px solid {node.selected ? accent : 'rgba(194,151,255,0.35)'};box-shadow:{node.selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:grab;z-index:2;"
+					style="position:absolute;left:{node.x}px;top:{node.y}px;width:{NODE_W}px;height:{NODE_H}px;border-radius:12px;padding:10px 12px;background:{node.folder ? '#121826' : '#171226'};border:1px solid {node.selected ? accent : node.color + '59'};box-shadow:{node.selected ? '0 0 0 2px ' + accent + '55, 0 10px 28px rgba(0,0,0,0.45)' : '0 6px 16px rgba(0,0,0,0.35)'};cursor:grab;z-index:2;"
 					onmousedown={(e) => onBoxDown(e, node.id)}
-					onclick={(e) => { if (e.shiftKey || e.ctrlKey || e.metaKey) return; if (dragMoved) { dragMoved = false; return; } onEditRegistryModule?.(node.name); }}
-					title="{node.source}{node.version ? ' @ ' + node.version : ''}"
+					onclick={(e) => { if (e.shiftKey || e.ctrlKey || e.metaKey) return; if (dragMoved) { dragMoved = false; return; } onEditModuleCall?.(node.name); }}
+					title="module.{node.name} — {node.source}{node.version ? ' @ ' + node.version : ''}"
 				>
 					<div class="flex items-center gap-2">
-						<div style="width:22px;height:22px;border-radius:6px;background:{REGISTRY_MODULE_COLOR}22;color:{REGISTRY_MODULE_COLOR};display:flex;align-items:center;justify-content:center;flex:none;"><Package size={13} /></div>
+						<div style="width:22px;height:22px;border-radius:6px;background:{node.color}22;color:{node.color};display:flex;align-items:center;justify-content:center;flex:none;"><Package size={13} /></div>
 						<div style="min-width:0;">
 							<div style="font-size:13px;font-weight:700;color:#e6e9ef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{node.name}</div>
-							<div class="font-mono" style="font-size:10px;color:rgba(194,151,255,0.65);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{node.source}</div>
+							<div class="font-mono" style="font-size:10px;color:{node.color}a6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{node.source}</div>
 						</div>
 					</div>
-					<div role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{REGISTRY_MODULE_COLOR};border:2px solid #0a0e15;z-index:3;"></div>
-					<div role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{REGISTRY_MODULE_COLOR};border:2px solid #0a0e15;z-index:3;"></div>
-					{@render modBadge(moduleChangeCounts(node.name))}
-					{@render multiPill(multiBadge(node), REGISTRY_MODULE_COLOR)}
+					<div role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{node.color};border:2px solid #0a0e15;z-index:3;"></div>
+					<div role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{node.color};border:2px solid #0a0e15;z-index:3;"></div>
+					{@render modBadge(callChangeCounts(node.name))}
+					{@render multiPill(multiBadge(node), node.color)}
 				</div>
 			{/each}
 
@@ -1020,11 +1079,11 @@
 				{#if mb.open}
 					{#each mb.lm.resources as r (r.id)}
 						{@const c = childAbs(mb, r.id)}
-						{@render card(r.id, c.x, c.y, r.name, r.type, typeColor(r.type), typeLetter(r.type), false, false, mb.name, changeByAddr.get(`module.${mb.name}.${r.type}.${r.name}`), multiBadge(r))}
+						{@render card(r.id, c.x, c.y, r.name, r.type, typeColor(r.type), typeLetter(r.type), false, false, mb.name, changeForChild(mb.name, `${r.type}.${r.name}`), multiBadge(r))}
 					{/each}
 					{#each mb.lm.dataSources ?? [] as d (d.id)}
 						{@const c = childAbs(mb, d.id)}
-						{@render card(d.id, c.x, c.y, d.name, d.type, DATA_COLOR, typeLetter(d.type), false, false, mb.name, changeByAddr.get(`module.${mb.name}.data.${d.type}.${d.name}`), multiBadge(d), 'data')}
+						{@render card(d.id, c.x, c.y, d.name, d.type, DATA_COLOR, typeLetter(d.type), false, false, mb.name, changeForChild(mb.name, `data.${d.type}.${d.name}`), multiBadge(d), 'data')}
 					{/each}
 				{/if}
 			{/each}

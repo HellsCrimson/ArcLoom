@@ -201,40 +201,40 @@ func parseModuleBody(body *hclsyntax.Body, src []byte, name string, lm *model.Lo
 	}
 }
 
-// linkLocalModules connects root `module` calls with a local ("./...") source to
-// a LocalModule, moving the call's arguments into the module's Inputs and
-// dropping it from the remote Modules list. If the module's child files were not
-// imported, an empty LocalModule is created anyway (registered in order) so the
-// call is represented as a local module — this prevents a duplicate `module`
-// block when the user later fills the module in. Registry/remote modules are
-// left untouched.
+// linkLocalModules makes sure every root `module` call with a local ("./...")
+// source has a LocalModule definition to point at. The CALLS are left in
+// res.Modules untouched — including their name, arguments and meta-args, and
+// including several calls to the same folder, which is the whole point of
+// keeping definitions and uses apart. If the module's own files were not part
+// of the import, an empty definition is registered (in order) so the call still
+// resolves and the user can fill the module in later.
+//
+// Registry/remote calls need no definition and are skipped.
+//
+// A local source that isn't already the canonical "./modules/<folder>" (say
+// "../modules/vpc") is REWRITTEN to it, because the definition it resolves to
+// is generated at modules/<folder>/ and the original relative path would not
+// exist in the run workspace. That rewrite is reported as a warning — it is the
+// one thing here that doesn't round-trip.
 func linkLocalModules(res *Result, locals map[string]*model.LocalModule, order *[]string) {
-	kept := res.Modules[:0]
-	for _, m := range res.Modules {
+	for i := range res.Modules {
+		m := &res.Modules[i]
 		if !isLocalSource(m.Source) {
-			kept = append(kept, m)
 			continue
 		}
 		folder := localSourceFolder(m.Source)
-		lm, ok := locals[folder]
-		if !ok {
-			lm = &model.LocalModule{Name: folder}
-			locals[folder] = lm
+		if folder == "" {
+			continue
+		}
+		if canonical := model.LocalSource(folder); m.Source != canonical {
+			res.Warnings = append(res.Warnings, fmt.Sprintf("module %q: source %q imported as %q (local modules live in modules/<name>/)", m.Name, m.Source, canonical))
+			m.Source = canonical
+		}
+		if _, ok := locals[folder]; !ok {
+			locals[folder] = &model.LocalModule{Name: folder}
 			*order = append(*order, folder)
 		}
-		if lm.Inputs == nil && len(m.Config) > 0 {
-			lm.Inputs = m.Config
-		}
-		// The call's meta-args ride with its arguments: same first-call-wins
-		// rule, so a second call to the same folder can't overwrite them.
-		if lm.Count == "" && lm.ForEach == "" {
-			lm.Count, lm.ForEach = m.Count, m.ForEach
-		}
-		if m.Name != folder {
-			res.Warnings = append(res.Warnings, fmt.Sprintf("module call %q references %q; imported as local module %q (ArcLoom couples the call name to the folder)", m.Name, m.Source, folder))
-		}
 	}
-	res.Modules = kept
 }
 
 // moduleScope returns the local-module name for a file path (the segment after

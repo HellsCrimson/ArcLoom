@@ -93,14 +93,14 @@ func TestImport_LocalModuleCallNoDuplicate(t *testing.T) {
 	postImport(t, h, "p1", `{"files":{"main.tf":"module \"vpc\" {\n  source = \"./modules/vpc\"\n  cidr = \"10.0.0.0/16\"\n}\n"}}`)
 
 	got, _ := st.Get("p1")
-	if len(got.Modules) != 0 {
-		t.Fatalf("local call must not be a remote module: %+v", got.Modules)
+	if len(got.Modules) != 1 || got.Modules[0].LocalFolder() != "vpc" {
+		t.Fatalf("expected one local call to vpc: %+v", got.Modules)
 	}
 	if len(got.LocalModules) != 1 || got.LocalModules[0].Name != "vpc" {
 		t.Fatalf("expected one local module 'vpc': %+v", got.LocalModules)
 	}
-	if _, ok := got.LocalModules[0].Inputs["cidr"]; !ok {
-		t.Fatalf("inputs not captured: %+v", got.LocalModules[0].Inputs)
+	if _, ok := got.Modules[0].Config["cidr"]; !ok {
+		t.Fatalf("inputs not captured: %+v", got.Modules[0].Config)
 	}
 
 	// Generation must emit exactly one `module "vpc"` block.

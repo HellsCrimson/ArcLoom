@@ -100,6 +100,12 @@ func (d *Disk) persist(p *model.Project) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	// Stamp the shape on the way out, so every document this binary writes is
+	// current and only genuinely older ones are ever migrated on load. Doing it
+	// here rather than at each call site covers create, update and the
+	// whole-model replace the undo path uses (whose input comes from the
+	// browser and carries no version).
+	p.ModelVersion = model.ModelVersion
 	data, err := yaml.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("marshal project: %w", err)
@@ -138,5 +144,9 @@ func (d *Disk) load(id string) (*model.Project, error) {
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", configFile, err)
 	}
+	// Single read funnel for Get/List/Update, so this is the one place a stored
+	// project is brought up to the current shape (see model.Project.Normalize —
+	// it is idempotent and cheap).
+	p.Normalize()
 	return &p, nil
 }

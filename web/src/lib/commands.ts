@@ -53,18 +53,18 @@ export interface CommandActions {
 	openSettings(): void;
 	openAcl(): void;
 	jumpToAddress(addr: string): void;
-	openRegistryModule(m: Module): void;
+	openModuleCall(m: Module): void;
 }
 
 // Command palette entries: permission-filtered commands plus every resource
 // across all scopes (global search; selecting one opens its form).
 export function buildPaletteItems(a: {
 	project: Project | null;
-	registryModules: Module[];
+	moduleCalls: Module[];
 	perms: CommandPerms;
 	actions: CommandActions;
 }): PaletteItem[] {
-	const { project, registryModules, perms, actions } = a;
+	const { project, moduleCalls, perms, actions } = a;
 	const items: PaletteItem[] = [];
 	const resItem = (addr: string): PaletteItem => ({
 		id: `res:${addr}`,
@@ -108,8 +108,8 @@ export function buildPaletteItems(a: {
 			for (const r of lm.resources) items.push(resItem(`module.${lm.name}.${r.type}.${r.name}`));
 			for (const d of lm.dataSources ?? []) items.push(resItem(`module.${lm.name}.data.${d.type}.${d.name}`));
 		}
-		for (const m of registryModules) {
-			items.push({ id: `res:module.${m.name}`, label: `module.${m.name}`, hint: m.source, group: 'resources', mono: true, run: () => actions.openRegistryModule(m) });
+		for (const m of moduleCalls) {
+			items.push({ id: `res:module.${m.name}`, label: `module.${m.name}`, hint: m.source, group: 'resources', mono: true, run: () => actions.openModuleCall(m) });
 		}
 	}
 	return items;

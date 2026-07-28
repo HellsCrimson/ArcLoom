@@ -50,6 +50,9 @@ export class StateImportBlockedError extends Error {
 // origin already has it — rewriting it would diverge from the remote.
 export class CommitPushedError extends Error {}
 
+/** A local module definition still has calls using it (409 from the delete). */
+export class ModuleInUseError extends Error {}
+
 async function json<T>(res: Response): Promise<T> {
 	if (!res.ok) {
 		on401(res.status);
@@ -285,22 +288,37 @@ export const api = {
 		});
 	},
 
-	createLocalModule: (projectId: string, name: string) =>
+	// A module DEFINITION (the modules/<name>/ folder). `call: false` defines it
+	// without using it; the default also adds a first call, so define-and-use
+	// stays one step.
+	createLocalModule: (projectId: string, name: string, call = true) =>
 		fetch(`/api/projects/${projectId}/modules/local`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name })
+			body: JSON.stringify({ name, call })
 		}).then((r) => json<Project>(r)),
 
-	deleteLocalModule: (projectId: string, name: string) =>
-		fetch(`/api/projects/${projectId}/modules/local/${encodeURIComponent(name)}`, {
-			method: 'DELETE'
-		}).then((r) => json<Project>(r)),
+	// 409s while a call still uses the definition; force also drops the calls.
+	deleteLocalModule: async (projectId: string, name: string, force = false) => {
+		const r = await fetch(
+			`/api/projects/${projectId}/modules/local/${encodeURIComponent(name)}${force ? '?force=true' : ''}`,
+			{ method: 'DELETE' }
+		);
+		if (r.status === 409) {
+			const b = await r.json().catch(() => ({}) as { error?: string });
+			throw new ModuleInUseError(b.error ?? 'module is still used by a module call');
+		}
+		return json<Project>(r);
+	},
 
-	setRegistryModule: (
+	// A module CALL — one endpoint for both kinds of source (local
+	// "./modules/x" and registry). Replaces the whole call, so config/count/
+	// forEach must always be resent; `rename` moves an existing call.
+	setModuleCall: (
 		projectId: string,
 		body: {
 			name: string;
+			rename?: string;
 			source: string;
 			version?: string;
 			config: Record<string, AttrValue>;
@@ -308,10 +326,15 @@ export const api = {
 			forEach?: string;
 		}
 	) =>
-		fetch(`/api/projects/${projectId}/modules/registry`, {
+		fetch(`/api/projects/${projectId}/modules/call`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(body)
+		}).then((r) => json<Project>(r)),
+
+	deleteModuleCall: (projectId: string, name: string) =>
+		fetch(`/api/projects/${projectId}/modules/call/${encodeURIComponent(name)}`, {
+			method: 'DELETE'
 		}).then((r) => json<Project>(r)),
 
 	// Companion files (templates/scripts reached via file()/templatefile()).
@@ -326,25 +349,6 @@ export const api = {
 	deleteFile: (projectId: string, path: string) =>
 		fetch(`/api/projects/${projectId}/files?path=${encodeURIComponent(path)}`, {
 			method: 'DELETE'
-		}).then((r) => json<Project>(r)),
-
-	deleteRegistryModule: (projectId: string, name: string) =>
-		fetch(`/api/projects/${projectId}/modules/registry/${encodeURIComponent(name)}`, {
-			method: 'DELETE'
-		}).then((r) => json<Project>(r)),
-
-	// Replaces the whole module call, so count/forEach must always be resent —
-	// omitting them clears them, exactly like the resource upsert.
-	setModuleInputs: (
-		projectId: string,
-		name: string,
-		inputs: Record<string, AttrValue>,
-		meta?: { count?: string; forEach?: string }
-	) =>
-		fetch(`/api/projects/${projectId}/modules/local/${encodeURIComponent(name)}/inputs`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ inputs, count: meta?.count ?? '', forEach: meta?.forEach ?? '' })
 		}).then((r) => json<Project>(r)),
 
 	upsertResource: (

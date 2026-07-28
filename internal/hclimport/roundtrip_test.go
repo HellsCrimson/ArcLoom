@@ -32,7 +32,10 @@ func TestRoundTrip_LocalModule(t *testing.T) {
 			Outputs: []model.Output{
 				{Name: "pet", Value: model.AttrValue{Mode: model.ModeReference, Ref: "random_pet.n.id"}},
 			},
-			Inputs: map[string]model.AttrValue{
+		}},
+		Modules: []model.Module{{
+			Name: "vpc", Source: model.LocalSource("vpc"),
+			Config: map[string]model.AttrValue{
 				"cidr": {Mode: model.ModeLiteral, Literal: cty.StringVal("10.0.0.0/16")},
 			},
 		}},
@@ -57,8 +60,11 @@ func TestRoundTrip_LocalModule(t *testing.T) {
 	if lm.Name != "vpc" || len(lm.Variables) != 1 || lm.Variables[0].Name != "cidr" {
 		t.Errorf("variables lost: %+v", lm)
 	}
-	if got := lm.Inputs["cidr"]; got.Mode != model.ModeLiteral || got.Literal.AsString() != "10.0.0.0/16" {
-		t.Errorf("input lost: %+v", lm.Inputs)
+	if len(res.Modules) != 1 || res.Modules[0].LocalFolder() != "vpc" {
+		t.Fatalf("the call lost its definition: %+v", res.Modules)
+	}
+	if got := res.Modules[0].Config["cidr"]; got.Mode != model.ModeLiteral || got.Literal.AsString() != "10.0.0.0/16" {
+		t.Errorf("input lost: %+v", res.Modules[0].Config)
 	}
 	if len(lm.Resources) != 1 || len(lm.Outputs) != 1 {
 		t.Errorf("module body lost: %+v", lm)

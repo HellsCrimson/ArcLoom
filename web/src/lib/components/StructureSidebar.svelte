@@ -1,7 +1,16 @@
 <script lang="ts">
 	// Structure sidebar: provider source input + configured providers (with update
 	// badges and alias management), the resource/data-source type palette, and the
-	// structure tree (root scope, local modules, registry module calls).
+	// structure tree.
+	//
+	// The tree separates USES from DEFINITIONS, because they are separate things:
+	// `main` lists what the root configuration actually contains — its resources,
+	// its data sources and its module CALLS (expanded into one row per instance
+	// when count/for_each is literal enough to enumerate) — while the modules
+	// below it are the definitions those calls point at. A definition nobody
+	// calls generates no block, and one called three times shows three entries
+	// under main.
+	//
 	// Reads the resource-form store directly for the type/edit highlight states;
 	// everything else arrives as data + callbacks (permission is a boolean, never
 	// an auth import).
@@ -9,7 +18,8 @@
 	import { btnGhost, iconBtn } from '$lib/styles';
 	import { form } from '$lib/stores/resourceForm.svelte';
 	import { multiBadge, type MultiBadge } from '$lib/model/multiplicity';
-	import { Loader2, Plus, Trash2, FolderGit2, Folder, Settings, Package, ArrowUp, FileCode } from 'lucide-svelte';
+	import { expandCall, indexSuffix } from '$lib/model/expand';
+	import { Loader2, Plus, Trash2, FolderGit2, Folder, Settings, Package, ArrowUp, FileCode, Boxes } from 'lucide-svelte';
 
 	let {
 		width,
@@ -18,7 +28,7 @@
 		providerUpdates,
 		bumping,
 		localModules,
-		registryModules,
+		moduleCalls,
 		files,
 		activeModule,
 		addingProvider = false,
@@ -34,9 +44,8 @@
 		onDeleteResource,
 		onNewModule,
 		onDeleteModule,
-		onOpenInputs,
-		onOpenRegistryModule,
-		onDeleteRegistryModule,
+		onOpenCall,
+		onDeleteCall,
 		onOpenFile,
 		onDeleteFile
 	}: {
@@ -46,7 +55,7 @@
 		providerUpdates: Record<string, ProviderUpdate>;
 		bumping: string;
 		localModules: LocalModule[];
-		registryModules: Module[];
+		moduleCalls: Module[];
 		files: ProjectFile[];
 		activeModule: string | null;
 		addingProvider?: boolean;
@@ -62,12 +71,36 @@
 		onDeleteResource: (id: string, kind?: ResourceKind) => void;
 		onNewModule: () => void;
 		onDeleteModule: (name: string) => void;
-		onOpenInputs: () => void;
-		onOpenRegistryModule: (m?: Module) => void;
-		onDeleteRegistryModule: (name: string) => void;
+		onOpenCall: (m?: Module, source?: string) => void;
+		onDeleteCall: (name: string) => void;
 		onOpenFile: (f?: ProjectFile) => void;
 		onDeleteFile: (path: string) => void;
 	} = $props();
+
+	// localFolder mirrors model.Module.LocalFolder: "" for a registry source.
+	const LOCAL_PREFIX = './modules/';
+	function localFolder(m: Module): string {
+		if (!m.source?.startsWith(LOCAL_PREFIX)) return '';
+		const f = m.source.slice(LOCAL_PREFIX.length);
+		return f && !f.includes('/') ? f : '';
+	}
+
+	// Root-scope entry count: what `main` actually contains, module calls (and
+	// their instances) included — the number used to stop at resources, so a
+	// root made almost entirely of module calls read as empty.
+	const rootCount = $derived.by(() => {
+		let n = (project?.resources.length ?? 0) + (project?.dataSources?.length ?? 0);
+		for (const m of moduleCalls) {
+			const e = expandCall(m, project);
+			n += e ? e.keys.length + e.truncated : 1;
+		}
+		return n;
+	});
+
+	// callsFor drives the "N uses" hint on a definition row.
+	function callsFor(folder: string): Module[] {
+		return moduleCalls.filter((m) => localFolder(m) === folder);
+	}
 </script>
 
 <!--
@@ -171,12 +204,12 @@
 			</div>
 		{/if}
 
-		<!-- Structure tree: main + local modules as folders -->
+		<!-- Structure tree: main (with its module calls) + the definitions below -->
 		<div>
 			<div class="mb-1 flex items-center justify-between">
 				<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Structure</span>
 				<span class="flex items-center">
-					<button class={iconBtn} title="Add registry module" aria-label="Add registry module" onclick={() => onOpenRegistryModule()}><Package size={14} /></button>
+					<button class={iconBtn} title="Add a module call (registry or local)" aria-label="Add module call" onclick={() => onOpenCall()}><Package size={14} /></button>
 					<button class={iconBtn} title="New local module" aria-label="New local module" onclick={onNewModule}><Plus size={14} /></button>
 				</span>
 			</div>
@@ -184,7 +217,7 @@
 			<!-- main (root) -->
 			<button class="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs {activeModule === null ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => onSelectScope(null)}>
 				<Folder size={12} /> main
-				<span class="ml-auto text-[10px]">{project.resources.length}</span>
+				<span class="ml-auto text-[10px]" title="Blocks in the root configuration, module instances included">{rootCount}</span>
 			</button>
 			{#if activeModule === null}
 				<ul class="mb-1 ml-3 space-y-0.5 border-l border-[var(--al-border)] pl-2">
@@ -202,16 +235,74 @@
 							<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteResource(d.id, 'data')} aria-label="Delete"><Trash2 size={11} /></button>
 						</li>
 					{/each}
+
+					<!--
+					  Module CALLS live here, in main, because that is where their
+					  blocks are. A call whose count/for_each enumerates shows one
+					  row per instance carrying the real address
+					  (module.team["alpha"]) — which is the only way the tree tells
+					  you three definitions can mean thirty resources. When the
+					  expression needs the engine, it stays one row with the badge.
+					-->
+					{#each moduleCalls as m (m.name)}
+						{@const folder = localFolder(m)}
+						{@const exp = expandCall(m, project)}
+						<li class="group flex items-center">
+							<button
+								class="mono min-w-0 flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px]"
+								style="color:{folder ? 'var(--al-accent)' : '#c297ff'};opacity:0.9;"
+								onclick={() => onOpenCall(m)}
+								title="Edit module.{m.name} — {m.source}{m.version ? ' @ ' + m.version : ''}"
+							>module.{m.name}</button>
+							{#if !exp}{@render multi(multiBadge(m))}{/if}
+							<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteCall(m.name)} aria-label="Delete module call"><Trash2 size={11} /></button>
+						</li>
+						{#if exp}
+							{#each exp.keys as key (key)}
+								<li class="flex items-center">
+									<button
+										class="mono min-w-0 flex-1 truncate rounded py-0.5 pl-4 pr-1.5 text-left text-[11px] text-[var(--al-muted)] hover:text-[var(--al-text)]"
+										onclick={() => onOpenCall(m)}
+										title="Instance of module.{m.name} ({exp.kind === 'count' ? 'count' : 'for_each'})"
+									>↳ module.{m.name}{indexSuffix(exp, key)}</button>
+								</li>
+							{/each}
+							{#if exp.truncated > 0}
+								<li class="pl-4 text-[10px] text-[var(--al-muted)]">+{exp.truncated} more instance{exp.truncated === 1 ? '' : 's'}</li>
+							{:else if exp.keys.length === 0}
+								<li class="pl-4 text-[10px] text-[var(--al-muted)]" title="count = 0 / for_each = [] — this call creates nothing">↳ no instances</li>
+							{/if}
+						{/if}
+					{/each}
 				</ul>
 			{/if}
 
-			<!-- local modules -->
+			<!--
+			  Definitions. Separate from the calls above: a module here is a
+			  modules/<name>/ folder, and whether it is used (and how often) is the
+			  "N uses" hint, not a property of the folder.
+			-->
+			<div class="mb-1 mt-2 flex items-center gap-1 px-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--al-muted)]">
+				<Boxes size={11} /> Module definitions
+			</div>
+			{#if localModules.length === 0}
+				<p class="px-2 text-[11px] text-[var(--al-muted)]">No local modules. Add one to author a reusable modules/&lt;name&gt;/ folder.</p>
+			{/if}
 			{#each localModules as m (m.name)}
+				{@const uses = callsFor(m.name)}
 				<div class="group flex items-center">
-					<button class="flex flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs {activeModule === m.name ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => onSelectScope(m.name)}>
+					<button class="flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs {activeModule === m.name ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]'}" onclick={() => onSelectScope(m.name)}>
 						<FolderGit2 size={12} /> <span class="truncate">modules/{m.name}</span>
-						<span class="ml-auto text-[10px]">{(m.resources ?? []).length}</span>
-						{@render multi(multiBadge(m), 'This module call is repeated — every block inside it is created once per instance.\n')}
+						<span class="ml-auto shrink-0 text-[10px]" title="Blocks defined in this module">{(m.resources ?? []).length}</span>
+						<span
+							class="shrink-0 rounded-full px-1.5 py-px text-[10px] font-semibold"
+							style={uses.length
+								? 'border:1px solid var(--al-border);background:var(--al-accent-weak);color:var(--al-accent);'
+								: 'border:1px dashed var(--al-border);color:var(--al-muted);'}
+							title={uses.length
+								? `Used by ${uses.map((u) => 'module.' + u.name).join(', ')}`
+								: 'Defined but never called — this module generates its folder and nothing else'}
+						>{uses.length ? `${uses.length} use${uses.length === 1 ? '' : 's'}` : 'unused'}</span>
 					</button>
 					<button class="px-1 opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteModule(m.name)} aria-label="Delete module"><Trash2 size={12} /></button>
 				</div>
@@ -231,22 +322,15 @@
 								<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteResource(d.id, 'data')} aria-label="Delete"><Trash2 size={11} /></button>
 							</li>
 						{/each}
+						<!--
+						  The arguments belong to a CALL, not to the folder, so from
+						  here the only sensible action is to add another use of it.
+						-->
 						<li>
-							<button class="mt-0.5 text-[10px] text-[var(--al-muted)] hover:text-[var(--al-accent)]" onclick={() => onOpenInputs()}>⚙ module inputs</button>
+							<button class="mt-0.5 text-[10px] text-[var(--al-muted)] hover:text-[var(--al-accent)]" onclick={() => onOpenCall(undefined, `./modules/${m.name}`)}>+ use this module</button>
 						</li>
 					</ul>
 				{/if}
-			{/each}
-
-			<!-- registry/external module calls -->
-			{#each registryModules as m (m.name)}
-				<div class="group flex items-center">
-					<button class="flex flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs text-[var(--al-muted)] hover:bg-[var(--al-panel-2)]" onclick={() => onOpenRegistryModule(m)} title="{m.source}{m.version ? ' @ ' + m.version : ''}">
-						<Package size={12} style="color:#c297ff" /> <span class="truncate">module.{m.name}</span>
-						{@render multi(multiBadge(m), 'This module call is repeated — every block inside it is created once per instance.\n')}
-					</button>
-					<button class="px-1 opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteRegistryModule(m.name)} aria-label="Delete registry module"><Trash2 size={12} /></button>
-				</div>
 			{/each}
 		</div>
 

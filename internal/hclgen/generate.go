@@ -72,15 +72,13 @@ func Generate(p *model.Project) ([]byte, error) {
 			return nil, err
 		}
 	}
+	// One loop for every module call: local ("./modules/x") and registry alike.
+	// A local module's *definition* generates its own file (GenerateFiles) and
+	// emits nothing here — a definition that is never called is simply never
+	// used, exactly as in HCL.
 	for _, m := range p.Modules {
 		body.AppendNewline()
 		if err := writeModuleBlock(body, m); err != nil {
-			return nil, err
-		}
-	}
-	for _, lm := range p.LocalModules {
-		body.AppendNewline()
-		if err := writeLocalModuleCall(body, lm); err != nil {
 			return nil, err
 		}
 	}
@@ -307,18 +305,6 @@ func writeModuleBlock(body *hclwrite.Body, m model.Module) error {
 		b.SetAttributeValue("version", cty.StringVal(m.Version))
 	}
 	return writeAttrs(b, m.Config)
-}
-
-// writeLocalModuleCall emits the root's call to a local module:
-// module "<name>" { source = "./modules/<name>"; <inputs> }
-func writeLocalModuleCall(body *hclwrite.Body, lm model.LocalModule) error {
-	blk := body.AppendNewBlock("module", []string{lm.Name})
-	b := blk.Body()
-	if err := writeModuleMeta(b, lm.Name, lm.Count, lm.ForEach); err != nil {
-		return err
-	}
-	b.SetAttributeValue("source", cty.StringVal("./modules/"+lm.Name))
-	return writeAttrs(b, lm.Inputs)
 }
 
 // GenerateModuleFile renders a local module's own file (variables, locals, data,

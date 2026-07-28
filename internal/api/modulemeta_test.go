@@ -33,45 +33,61 @@ func TestModuleMetaArgs(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(body)))
 		return rec
 	}
-	const regPath = "/api/projects/p1/modules/registry"
-	const inputsPath = "/api/projects/p1/modules/local/team/inputs"
+	const callPath = "/api/projects/p1/modules/call"
+	call := func(p *model.Project, name string) model.Module {
+		t.Helper()
+		for _, m := range p.Modules {
+			if m.Name == name {
+				return m
+			}
+		}
+		t.Fatalf("no call %q in %+v", name, p.Modules)
+		return model.Module{}
+	}
 
 	// Registry module: for_each persists.
-	if rec := do(http.MethodPut, regPath,
+	if rec := do(http.MethodPut, callPath,
 		`{"name":"vpc","source":"terraform-aws-modules/vpc/aws","config":{},"forEach":"var.regions"}`); rec.Code != http.StatusOK {
 		t.Fatalf("create with for_each = %d (%s)", rec.Code, rec.Body.String())
 	}
 	got, _ := st.Get("p1")
-	if len(got.Modules) != 1 || got.Modules[0].ForEach != "var.regions" {
+	if call(got, "vpc").ForEach != "var.regions" {
 		t.Fatalf("registry for_each not stored: %+v", got.Modules)
 	}
 
-	// Local module call: count persists next to the inputs.
-	if rec := do(http.MethodPut, inputsPath,
-		`{"inputs":{"idx":{"mode":"expression","expr":"count.index"}},"count":"3"}`); rec.Code != http.StatusOK {
-		t.Fatalf("set inputs with count = %d (%s)", rec.Code, rec.Body.String())
+	// Local module call: count persists next to the inputs, through the very
+	// same endpoint — one block type, one handler.
+	if rec := do(http.MethodPut, callPath,
+		`{"name":"team","source":"./modules/team","config":{"idx":{"mode":"expression","expr":"count.index"}},"count":"3"}`); rec.Code != http.StatusOK {
+		t.Fatalf("set local call with count = %d (%s)", rec.Code, rec.Body.String())
 	}
 	got, _ = st.Get("p1")
-	if got.LocalModules[0].Count != "3" {
-		t.Fatalf("local module count not stored: %+v", got.LocalModules[0])
+	if c := call(got, "team"); c.Count != "3" || c.LocalFolder() != "team" {
+		t.Fatalf("local module call not stored: %+v", c)
 	}
 
 	// Omitting them clears them — the "upsert replaces the call" contract that
 	// the form has to honour by always resending.
-	if rec := do(http.MethodPut, inputsPath, `{"inputs":{}}`); rec.Code != http.StatusOK {
+	if rec := do(http.MethodPut, callPath, `{"name":"team","source":"./modules/team","config":{}}`); rec.Code != http.StatusOK {
 		t.Fatalf("clear = %d (%s)", rec.Code, rec.Body.String())
 	}
 	got, _ = st.Get("p1")
-	if got.LocalModules[0].Count != "" {
-		t.Fatalf("count should have been cleared: %+v", got.LocalModules[0])
+	if c := call(got, "team"); c.Count != "" {
+		t.Fatalf("count should have been cleared: %+v", c)
 	}
 
-	// Mutual exclusion and expression validity, on both endpoints.
+	// A local source with no matching definition is rejected, so generation
+	// can never emit a call into a folder that is never written.
+	if rec := do(http.MethodPut, callPath, `{"name":"ghost","source":"./modules/nope","config":{}}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for an unknown local source, got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	// Mutual exclusion and expression validity, for both kinds of source.
 	bad := []struct{ path, body string }{
-		{regPath, `{"name":"vpc","source":"a/b/c","config":{},"count":"1","forEach":"var.t"}`},
-		{regPath, `{"name":"vpc","source":"a/b/c","config":{},"forEach":"var.["}`},
-		{inputsPath, `{"inputs":{},"count":"1","forEach":"var.t"}`},
-		{inputsPath, `{"inputs":{},"count":"1 +"}`},
+		{callPath, `{"name":"vpc","source":"a/b/c","config":{},"count":"1","forEach":"var.t"}`},
+		{callPath, `{"name":"vpc","source":"a/b/c","config":{},"forEach":"var.["}`},
+		{callPath, `{"name":"team","source":"./modules/team","config":{},"count":"1","forEach":"var.t"}`},
+		{callPath, `{"name":"team","source":"./modules/team","config":{},"count":"1 +"}`},
 	}
 	for _, c := range bad {
 		if rec := do(http.MethodPut, c.path, c.body); rec.Code != http.StatusBadRequest {

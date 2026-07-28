@@ -236,9 +236,10 @@ output "vpc_id" {
 		t.Fatal(err)
 	}
 
-	// The local call is NOT a remote module.
-	if len(res.Modules) != 0 {
-		t.Fatalf("local module should not appear in res.Modules: %+v", res.Modules)
+	// The call stays a call (res.Modules holds local and remote alike); what
+	// makes it local is its source resolving to a definition.
+	if len(res.Modules) != 1 || res.Modules[0].LocalFolder() != "vpc" {
+		t.Fatalf("expected one local call: %+v", res.Modules)
 	}
 	// The child's variable/resource/output must NOT leak into the root scope.
 	if len(res.Variables) != 0 || len(res.Resources) != 0 || len(res.Outputs) != 0 {
@@ -261,9 +262,12 @@ output "vpc_id" {
 	if len(lm.Outputs) != 1 || lm.Outputs[0].Name != "vpc_id" {
 		t.Errorf("module outputs: %+v", lm.Outputs)
 	}
-	// The root call's argument became an Input on the module.
-	if got := lm.Inputs["cidr"]; got.Mode != model.ModeLiteral || got.Literal.AsString() != "10.0.0.0/16" {
-		t.Errorf("module input cidr: %+v", lm.Inputs["cidr"])
+	// The root call's argument stays on the CALL, not on the definition.
+	if len(res.Modules) != 1 || res.Modules[0].LocalFolder() != lm.Name {
+		t.Fatalf("expected one call to %q: %+v", lm.Name, res.Modules)
+	}
+	if got := res.Modules[0].Config["cidr"]; got.Mode != model.ModeLiteral || got.Literal.AsString() != "10.0.0.0/16" {
+		t.Errorf("call argument cidr: %+v", res.Modules[0].Config)
 	}
 	// The provider used inside the module is registered at the root.
 	if len(res.Providers) != 1 || res.Providers[0].Key != "random" {
@@ -272,10 +276,9 @@ output "vpc_id" {
 }
 
 func TestParse_LocalModuleCallWithoutFilesBecomesLocalModule(t *testing.T) {
-	// A local source whose child files weren't imported still becomes a (empty)
-	// local module carrying the inputs — NOT a remote module. This is what lets
-	// the user later populate it (or import files into it) without producing a
-	// duplicate `module` block.
+	// A local source whose child files weren't imported still gets an (empty)
+	// local module DEFINITION to point at. This is what lets the user later
+	// populate it (or import files into it) without the call dangling.
 	root := `
 module "vpc" {
   source = "./modules/vpc"
@@ -286,14 +289,14 @@ module "vpc" {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Modules) != 0 {
-		t.Fatalf("local call must not be a remote module: %+v", res.Modules)
+	if len(res.Modules) != 1 || res.Modules[0].LocalFolder() != "vpc" {
+		t.Fatalf("the call must survive and resolve to vpc: %+v", res.Modules)
 	}
 	if len(res.LocalModules) != 1 || res.LocalModules[0].Name != "vpc" {
 		t.Fatalf("expected an empty local module 'vpc': %+v", res.LocalModules)
 	}
-	if got := res.LocalModules[0].Inputs["cidr"]; got.Mode != model.ModeLiteral || got.Literal.AsString() != "10.0.0.0/16" {
-		t.Errorf("inputs not captured: %+v", res.LocalModules[0].Inputs)
+	if got := res.Modules[0].Config["cidr"]; got.Mode != model.ModeLiteral || got.Literal.AsString() != "10.0.0.0/16" {
+		t.Errorf("inputs not captured: %+v", res.Modules[0].Config)
 	}
 }
 

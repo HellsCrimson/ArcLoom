@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, streamPlan, streamOp, DeleteBlockedError, type DriftInfo, type StateEntry, type Environment, type Approval, type PendingPlan } from '$lib/api/client';
+	import { api, streamPlan, streamOp, DeleteBlockedError, ModuleInUseError, type DriftInfo, type StateEntry, type Environment, type Approval, type PendingPlan } from '$lib/api/client';
 	import RunsPanel from '$lib/components/RunsPanel.svelte';
 	import StatePanel from '$lib/components/StatePanel.svelte';
 	import type { AttrValue, DriftConfig, Engine, Module, Project, ProjectSummary, ProviderInstance, ProviderUpdate, Resource, ResourceKind } from '$lib/types';
@@ -11,9 +11,8 @@
 	import DestroyConfirmModal from '$lib/components/DestroyConfirmModal.svelte';
 	import TerraformBlockModal from '$lib/components/TerraformBlockModal.svelte';
 	import NewModuleModal from '$lib/components/NewModuleModal.svelte';
-	import RegistryModuleModal from '$lib/components/RegistryModuleModal.svelte';
+	import ModuleCallModal from '$lib/components/ModuleCallModal.svelte';
 	import FileModal from '$lib/components/FileModal.svelte';
-	import ModuleInputsModal from '$lib/components/ModuleInputsModal.svelte';
 	import ImportHclModal from '$lib/components/ImportHclModal.svelte';
 	import ImportStateModal from '$lib/components/ImportStateModal.svelte';
 	import ImportResourceModal from '$lib/components/ImportResourceModal.svelte';
@@ -34,7 +33,7 @@
 	import RunOutputPane from '$lib/components/RunOutputPane.svelte';
 	import StructureSidebar from '$lib/components/StructureSidebar.svelte';
 	import { attrToText, buildAttrs, rowsToAttrs } from '$lib/form/attrs';
-	import { findInScope, providerForType, providerVersionForSource, resolveAddress, suggestName } from '$lib/model/scope';
+	import { findInScope, localFolder, providerForType, providerVersionForSource, resolveAddress, suggestName } from '$lib/model/scope';
 	import { iconBtn, hdrBtn } from '$lib/styles';
 	import { buildImportRows, buildPaletteItems, buildToolItems, globalKeydown, type CommandActions } from '$lib/commands';
 	import { auth } from '$lib/stores/auth.svelte';
@@ -344,7 +343,7 @@
 		openSettings: () => (showSettings = true),
 		openAcl: () => (showAcl = true),
 		jumpToAddress: (addr: string) => jumpToAddress(addr),
-		openRegistryModule: (m: Module) => openRegModule(m)
+		openModuleCall: (m: Module) => openCall(m)
 	};
 
 	// Command palette entries: permission-filtered commands plus every resource
@@ -352,7 +351,7 @@
 	const paletteItems = $derived.by(() =>
 		buildPaletteItems({
 			project,
-			registryModules,
+			moduleCalls,
 			perms: { resources: auth.can('resources'), deploy: auth.can('deploy'), git: auth.can('git'), admin: auth.isAdmin },
 			actions: commandActions
 		})
@@ -609,7 +608,6 @@
 	// ---- local modules ----
 	let showNewModule = $state(false);
 	let nmName = $state('');
-	let showInputs = $state(false);
 
 	async function createModule() {
 		if (!project || !nmName.trim()) return;
@@ -627,15 +625,25 @@
 		}
 	}
 
-	async function deleteModule(name: string) {
+	// Deleting a DEFINITION is refused while a call still uses it (deleting only
+	// the folder would leave a module block pointing at nothing). The 409 names
+	// the calls, so the confirm can offer to take them along.
+	async function deleteModule(name: string, force = false) {
 		if (!project) return;
-		if (!confirm(`Delete module "${name}" and all its resources?`)) return;
+		if (!force && !confirm(`Delete module "${name}" and all its resources?`)) return;
 		try {
-			project = await api.deleteLocalModule(project.id, name);
+			project = await api.deleteLocalModule(project.id, name, force);
 			await refreshProjects();
 			if (activeModule === name) await selectScope(null);
 			else await refreshHcl();
 		} catch (err) {
+			if (err instanceof ModuleInUseError) {
+				if (confirm(`${err.message}.\n\nDelete the module AND those calls?`)) {
+					await deleteModule(name, true);
+					return;
+				}
+				return;
+			}
 			error = (err as Error).message;
 		}
 	}
@@ -656,23 +664,6 @@
 	function resetFormOnly() {
 		form.resetForm();
 	}
-
-	// Draft values for the module-inputs modal (raw HCL text per variable) plus
-	// the call's count/for_each meta-args, which the save must always resend.
-	let inputDraft = $state<Record<string, string>>({});
-	let inputCount = $state('');
-	let inputForEach = $state('');
-	$effect(() => {
-		if (showInputs && activeMod) {
-			const d: Record<string, string> = {};
-			for (const v of activeMod.variables ?? []) {
-				d[v.name] = attrToText(activeMod.inputs?.[v.name]);
-			}
-			inputDraft = d;
-			inputCount = activeMod.count ?? '';
-			inputForEach = activeMod.forEach ?? '';
-		}
-	});
 
 	// ---- companion files (templates/scripts for file()/templatefile()) ----
 	// Scope-independent: a path under modules/<name>/ targets that module, so
@@ -722,8 +713,8 @@
 		}
 	}
 
-	// ---- registry/external modules ----
-	const registryModules = $derived(project?.modules ?? []);
+	// ---- module calls (registry AND local: one block type, one editor) ----
+	const moduleCalls = $derived(project?.modules ?? []);
 	let showRegModule = $state(false);
 	let rmEditing = $state<string | null>(null); // original name when editing
 	let rmName = $state('');
@@ -733,32 +724,56 @@
 	let rmCount = $state('');
 	let rmForEach = $state('');
 
-	function openRegModule(m?: Module) {
+	// The argument rows a call starts with. For a local source they are seeded
+	// from the definition's DECLARED variables (what the old module-inputs modal
+	// did) so you get a labelled form instead of guessing key names; existing
+	// values win, and any extra key already on the call is kept rather than
+	// silently dropped.
+	function callRows(m: Module | undefined, source: string): { key: string; expr: string }[] {
+		const existing = m?.config ? Object.entries(m.config).map(([key, av]) => ({ key, expr: attrToText(av) })) : [];
+		const folder = localFolder({ source });
+		const declared = folder ? (project?.localModules?.find((lm) => lm.name === folder)?.variables ?? []) : [];
+		if (declared.length === 0) return existing;
+		const byKey = new Map(existing.map((r) => [r.key, r]));
+		const rows = declared.map((v) => byKey.get(v.name) ?? { key: v.name, expr: '' });
+		for (const r of existing) if (!declared.some((v) => v.name === r.key)) rows.push(r);
+		return rows;
+	}
+
+	// openCall edits an existing call, or starts a new one — `presetSource` is
+	// how "use this module" on a definition opens the editor pre-aimed at it.
+	function openCall(m?: Module, presetSource?: string) {
 		rmEditing = m?.name ?? null;
 		rmName = m?.name ?? '';
-		rmSource = m?.source ?? '';
+		rmSource = m?.source ?? presetSource ?? '';
 		rmVersion = m?.version ?? '';
-		rmRows = m?.config ? Object.entries(m.config).map(([key, av]) => ({ key, expr: attrToText(av) })) : [];
+		rmRows = callRows(m, rmSource);
 		rmCount = m?.count ?? '';
 		rmForEach = m?.forEach ?? '';
+		if (!m && presetSource) {
+			// Suggest a free name so a second use of a module is one click away.
+			const folder = localFolder({ source: presetSource });
+			const taken = new Set(moduleCalls.map((c) => c.name));
+			let n = folder || 'module';
+			let i = 1;
+			while (taken.has(n)) n = `${folder || 'module'}_${++i}`;
+			rmName = n;
+		}
 		showRegModule = true;
 	}
 
-	async function saveRegModule() {
+	async function saveCall() {
 		if (!project || !rmName.trim() || !rmSource.trim()) return;
 		busy = 'regmodule';
 		error = '';
 		try {
-			const config = rowsToAttrs(rmRows);
-			// Upsert keys on name, so a rename must drop the old call first.
-			if (rmEditing && rmEditing !== rmName.trim()) {
-				await api.deleteRegistryModule(project.id, rmEditing);
-			}
-			project = await api.setRegistryModule(project.id, {
+			project = await api.setModuleCall(project.id, {
 				name: rmName.trim(),
+				// The server moves the call rather than making a second one.
+				rename: rmEditing ?? undefined,
 				source: rmSource.trim(),
 				version: rmVersion.trim() || undefined,
-				config,
+				config: rowsToAttrs(rmRows),
 				count: rmCount.trim(),
 				forEach: rmForEach.trim()
 			});
@@ -772,44 +787,15 @@
 		}
 	}
 
-	async function deleteRegModule(name: string) {
+	async function deleteCall(name: string) {
 		if (!project) return;
-		if (!confirm(`Remove module "${name}" from the project?`)) return;
+		if (!confirm(`Remove the call module."${name}" from the project?`)) return;
 		try {
-			project = await api.deleteRegistryModule(project.id, name);
+			project = await api.deleteModuleCall(project.id, name);
 			await refreshProjects();
 			await refreshHcl();
 		} catch (err) {
 			error = (err as Error).message;
-		}
-	}
-
-	function submitInputs() {
-		const inputs: Record<string, AttrValue> = {};
-		for (const [k, text] of Object.entries(inputDraft)) {
-			const t = (text ?? '').trim();
-			if (t) inputs[k] = { mode: 'expression', expr: t };
-		}
-		saveModuleInputs(inputs, { count: inputCount.trim(), forEach: inputForEach.trim() });
-	}
-
-	// meta is REQUIRED: this replaces the whole module call, so a caller that
-	// omitted count/forEach would silently drop them.
-	async function saveModuleInputs(
-		inputs: Record<string, AttrValue>,
-		meta: { count: string; forEach: string }
-	) {
-		if (!project || !activeModule) return;
-		busy = 'inputs';
-		try {
-			project = await api.setModuleInputs(project.id, activeModule, inputs, meta);
-			await refreshProjects();
-			await refreshHcl();
-			showInputs = false;
-		} catch (err) {
-			error = (err as Error).message;
-		} finally {
-			busy = '';
 		}
 	}
 
@@ -1089,10 +1075,10 @@
 	// Returns false when nothing matches (e.g. a planned delete already gone
 	// from the model).
 	function jumpToAddress(address: string): boolean {
-		const found = resolveAddress(project, registryModules, address);
+		const found = resolveAddress(project, moduleCalls, address);
 		if (!found) return false;
 		if (found.kind === 'registryModule') {
-			openRegModule(found.module);
+			openCall(found.module);
 			return true;
 		}
 		activeModule = found.module ?? null;
@@ -1533,7 +1519,7 @@
 				onDeleteResource={editorDeleteResource}
 				onRenameResource={(id, name, mod) => resaveResource(id, { name }, mod)}
 				onSetDependsOn={(id, deps, mod) => resaveResource(id, { dependsOn: deps }, mod)}
-				onEditRegistryModule={(name) => { showEditor = false; openRegModule(registryModules.find((m) => m.name === name)); }}
+				onEditModuleCall={(name) => { showEditor = false; openCall(moduleCalls.find((m) => m.name === name)); }}
 				onClose={() => (showEditor = false)}
 			/>
 		{:else}
@@ -1544,7 +1530,7 @@
 			{providerUpdates}
 			{bumping}
 			{localModules}
-			{registryModules}
+			{moduleCalls}
 			{files}
 			{activeModule}
 			addingProvider={busy === 'provider'}
@@ -1560,9 +1546,8 @@
 			onDeleteResource={deleteScopedResource}
 			onNewModule={() => { nmName = ''; showNewModule = true; }}
 			onDeleteModule={deleteModule}
-			onOpenInputs={() => (showInputs = true)}
-			onOpenRegistryModule={openRegModule}
-			onDeleteRegistryModule={deleteRegModule}
+			onOpenCall={openCall}
+			onDeleteCall={deleteCall}
 			onOpenFile={openFile}
 			onDeleteFile={deleteFile}
 		/>
@@ -1776,7 +1761,7 @@
 	/>
 
 	<!-- Registry module modal (add / edit) -->
-	<RegistryModuleModal
+	<ModuleCallModal
 		bind:open={showRegModule}
 		editing={rmEditing}
 		bind:name={rmName}
@@ -1786,22 +1771,9 @@
 		bind:count={rmCount}
 		bind:forEach={rmForEach}
 		saving={busy === 'regmodule'}
-		onSave={saveRegModule}
+		onSave={saveCall}
 	/>
 
-	<!-- Module inputs modal -->
-	{#if activeMod}
-		<ModuleInputsModal
-			bind:open={showInputs}
-			moduleName={activeMod.name}
-			variables={activeMod.variables ?? []}
-			bind:draft={inputDraft}
-			bind:count={inputCount}
-			bind:forEach={inputForEach}
-			saving={busy === 'inputs'}
-			onSave={submitInputs}
-		/>
-	{/if}
 {/if}
 
 <!-- Import HCL modal -->

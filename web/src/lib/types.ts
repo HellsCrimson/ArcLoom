@@ -134,16 +134,33 @@ export interface Output {
 	sensitive?: boolean;
 }
 
+/**
+ * One `module "<name>" {}` block — a USE of a module, and the only thing that
+ * puts one into the configuration. `source` points either at a local definition
+ * in this project ("./modules/team", see LocalModule) or at a registry/remote
+ * address; both kinds live in Project.modules because they generate the same
+ * block and share the `module "<name>"` namespace.
+ *
+ * `name` is the block label and therefore the address (module.<name>) — it is
+ * deliberately independent of the definition, so calling one local module three
+ * times is three entries with the same `source` and different names.
+ */
 export interface Module {
 	name: string;
 	source: string;
 	version?: string;
+	/** The arguments passed to the module, keyed by its variable names. */
 	config?: Record<string, AttrValue>;
 	// count / for_each meta-args on the module call (raw HCL, mutually exclusive).
 	count?: string;
 	forEach?: string;
 }
 
+/**
+ * A child module authored in-project as modules/<name>/ — a DEFINITION only.
+ * Whether it is used, and how many times, is described by the Module calls
+ * pointing at "./modules/<name>". Defining a module is not using it.
+ */
 export interface LocalModule {
 	name: string;
 	variables?: Variable[];
@@ -151,10 +168,6 @@ export interface LocalModule {
 	dataSources?: Resource[];
 	resources: Resource[];
 	outputs?: Output[];
-	inputs?: Record<string, AttrValue>;
-	// count / for_each on the root's call to this module (not on its body).
-	count?: string;
-	forEach?: string;
 }
 
 // Backend configures remote state storage (terraform { backend "type" {...} }).

@@ -54,14 +54,30 @@ export function baseAddr(ref: string): string {
 	return parts.slice(0, parts[0] === 'data' ? 3 : 2).join('.');
 }
 
-// modId is the canvas node id for a local module group.
+// modId is the canvas node id for a local module DEFINITION group box (keyed by
+// folder name — there is exactly one box per definition, however many calls
+// point at it).
 export function modId(name: string): string {
 	return `mod:${name}`;
 }
 
-// rmodId is the canvas node id for a registry/external module call.
+// rmodId is the canvas node id for a module CALL card (keyed by the call's
+// name, i.e. its address). Local and registry calls both use it.
 export function rmodId(name: string): string {
 	return `rmod:${name}`;
+}
+
+// LOCAL_SOURCE_PREFIX mirrors model.LocalSourcePrefix.
+const LOCAL_SOURCE_PREFIX = './modules/';
+
+// localFolder mirrors model.Module.LocalFolder: the definition a call targets,
+// or "" for a registry/remote source. Use this — never the call's name — to go
+// from a call back to its definition.
+export function localFolder(m: { source?: string }): string {
+	const src = m.source ?? '';
+	if (!src.startsWith(LOCAL_SOURCE_PREFIX)) return '';
+	const folder = src.slice(LOCAL_SOURCE_PREFIX.length);
+	return folder && !folder.includes('/') ? folder : '';
 }
 
 // REGISTRY_MODULE_COLOR is the accent for registry module nodes (local module
@@ -75,11 +91,12 @@ function attrText(v: AttrValue): string {
 	return '';
 }
 
-// crossScopeEdges derives edges between the root scope and local module groups
-// from the model: a root resource that references `module.<m>.<out>` depends on
-// module m; a module input that references a root `type.name` (or another
-// `module.<m>`) makes the module depend on that resource/module. Endpoints are
-// root resource ids or modId(name).
+// crossScopeEdges derives edges between the root scope, module call cards and
+// local module definition boxes: a root resource that references
+// `module.<call>.<out>` depends on that call; a call's argument that references
+// a root `type.name` (or another call) makes the call depend on it; and a local
+// call is joined to the definition it uses, which is what keeps "this is used
+// here" visible once a definition can be called more than once.
 export function crossScopeEdges(project: Project): Edge[] {
 	const edges: Edge[] = [];
 	const seen = new Set<string>();
@@ -91,10 +108,16 @@ export function crossScopeEdges(project: Project): Edge[] {
 		edges.push({ id: `x:${k}`, from, to, kind: 'ref' });
 	};
 
-	// All module call names (local groups and registry calls) -> canvas node id.
+	// `module.<name>` in an expression is a CALL's address, so only calls go in
+	// this map — a definition's folder name is not addressable in HCL.
 	const moduleIds = new Map<string, string>();
-	for (const lm of project.localModules ?? []) moduleIds.set(lm.name, modId(lm.name));
 	for (const m of project.modules ?? []) moduleIds.set(m.name, rmodId(m.name));
+	// Definition box <- call card, for every local call.
+	const defs = new Set((project.localModules ?? []).map((lm) => lm.name));
+	for (const m of project.modules ?? []) {
+		const folder = localFolder(m);
+		if (folder && defs.has(folder)) add(modId(folder), rmodId(m.name));
+	}
 	const rootAddr = new Map<string, string>(); // "type.name" / "data.type.name" -> node id
 	for (const r of project.resources) rootAddr.set(`${r.type}.${r.name}`, r.id);
 	for (const d of project.dataSources ?? []) rootAddr.set(`data.${d.type}.${d.name}`, d.id);
@@ -148,8 +171,6 @@ export function crossScopeEdges(project: Project): Edge[] {
 		[meta.count, meta.forEach]
 			.filter((t): t is string => !!t)
 			.map((expr) => ({ mode: 'expression', expr }) as AttrValue);
-	for (const lm of project.localModules ?? [])
-		scanInputs(lm.name, [...Object.values(lm.inputs ?? {}), ...metaValues(lm)]);
 	for (const m of project.modules ?? [])
 		scanInputs(m.name, [...Object.values(m.config ?? {}), ...metaValues(m)]);
 	return edges;

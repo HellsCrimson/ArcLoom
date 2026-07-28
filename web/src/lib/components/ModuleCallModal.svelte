@@ -1,14 +1,18 @@
 <!--
-  RegistryModuleModal — add / edit a registry module (name, source, version,
-  raw-HCL inputs).
+  ModuleCallModal — add / edit ONE `module "<name>"` block: its name (the
+  address), source, version, meta-args and arguments. It serves both kinds of
+  source, because they are the same block: a registry address
+  ("terraform-aws-modules/vpc/aws") or a local definition in this project
+  ("./modules/team"). Editing a call never touches the definition — that is what
+  lets one module be called under several names.
 
-  Markup only. openRegModule() re-seeds the drafts UNCONDITIONALLY and is
-  reachable from the palette, the canvas, jumpToAddress and the sidebar — and
-  Ctrl+K is handled before the editable-target guard, so it can fire WHILE this
-  modal is open. A seed-on-open $effect would be a no-op on that second open,
-  leaving module A's drafts under module B's `editing`, and saveRegModule's
-  rename path would then delete B and upsert a copy of A. Hence the drafts stay
-  in +page and are threaded with $bindable; `editing` is read-only here.
+  Markup only. openCall() re-seeds the drafts UNCONDITIONALLY and is reachable
+  from the palette, the canvas, jumpToAddress and the sidebar — and Ctrl+K is
+  handled before the editable-target guard, so it can fire WHILE this modal is
+  open. A seed-on-open $effect would be a no-op on that second open, leaving
+  call A's drafts under call B's `editing`, and the save's rename path would
+  then move B and write a copy of A. Hence the drafts stay in +page and are
+  threaded with $bindable; `editing` is read-only here.
 -->
 <script lang="ts">
 	import Modal from '$lib/components/Modal.svelte';
@@ -38,22 +42,26 @@
 		saving?: boolean;
 		onSave: () => void;
 	} = $props();
+
+	// A local source points at a definition in this project: it has no registry
+	// version, and its declared variables are what seeded the input rows.
+	const isLocal = $derived(/^\.\/modules\/[^/]+$/.test(source.trim()));
 </script>
 
-<Modal title={editing ? `Module "${editing}"` : 'Add registry module'} bind:open>
+<Modal title={editing ? `Module call "${editing}"` : 'Add module call'} bind:open>
 	<div class="space-y-3">
 		<div class="flex gap-2">
 			<div class="w-40">
-				<label for="rm-name" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Name</label>
+				<label for="rm-name" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]" title="The block label — this call's address is module.<name>">Name</label>
 				<input id="rm-name" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="vpc" bind:value={name} />
 			</div>
 			<div class="min-w-0 flex-1">
 				<label for="rm-source" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Source</label>
-				<input id="rm-source" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="terraform-aws-modules/vpc/aws" bind:value={source} />
+				<input id="rm-source" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="terraform-aws-modules/vpc/aws · ./modules/team" bind:value={source} />
 			</div>
 			<div class="w-28">
 				<label for="rm-version" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Version</label>
-				<input id="rm-version" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="~> 5.0" bind:value={version} />
+				<input id="rm-version" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="~> 5.0" bind:value={version} disabled={isLocal} title={isLocal ? 'A local module has no version — it is the code in this project' : ''} />
 			</div>
 		</div>
 		<div class="flex items-end gap-3">
@@ -90,6 +98,6 @@
 	</div>
 	{#snippet footer()}
 		<button class={btnGhost} onclick={() => (open = false)}>Cancel</button>
-		<button class={btnPrimary} onclick={onSave} disabled={saving || !name.trim() || !source.trim()}>{#if saving}<Loader2 size={14} class="animate-spin" />{/if} {editing ? 'Update' : 'Add'} module</button>
+		<button class={btnPrimary} onclick={onSave} disabled={saving || !name.trim() || !source.trim()}>{#if saving}<Loader2 size={14} class="animate-spin" />{/if} {editing ? 'Update' : 'Add'} call</button>
 	{/snippet}
 </Modal>

@@ -38,31 +38,50 @@ export type ResolvedAddress =
 	| null;
 
 // resolveAddress maps a plan/diff address to the model block it names. Instance
-// indexes ("[0]", '["a"]') are stripped; a registry-module interior address
-// resolves to the module itself. Returns null when nothing matches (e.g. a
-// planned delete already gone from the model).
-export function resolveAddress(project: Project | null, registryModules: Module[], address: string): ResolvedAddress {
+// indexes ("[0]", '["a"]') are stripped. Returns null when nothing matches (e.g.
+// a planned delete already gone from the model).
+//
+// The `module.<x>` in an address is a CALL name, never a folder name — the two
+// are independent now — so the call is looked up first and its source decides
+// where to go: a local source resolves into that definition's scope, a registry
+// one resolves to the call itself (there is no body to open).
+export function resolveAddress(project: Project | null, moduleCalls: Module[], address: string): ResolvedAddress {
 	if (!project) return null;
 	let addr = stripIndex(address);
-	let moduleName: string | undefined;
+	let callName: string | undefined;
 	const m = addr.match(/^module\.([A-Za-z0-9_-]+)\.(.+)$/);
 	if (m) {
-		moduleName = m[1];
+		callName = m[1];
 		addr = m[2];
 	}
 	if (addr.startsWith('module.')) return null; // nested modules aren't in the model
 	const kind: ResourceKind = addr.startsWith('data.') ? 'data' : 'resource';
 	const [type, name] = addr.replace(/^data\./, '').split('.');
 	if (!type || !name) return null;
-	if (moduleName && !project.localModules?.some((lm) => lm.name === moduleName)) {
-		const reg = registryModules.find((rm) => rm.name === moduleName);
-		if (reg) return { kind: 'registryModule', module: reg };
-		return null;
+
+	let scope: string | undefined;
+	if (callName) {
+		const call = moduleCalls.find((c) => c.name === callName);
+		const folder = call ? localFolder(call) : '';
+		if (!folder || !project.localModules?.some((lm) => lm.name === folder)) {
+			return call ? { kind: 'registryModule', module: call } : null;
+		}
+		scope = folder;
 	}
-	const pool = kind === 'data' ? scopeDataSources(project, moduleName) : scopeResources(project, moduleName);
+	const pool = kind === 'data' ? scopeDataSources(project, scope) : scopeResources(project, scope);
 	const r = pool.find((x) => x.type === type && x.name === name);
 	if (!r) return null;
-	return { kind: 'block', r, resourceKind: kind, module: moduleName };
+	return { kind: 'block', r, resourceKind: kind, module: scope };
+}
+
+// localFolder mirrors model.Module.LocalFolder — the definition a call targets,
+// or "" for a registry/remote source.
+const LOCAL_SOURCE_PREFIX = './modules/';
+export function localFolder(m: { source?: string }): string {
+	const src = m.source ?? '';
+	if (!src.startsWith(LOCAL_SOURCE_PREFIX)) return '';
+	const folder = src.slice(LOCAL_SOURCE_PREFIX.length);
+	return folder && !folder.includes('/') ? folder : '';
 }
 
 export function suggestName(pool: Resource[], type: string): string {

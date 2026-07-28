@@ -32,10 +32,15 @@ module "vpc" {
 		t.Fatalf("parse: %v", err)
 	}
 
-	if len(res.Modules) != 1 {
-		t.Fatalf("expected 1 registry module, got %d", len(res.Modules))
+	// Both blocks are calls — local and registry live in one list.
+	if len(res.Modules) != 2 {
+		t.Fatalf("expected 2 module calls, got %d", len(res.Modules))
 	}
-	vpc := res.Modules[0]
+	byName := map[string]model.Module{}
+	for _, m := range res.Modules {
+		byName[m.Name] = m
+	}
+	vpc := byName["vpc"]
 	if vpc.Count != "var.enabled ? 1 : 0" {
 		t.Errorf("registry module count not lifted: %q", vpc.Count)
 	}
@@ -46,19 +51,56 @@ module "vpc" {
 		t.Errorf("real inputs should be untouched, got %+v", got)
 	}
 
-	if len(res.LocalModules) != 1 {
-		t.Fatalf("expected 1 local module, got %d", len(res.LocalModules))
-	}
-	team := res.LocalModules[0]
+	team := byName["team"]
 	if team.ForEach != "var.teams" {
 		t.Errorf("local module for_each not carried to the call: %q", team.ForEach)
 	}
-	if _, ok := team.Inputs["for_each"]; ok {
-		t.Error("for_each leaked into Inputs as a fake module input")
+	if _, ok := team.Config["for_each"]; ok {
+		t.Error("for_each leaked into Config as a fake module input")
 	}
 	// each.value.* inputs must survive as references.
-	if got := team.Inputs["name"]; got.Mode != model.ModeReference || got.Ref != "each.value.name" {
+	if got := team.Config["name"]; got.Mode != model.ModeReference || got.Ref != "each.value.name" {
 		t.Errorf("each.value input lost: %+v", got)
+	}
+
+	// The local call gets a definition to point at, even though the module's
+	// own files were not part of this import.
+	if len(res.LocalModules) != 1 || res.LocalModules[0].Name != "team" {
+		t.Fatalf("expected a team definition, got %+v", res.LocalModules)
+	}
+}
+
+// TestParse_MultipleCallsOneDefinition is the point of splitting calls from
+// definitions: two `module` blocks on the same folder are two calls and ONE
+// definition. The old importer merged them into a single local module, so the
+// second call vanished from the model (and from the generated HCL).
+func TestParse_MultipleCallsOneDefinition(t *testing.T) {
+	src := `
+module "team_alpha" {
+  source = "./modules/team"
+  name   = "alpha"
+}
+
+module "team_beta" {
+  source   = "./modules/team"
+  name     = "beta"
+  for_each = toset(["a", "b"])
+}
+`
+	res, err := Parse(map[string][]byte{"main.tf": []byte(src)}, ids())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(res.Modules) != 2 {
+		t.Fatalf("expected 2 calls, got %d: %+v", len(res.Modules), res.Modules)
+	}
+	if len(res.LocalModules) != 1 {
+		t.Fatalf("expected 1 definition, got %d", len(res.LocalModules))
+	}
+	for _, m := range res.Modules {
+		if m.LocalFolder() != "team" {
+			t.Errorf("call %q should resolve to the team definition, got %q", m.Name, m.LocalFolder())
+		}
 	}
 }
 
@@ -67,16 +109,20 @@ module "vpc" {
 func TestRoundTrip_ModuleMetaArgs(t *testing.T) {
 	proj := &model.Project{
 		ID: "p1", Name: "demo", Engine: model.EngineTofu,
-		Modules: []model.Module{{
-			Name: "vpc", Source: "terraform-aws-modules/vpc/aws", Version: "5.0.0",
-			ForEach: "var.regions",
-			Config:  map[string]model.AttrValue{"name": {Mode: model.ModeReference, Ref: "each.key"}},
-		}},
+		Modules: []model.Module{
+			{
+				Name: "vpc", Source: "terraform-aws-modules/vpc/aws", Version: "5.0.0",
+				ForEach: "var.regions",
+				Config:  map[string]model.AttrValue{"name": {Mode: model.ModeReference, Ref: "each.key"}},
+			},
+			{
+				Name: "team", Source: model.LocalSource("team"), Count: "3",
+				Config: map[string]model.AttrValue{"idx": {Mode: model.ModeReference, Ref: "count.index"}},
+			},
+		},
 		LocalModules: []model.LocalModule{{
 			Name:      "team",
-			Count:     "3",
 			Variables: []model.Variable{{Name: "idx", Type: "number"}},
-			Inputs:    map[string]model.AttrValue{"idx": {Mode: model.ModeReference, Ref: "count.index"}},
 		}},
 	}
 
@@ -97,11 +143,21 @@ func TestRoundTrip_ModuleMetaArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(res.Modules) != 1 || res.Modules[0].ForEach != "var.regions" {
-		t.Errorf("registry for_each lost: %+v", res.Modules)
+	if len(res.Modules) != 2 {
+		t.Fatalf("expected both calls back, got %+v", res.Modules)
 	}
-	if len(res.LocalModules) != 1 || res.LocalModules[0].Count != "3" {
-		t.Errorf("local module count lost: %+v", res.LocalModules)
+	back := map[string]model.Module{}
+	for _, m := range res.Modules {
+		back[m.Name] = m
+	}
+	if back["vpc"].ForEach != "var.regions" {
+		t.Errorf("registry for_each lost: %+v", back["vpc"])
+	}
+	if back["team"].Count != "3" {
+		t.Errorf("local module call count lost: %+v", back["team"])
+	}
+	if len(res.LocalModules) != 1 || res.LocalModules[0].Name != "team" {
+		t.Errorf("local module definition lost: %+v", res.LocalModules)
 	}
 }
 
