@@ -21,6 +21,7 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
 	"github.com/HellsCrimson/ArcLoom/internal/runs"
+	"github.com/HellsCrimson/ArcLoom/internal/settings"
 )
 
 // planFileName mirrors the runner's saved-plan filename. The workspace copy is
@@ -208,7 +209,14 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 	// when the project has a backend (otherwise each env just gets its own local
 	// state in run/envs/<name>/).
 	if p.Backend != nil {
-		if bc := backendConfigFileContents(env); bc != nil {
+		bc, err := s.backendConfigFor(p, env, func(ref string) {
+			sse.event("log", map[string]string{"line": "warning: backend secret " + ref + " is not set (" + op + " may fail to reach the state backend)"})
+		})
+		if err != nil {
+			sse.event("error", map[string]string{"error": err.Error()})
+			return
+		}
+		if bc != nil {
 			files[".arcloom.tfbackend"] = bc
 		}
 	}
@@ -441,6 +449,37 @@ func (s *Server) resolveTFVars(p *model.Project, onMissing func(ref string)) (ma
 		tfVars[model.SecretVarName(ref)] = val
 	}
 	return tfVars, nil
+}
+
+// backendConfigFor renders the workspace's `.arcloom.tfbackend` body: the
+// project's secret-valued backend settings resolved to plaintext, plus the
+// environment's own backend config. Backend secrets take this route rather than
+// TF_VAR_ because Terraform forbids variables in a backend block — see
+// hclgen.writeBackendAttrs. Nil when neither supplies anything.
+//
+// The values land on disk in the workspace (0600, inside the gitignored run/
+// dir) and, once init runs, in .terraform/terraform.tfstate — unavoidable, as
+// the engine needs the credential on every state read.
+func (s *Server) backendConfigFor(p *model.Project, env settings.Environment, onMissing func(ref string)) ([]byte, error) {
+	if p.Backend == nil {
+		return nil, nil
+	}
+	var resolved map[string]string
+	for key, ref := range hclgen.BackendSecretRefs(p.Backend) {
+		val, found, err := s.secrets.Resolve(p.ID, ref)
+		if err != nil {
+			return nil, fmt.Errorf("backend %s: secret %s: %w", key, ref, err)
+		}
+		if !found {
+			onMissing(ref)
+			continue
+		}
+		if resolved == nil {
+			resolved = map[string]string{}
+		}
+		resolved[key] = val
+	}
+	return backendConfigFileContents(env, resolved), nil
 }
 
 // readOutputs captures root outputs after a successful apply. Sensitive values

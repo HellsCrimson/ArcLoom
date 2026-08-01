@@ -106,22 +106,37 @@ func (s *Server) resolveEnv(projectID string, r *http.Request) (name string, env
 	return name, e, nil
 }
 
-// backendConfigFileContents renders an environment's backend config values as an
-// HCL `.tfbackend` body (`key = <literal>` lines) for `-backend-config`. Returns
-// nil when there is nothing to write.
-func backendConfigFileContents(env settings.Environment) []byte {
-	if len(env.BackendConfig) == 0 {
+// backendConfigFileContents renders the partial backend configuration handed to
+// `init -backend-config` as an HCL `.tfbackend` body (`key = <literal>` lines).
+// It carries two things: `secrets` (backend settings bound to a secret,
+// already resolved to plaintext — a backend block cannot reference a variable,
+// so this file is the only way a credential stays out of the generated HCL)
+// overlaid with the environment's own values, which win because an env exists
+// precisely to override the shared config. Returns nil when there is nothing to
+// write, which is what makes the runner skip -backend-config entirely.
+func backendConfigFileContents(env settings.Environment, secrets map[string]string) []byte {
+	// Values are stored already rendered. A secret is always quoted: it is an
+	// opaque credential, and hclLiteral's bare-token heuristic would turn a
+	// token that happens to read as `true` or `01234` into a bool or a number.
+	vals := make(map[string]string, len(secrets)+len(env.BackendConfig))
+	for k, v := range secrets {
+		vals[k] = strconv.Quote(v)
+	}
+	for k, v := range env.BackendConfig {
+		vals[k] = hclLiteral(v)
+	}
+	if len(vals) == 0 {
 		return nil
 	}
 	// Deterministic order for a stable file (avoids needless workspace churn).
-	keys := make([]string, 0, len(env.BackendConfig))
-	for k := range env.BackendConfig {
+	keys := make([]string, 0, len(vals))
+	for k := range vals {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	var b []byte
 	for _, k := range keys {
-		b = append(b, []byte(k+" = "+hclLiteral(env.BackendConfig[k])+"\n")...)
+		b = append(b, []byte(k+" = "+vals[k]+"\n")...)
 	}
 	return b
 }

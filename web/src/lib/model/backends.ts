@@ -52,7 +52,7 @@ export const BACKENDS: BackendKind[] = [
 			{ key: 'unlock_address', example: '"https://gitea.example.com/api/packages/OWNER/terraform/state/NAME/lock"', hint: 'Unlock endpoint. Usually the same URL as lock_address.' },
 			{ key: 'unlock_method', example: '"DELETE"', hint: 'Method for the unlock call. Default UNLOCK.' },
 			{ key: 'username', example: '"git"', hint: 'Basic-auth user.' },
-			{ key: 'password', example: '"<token>"', hint: 'Basic-auth password or API token. Prefer the server environment over storing it here.' },
+			{ key: 'password', example: '"<token>"', hint: 'Basic-auth password or API token — use the 🔑 button to bind it to a secret.' },
 			{ key: 'skip_cert_verification', example: 'true', hint: 'Skip TLS verification (self-signed endpoints).' },
 			{ key: 'retry_max', example: '2', hint: 'Retries per request.' },
 			{ key: 'retry_wait_min', example: '1', hint: 'Seconds before the first retry.' },
@@ -89,7 +89,7 @@ export const BACKENDS: BackendKind[] = [
 		fields: [
 			{ key: 'bucket', required: true, example: '"my-tfstate"', hint: 'Bucket holding the state.' },
 			{ key: 'prefix', example: '"prod"', hint: 'Object prefix inside the bucket.' },
-			{ key: 'credentials', example: '"/etc/arcloom/gcp.json"', hint: 'Service-account key file or JSON. Prefer GOOGLE_APPLICATION_CREDENTIALS in the server environment.' },
+			{ key: 'credentials', example: '"/etc/arcloom/gcp.json"', hint: 'Service-account key file or JSON. GOOGLE_APPLICATION_CREDENTIALS in the server environment works too.' },
 			{ key: 'impersonate_service_account', example: '"tf@project.iam.gserviceaccount.com"', hint: 'Service account to impersonate.' },
 			{ key: 'encryption_key', example: '"<base64 key>"', hint: 'Customer-supplied AES-256 key.' },
 			{ key: 'kms_encryption_key', example: '"projects/…/cryptoKeys/tf"', hint: 'KMS key name for CMEK.' }
@@ -106,11 +106,11 @@ export const BACKENDS: BackendKind[] = [
 			{ key: 'subscription_id', example: '"00000000-0000-0000-0000-000000000000"', hint: 'Subscription.' },
 			{ key: 'tenant_id', example: '"00000000-0000-0000-0000-000000000000"', hint: 'Tenant.' },
 			{ key: 'client_id', example: '"00000000-0000-0000-0000-000000000000"', hint: 'Service-principal / managed-identity client id.' },
-			{ key: 'client_secret', example: '"<secret>"', hint: 'Service-principal secret. Prefer ARM_CLIENT_SECRET in the server environment.' },
+			{ key: 'client_secret', example: '"<secret>"', hint: 'Service-principal secret — use the 🔑 button to bind it to a secret.' },
 			{ key: 'use_azuread_auth', example: 'true', hint: 'Authenticate to blob storage with Entra ID instead of a shared key.' },
 			{ key: 'use_msi', example: 'true', hint: 'Use the host managed identity.' },
 			{ key: 'sas_token', example: '"?sv=…"', hint: 'SAS token instead of a key.' },
-			{ key: 'access_key', example: '"<key>"', hint: 'Storage account key. Prefer ARM_ACCESS_KEY in the server environment.' },
+			{ key: 'access_key', example: '"<key>"', hint: 'Storage account key — use the 🔑 button to bind it to a secret.' },
 			{ key: 'snapshot', example: 'true', hint: 'Snapshot the blob before each write.' }
 		]
 	},
@@ -118,7 +118,7 @@ export const BACKENDS: BackendKind[] = [
 		type: 'pg',
 		label: 'PostgreSQL',
 		fields: [
-			{ key: 'conn_str', required: true, example: '"postgres://tf:pass@db.example.com/terraform?sslmode=require"', hint: 'libpq connection string. Prefer PG_CONN_STR in the server environment.' },
+			{ key: 'conn_str', required: true, example: '"postgres://tf:pass@db.example.com/terraform?sslmode=require"', hint: 'libpq connection string; it embeds the password, so bind it to a secret with the 🔑 button.' },
 			{ key: 'schema_name', example: '"terraform_remote_state"', hint: 'Schema holding the states table.' },
 			{ key: 'skip_schema_creation', example: 'true', hint: 'The schema already exists; do not CREATE it.' },
 			{ key: 'skip_table_creation', example: 'true', hint: 'The table already exists.' },
@@ -147,7 +147,7 @@ export const BACKENDS: BackendKind[] = [
 			{ key: 'path', required: true, example: '"terraform/prod"', hint: 'KV path holding the state.' },
 			{ key: 'address', example: '"consul.example.com:8500"', hint: 'Consul agent. Defaults to CONSUL_HTTP_ADDR.' },
 			{ key: 'scheme', example: '"https"', hint: 'Transport scheme.' },
-			{ key: 'access_token', example: '"<token>"', hint: 'ACL token. Prefer CONSUL_HTTP_TOKEN in the server environment.' },
+			{ key: 'access_token', example: '"<token>"', hint: 'ACL token — use the 🔑 button to bind it to a secret.' },
 			{ key: 'datacenter', example: '"dc1"', hint: 'Datacenter to query.' },
 			{ key: 'lock', example: 'true', hint: 'Use Consul sessions to lock state.' },
 			{ key: 'gzip', example: 'true', hint: 'Compress the stored state.' },
@@ -189,7 +189,7 @@ export const BACKENDS: BackendKind[] = [
 		fields: [
 			{ key: 'organization', required: true, example: '"my-org"', hint: 'TFC/TFE organization.' },
 			{ key: 'hostname', example: '"app.terraform.io"', hint: 'TFE host.' },
-			{ key: 'token', example: '"<api token>"', hint: 'API token. Prefer a credentials file in the server environment.' }
+			{ key: 'token', example: '"<api token>"', hint: 'API token — use the 🔑 button to bind it to a secret.' }
 		]
 	}
 ];

@@ -12,24 +12,30 @@
 	import Modal from '$lib/components/Modal.svelte';
 	import { btnPrimary, btnGhost } from '$lib/styles';
 	import { BACKENDS, backendField, backendFields, backendKind } from '$lib/model/backends';
-	import { Loader2, Trash2 } from 'lucide-svelte';
+	import SecretPicker from '$lib/form/SecretPicker.svelte';
+	import type { BackendRow } from '$lib/form/attrs';
+	import { KeyRound, Loader2, Trash2 } from 'lucide-svelte';
 
 	let {
 		open = $bindable(false),
 		requiredVersion = $bindable(''),
 		type = $bindable(''),
-		rows = $bindable<{ key: string; expr: string }[]>([]),
+		rows = $bindable<BackendRow[]>([]),
 		mode = $bindable<'migrate' | 'reconfigure'>('migrate'),
 		canDeploy = false,
+		secrets = [],
+		onCreateSecret,
 		saving = false,
 		onSave
 	}: {
 		open?: boolean;
 		requiredVersion?: string;
 		type?: string;
-		rows?: { key: string; expr: string }[];
+		rows?: BackendRow[];
 		mode?: 'migrate' | 'reconfigure';
 		canDeploy?: boolean;
+		secrets?: string[];
+		onCreateSecret?: (name: string, value: string) => Promise<void>;
 		saving?: boolean;
 		onSave: () => void;
 	} = $props();
@@ -81,8 +87,9 @@
 		</div>
 		<p class="text-xs text-[var(--al-muted)]">
 			Where this project's state lives. Empty type = local state in the project workspace.
-			Values are raw HCL literals (no interpolation allowed by Terraform); put credentials in the
-			server's environment, never here.
+			Values are raw HCL literals — Terraform allows no interpolation here. For a credential use
+			the 🔑 button on its row: the secret is kept out of the generated HCL and handed to the
+			engine at init time instead.
 		</p>
 		<div>
 			<label for="bk-type" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Backend type</label>
@@ -111,8 +118,19 @@
 					<div>
 						<div class="flex items-center gap-2">
 							<input class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" aria-label="Configuration key" placeholder={fields[0]?.key ?? 'key'} bind:value={row.key} list={fields.length ? 'bk-keys' : undefined} />
-							<input class="mono min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" aria-label="Configuration value" placeholder={f?.example ?? '"a string" · true · 5432'} bind:value={row.expr} />
-							<button class="text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => (rows = rows.filter((_, j) => j !== i))} aria-label="Remove value"><Trash2 size={12} /></button>
+							{#if row.secretRef !== undefined}
+								<div class="min-w-0 flex-1"><SecretPicker bind:secretRef={row.secretRef} {secrets} {onCreateSecret} delivery="backend-config" /></div>
+							{:else}
+								<input class="mono min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" aria-label="Configuration value" placeholder={f?.example ?? '"a string" · true · 5432'} bind:value={row.expr} />
+							{/if}
+							<button
+								class="flex-none rounded p-0.5 {row.secretRef !== undefined ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}"
+								title={row.secretRef !== undefined ? 'Use a literal value instead' : 'Use a stored secret for this value'}
+								aria-label="Toggle secret value"
+								aria-pressed={row.secretRef !== undefined}
+								onclick={() => (row.secretRef = row.secretRef === undefined ? '' : undefined)}
+							><KeyRound size={12} /></button>
+							<button class="flex-none text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => (rows = rows.filter((_, j) => j !== i))} aria-label="Remove value"><Trash2 size={12} /></button>
 						</div>
 						{#if f}
 							<p class="ml-[10.5rem] mt-0.5 text-[11px] text-[var(--al-muted)]">{f.hint}{#if f.required}<span class="text-[var(--al-warn)]">&nbsp;· required</span>{/if}</p>

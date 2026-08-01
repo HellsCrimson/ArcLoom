@@ -62,3 +62,33 @@ export function rowsToAttrs(rows: { key: string; expr: string }[]): Record<strin
 	}
 	return config;
 }
+
+// BackendRow is one `key = value` line of a backend block. `secretRef` present
+// (even empty) means the row is in secret mode — its value is not written into
+// the HCL at all but resolved at init time (see hclgen.writeBackendAttrs),
+// which is the only way a credential can live in a backend block: Terraform
+// forbids variables there.
+export type BackendRow = { key: string; expr: string; secretRef?: string };
+
+export function backendRowsToAttrs(rows: BackendRow[]): Record<string, AttrValue> {
+	const config: Record<string, AttrValue> = {};
+	for (const row of rows) {
+		const k = row.key.trim();
+		if (!k) continue;
+		if (row.secretRef !== undefined) {
+			// An unpicked secret is an incomplete row, dropped like a blank value.
+			if (row.secretRef) config[k] = { mode: 'secret', secretRef: row.secretRef };
+			continue;
+		}
+		const e = row.expr.trim();
+		if (e) config[k] = { mode: 'expression', expr: e };
+	}
+	return config;
+}
+
+// attrsToBackendRows is the inverse, for seeding the editor from a saved model.
+export function attrsToBackendRows(config: Record<string, AttrValue> | undefined): BackendRow[] {
+	return Object.entries(config ?? {}).map(([key, av]) =>
+		av.mode === 'secret' ? { key, expr: '', secretRef: av.secretRef ?? '' } : { key, expr: attrToText(av) }
+	);
+}

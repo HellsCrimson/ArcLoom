@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -309,7 +310,13 @@ func (s *Server) adoptState(ctx context.Context, run runner.Runner, id, envName 
 		if err != nil {
 			return err
 		}
-		if bc := backendConfigFileContents(env); bc != nil {
+		bc, err := s.backendConfigFor(p, env, func(ref string) {
+			slog.Warn("backend secret not set for state push", "project", id, "secret", ref)
+		})
+		if err != nil {
+			return err
+		}
+		if bc != nil {
 			files[".arcloom.tfbackend"] = bc
 		}
 		return run.StatePush(ctx, dir, files, stateJSON, nil)

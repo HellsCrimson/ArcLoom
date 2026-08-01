@@ -5,6 +5,7 @@ package hclgen
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -122,7 +123,7 @@ func writeTerraformBlock(body *hclwrite.Body, providers []model.ProviderInstance
 	}
 	if backend != nil && backend.Type != "" {
 		bb := tfBlock.Body().AppendNewBlock("backend", []string{backend.Type})
-		if err := writeAttrs(bb.Body(), backend.Config); err != nil {
+		if err := writeBackendAttrs(bb.Body(), backend.Config); err != nil {
 			return fmt.Errorf("backend %q: %w", backend.Type, err)
 		}
 	}
@@ -401,6 +402,56 @@ func writeAttrs(body *hclwrite.Body, attrs map[string]model.AttrValue) error {
 		}
 	}
 	return nil
+}
+
+// writeBackendAttrs writes the backend block's settings. It differs from
+// writeAttrs in one way: a **secret** value is not emitted at all. Terraform
+// evaluates a backend block before anything else exists, so it forbids
+// variables there — the `var.<name>` the secret mode normally renders would be
+// a hard parse error ("Variables may not be used here"), which is why a
+// credential has to reach the backend through `-backend-config` at init
+// instead (internal/api renders it into .arcloom.tfbackend). A comment is left
+// in its place so the generated HCL still says the setting exists and where its
+// value comes from; the secret name is not a secret.
+func writeBackendAttrs(body *hclwrite.Body, attrs map[string]model.AttrValue) error {
+	names := make([]string, 0, len(attrs))
+	for n := range attrs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		v := attrs[name]
+		if v.Mode == model.ModeSecret {
+			body.AppendUnstructuredTokens(hclwrite.Tokens{{
+				Type:  hclsyntax.TokenComment,
+				Bytes: []byte("# " + name + " is supplied at init from secret " + strconv.Quote(v.SecretRef) + "\n"),
+			}})
+			continue
+		}
+		if err := setAttr(body, name, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// BackendSecretRefs maps the backend settings bound to a secret to their secret
+// names, for the caller that resolves and renders them into the init-time
+// backend config. Nil when the backend has none.
+func BackendSecretRefs(b *model.Backend) map[string]string {
+	if b == nil {
+		return nil
+	}
+	var out map[string]string
+	for name, v := range b.Config {
+		if v.Mode == model.ModeSecret && v.SecretRef != "" {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[name] = v.SecretRef
+		}
+	}
+	return out
 }
 
 // setAttr writes one attribute, dispatching on value mode.

@@ -32,7 +32,7 @@
 	import ResizeHandle from '$lib/components/ResizeHandle.svelte';
 	import RunOutputPane from '$lib/components/RunOutputPane.svelte';
 	import StructureSidebar from '$lib/components/StructureSidebar.svelte';
-	import { attrToText, buildAttrs, rowsToAttrs } from '$lib/form/attrs';
+	import { attrToText, attrsToBackendRows, backendRowsToAttrs, buildAttrs, rowsToAttrs, type BackendRow } from '$lib/form/attrs';
 	import { findInScope, localFolder, providerForType, providerVersionForSource, resolveAddress, suggestName } from '$lib/model/scope';
 	import { iconBtn, hdrBtn } from '$lib/styles';
 	import { buildImportRows, buildPaletteItems, buildToolItems, globalKeydown, type CommandActions } from '$lib/commands';
@@ -89,7 +89,7 @@
 	// Signature of the backend as opened, so saving only re-inits when it changed.
 	let bkOpenedSig = $state('');
 	let bkType = $state('');
-	let bkRows = $state<{ key: string; expr: string }[]>([]);
+	let bkRows = $state<BackendRow[]>([]);
 	let bkMode = $state<'migrate' | 'reconfigure'>('migrate');
 	let showDeleteBlocked = $state(false);
 	let deleteBlockedCount = $state(0);
@@ -1277,9 +1277,7 @@
 
 	function openBackend() {
 		bkType = project?.backend?.type ?? '';
-		bkRows = project?.backend?.config
-			? Object.entries(project.backend.config).map(([key, av]) => ({ key, expr: attrToText(av) }))
-			: [];
+		bkRows = attrsToBackendRows(project?.backend?.config);
 		bkRequiredVersion = project?.requiredVersion ?? '';
 		bkMode = 'migrate';
 		bkOpenedSig = backendSig();
@@ -1291,7 +1289,7 @@
 	// re-initialized just because the terraform block's version changed.
 	function backendSig(): string {
 		const rows = bkRows
-			.map((r) => `${r.key.trim()}=${r.expr.trim()}`)
+			.map((r) => `${r.key.trim()}=${r.secretRef !== undefined ? `secret:${r.secretRef}` : r.expr.trim()}`)
 			.filter((r) => r !== '=')
 			.sort();
 		return `${bkType.trim()}|${rows.join('|')}`;
@@ -1311,7 +1309,7 @@
 			}
 			const backendChanged = backendSig() !== bkOpenedSig;
 			if (backendChanged) {
-				const config = rowsToAttrs(bkRows);
+				const config = backendRowsToAttrs(bkRows);
 				project = await api.setBackend(project.id, { type: bkType.trim(), config });
 			}
 			await refreshHcl();
@@ -1713,6 +1711,8 @@
 		bind:rows={bkRows}
 		bind:mode={bkMode}
 		canDeploy={auth.can('deploy')}
+		secrets={secretNames}
+		onCreateSecret={secretsWritable && auth.can('resources') ? createSecretInline : undefined}
 		saving={busy === 'backend'}
 		onSave={saveBackend}
 	/>

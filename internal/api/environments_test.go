@@ -79,6 +79,25 @@ func TestUnknownEnvironmentRejected(t *testing.T) {
 	}
 }
 
+// The `.tfbackend` body carries resolved backend secrets and the environment's
+// own values. An env value wins on collision (an env exists to override), and a
+// secret is always quoted so a token that reads like a bool or a number stays a
+// string.
+func TestBackendConfigFileContents(t *testing.T) {
+	if got := backendConfigFileContents(settings.Environment{}, nil); got != nil {
+		t.Errorf("nothing configured should render nil, got %q", got)
+	}
+	env := settings.Environment{BackendConfig: map[string]string{
+		"key":      "prod/terraform.tfstate",
+		"username": "env-user",
+	}}
+	secrets := map[string]string{"password": "true", "username": "secret-user"}
+	want := "key = \"prod/terraform.tfstate\"\npassword = \"true\"\nusername = \"env-user\"\n"
+	if got := string(backendConfigFileContents(env, secrets)); got != want {
+		t.Errorf("backendConfigFileContents =\n%q\nwant\n%q", got, want)
+	}
+}
+
 func TestHCLLiteral(t *testing.T) {
 	cases := map[string]string{
 		"my-bucket": `"my-bucket"`,

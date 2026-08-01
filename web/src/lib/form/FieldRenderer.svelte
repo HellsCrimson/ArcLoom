@@ -7,9 +7,8 @@
 	import type { AttrValue, Field, ValueMode } from '$lib/types';
 	import PlainField from './PlainField.svelte';
 	import { ensureLiteralShape, isContainer } from './defaults';
-	import { joinSecretName, secretGroups } from '$lib/secretPath';
+	import SecretPicker from './SecretPicker.svelte';
 	import { referenceGroups } from '$lib/model/scope';
-	import { Loader2, Plus } from 'lucide-svelte';
 
 	let {
 		field,
@@ -53,35 +52,6 @@
 	function setMode(m: ValueMode) {
 		value.mode = m;
 		if (m === 'literal') ensureLiteralShape(field, value);
-	}
-
-	// Inline secret creation: adding a secret used to mean leaving the form, going
-	// to the Secrets modal and coming back to select it. Here the field creates it
-	// and selects it in one step.
-	let creating = $state(false);
-	let newSecretName = $state('');
-	let newSecretValue = $state('');
-	let secretBusy = $state(false);
-	let secretError = $state('');
-	// The name is composed the same way the Secrets tree composes it, so
-	// "global/projectA/varA" and "global_projectA_varA" both work here.
-	const newSecretComposed = $derived(joinSecretName([newSecretName]));
-
-	async function createSecret() {
-		if (!onCreateSecret || !newSecretComposed || !newSecretValue) return;
-		secretBusy = true;
-		secretError = '';
-		try {
-			await onCreateSecret(newSecretComposed, newSecretValue);
-			value.secretRef = newSecretComposed;
-			creating = false;
-			newSecretName = '';
-			newSecretValue = '';
-		} catch (e) {
-			secretError = (e as Error).message;
-		} finally {
-			secretBusy = false;
-		}
 	}
 
 	const inputCls =
@@ -137,76 +107,7 @@
 	{:else if value.mode === 'expression'}
 		<input class="{inputCls} mono" placeholder="raw HCL expression" bind:value={value.expr} />
 	{:else if value.mode === 'secret'}
-		<div class="flex items-center gap-1.5">
-			{#if secrets.length > 0}
-				<!-- Grouped by the first `_` segment, matching the Secrets tree view. -->
-				<select class="{inputCls} flex-1" bind:value={value.secretRef}>
-					<option value="" disabled selected={!value.secretRef}>Select a secret…</option>
-					{#each secretGroups(secrets) as g (g.group)}
-						{#if g.group === ''}
-							{#each g.names as name (name)}
-								<option value={name}>🔒 {name}</option>
-							{/each}
-						{:else}
-							<optgroup label={g.group}>
-								{#each g.names as name (name)}
-									<option value={name}>🔒 {name}</option>
-								{/each}
-							</optgroup>
-						{/if}
-					{/each}
-				</select>
-			{:else}
-				<input class="{inputCls} mono flex-1" placeholder={onCreateSecret ? 'secret name — or create one below' : 'secret name (add one in Secrets)'} bind:value={value.secretRef} />
-			{/if}
-			{#if onCreateSecret}
-				<button
-					type="button"
-					class="inline-flex flex-none items-center gap-1 rounded-md border border-[var(--al-border)] px-2 py-1 text-[11px] text-[var(--al-muted)] hover:text-[var(--al-accent)]"
-					title="Create a secret and use it here"
-					onclick={() => { creating = !creating; secretError = ''; }}
-				><Plus size={12} /> New</button>
-			{/if}
-		</div>
-
-		{#if creating && onCreateSecret}
-			<div class="mt-1.5 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] p-2">
-				<div class="flex items-center gap-1.5">
-					<input
-						class="{inputCls} mono flex-1"
-						placeholder="name — global/projectA/varA"
-						bind:value={newSecretName}
-					/>
-					<input
-						class="{inputCls} flex-1"
-						type="password"
-						placeholder="value"
-						bind:value={newSecretValue}
-						onkeydown={(e) => { if (e.key === 'Enter') createSecret(); }}
-					/>
-					<button
-						type="button"
-						class="inline-flex flex-none items-center gap-1 rounded-md bg-[var(--al-accent)] px-2.5 py-1 text-[11px] font-medium text-white hover:brightness-110 disabled:opacity-40"
-						onclick={createSecret}
-						disabled={secretBusy || !newSecretComposed || !newSecretValue}
-					>
-						{#if secretBusy}<Loader2 size={12} class="animate-spin" />{/if} Save & use
-					</button>
-				</div>
-				{#if secretError}
-					<p class="mt-1 text-[11px] text-[var(--al-danger)]">{secretError}</p>
-				{:else}
-					<p class="mt-1 text-[11px] text-[var(--al-muted)]">
-						{#if newSecretComposed}
-							Stored as <span class="mono text-[var(--al-text)]">{newSecretComposed}</span>, encrypted at rest and injected as
-							<span class="mono">TF_VAR_{newSecretComposed}</span>.
-						{:else}
-							Encrypted at rest; <span class="mono">/</span> or <span class="mono">_</span> segments become categories in the Secrets tree.
-						{/if}
-					</p>
-				{/if}
-			</div>
-		{/if}
+		<SecretPicker bind:secretRef={value.secretRef} {secrets} {onCreateSecret} />
 	{:else}
 		<PlainField {field} bind:value {references} {secrets} {onCreateSecret} />
 	{/if}

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/HellsCrimson/ArcLoom/internal/model"
@@ -115,6 +116,42 @@ func TestGenerate_Backend(t *testing.T) {
 	}
 	if strings.Contains(string(pc), "backend") {
 		t.Errorf("ProvidersConfig leaked the backend:\n%s", pc)
+	}
+}
+
+// A secret-valued backend setting must NOT reach the HCL: Terraform forbids
+// variables in a backend block, so `var.<name>` would be a parse error. The
+// value travels through -backend-config instead (BackendSecretRefs names it).
+func TestGenerate_BackendSecret(t *testing.T) {
+	b := &model.Backend{Type: "http", Config: map[string]model.AttrValue{
+		"address":  {Mode: model.ModeLiteral, Literal: cty.StringVal("https://git.example.com/state")},
+		"password": {Mode: model.ModeSecret, SecretRef: "gitea_token"},
+	}}
+	out, err := Generate(&model.Project{Backend: b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if strings.Contains(s, "var.") {
+		t.Errorf("backend secret emitted as a variable reference:\n%s", s)
+	}
+	if strings.Contains(s, "password =") {
+		t.Errorf("backend secret emitted as an attribute:\n%s", s)
+	}
+	// The placeholder comment keeps the setting visible in the preview.
+	if !strings.Contains(s, `# password is supplied at init from secret "gitea_token"`) {
+		t.Errorf("missing placeholder comment:\n%s", s)
+	}
+	// The generated file must still parse as HCL.
+	if _, diags := hclparse.NewParser().ParseHCL(out, "main.tf"); diags.HasErrors() {
+		t.Fatalf("generated HCL does not parse: %s\n%s", diags, s)
+	}
+	refs := BackendSecretRefs(b)
+	if len(refs) != 1 || refs["password"] != "gitea_token" {
+		t.Errorf("BackendSecretRefs = %v, want {password: gitea_token}", refs)
+	}
+	if BackendSecretRefs(nil) != nil {
+		t.Error("BackendSecretRefs(nil) should be nil")
 	}
 }
 

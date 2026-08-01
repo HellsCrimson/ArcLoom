@@ -23,13 +23,24 @@ type workspace struct {
 	persistent bool
 }
 
-// backendConfigFile is the optional per-environment backend configuration the
-// API writes into a workspace (partial `-backend-config` values, e.g. the state
-// key). Its extension is not one Terraform auto-loads (only *.tf / *.tf.json /
-// *.tfvars are), so it is used solely via `-backend-config` at init. It is NOT
-// in persistKeep — it is rewritten from the generated files on every op, and
-// removed when an env no longer supplies backend config.
+// backendConfigFile is the optional partial backend configuration the API
+// writes into a workspace (`-backend-config` values: an environment's state
+// key, and any backend setting bound to a secret — Terraform forbids variables
+// inside a backend block, so a credential can only stay out of the generated
+// HCL by arriving here). Its extension is not one Terraform auto-loads (only
+// *.tf / *.tf.json / *.tfvars are), so it is used solely via `-backend-config`
+// at init. It is NOT in persistKeep — it is rewritten from the generated files
+// on every op, and removed when nothing supplies backend config any more.
 const backendConfigFile = ".arcloom.tfbackend"
+
+// fileMode is 0600 for the backend config file, which may hold a resolved
+// secret (backend credentials), and 0644 for generated HCL.
+func fileMode(name string) os.FileMode {
+	if filepath.Base(name) == backendConfigFile {
+		return 0o600
+	}
+	return 0o644
+}
 
 // backendInitOpts returns the -backend-config init option when the workspace has
 // a per-env backend config file, else nil.
@@ -68,7 +79,7 @@ func newWorkspace(base, execPath string, files map[string][]byte) (*workspace, e
 			os.RemoveAll(dir)
 			return nil, fmt.Errorf("mkdir for %s: %w", name, err)
 		}
-		if err := os.WriteFile(full, content, 0o644); err != nil {
+		if err := os.WriteFile(full, content, fileMode(name)); err != nil {
 			os.RemoveAll(dir)
 			return nil, fmt.Errorf("write %s: %w", name, err)
 		}
@@ -100,7 +111,7 @@ func newPersistentWorkspace(dir, execPath string, files map[string][]byte) (*wor
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return nil, fmt.Errorf("mkdir for %s: %w", name, err)
 		}
-		if err := os.WriteFile(full, content, 0o644); err != nil {
+		if err := os.WriteFile(full, content, fileMode(name)); err != nil {
 			return nil, fmt.Errorf("write %s: %w", name, err)
 		}
 	}

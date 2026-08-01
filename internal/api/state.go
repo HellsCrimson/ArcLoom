@@ -93,11 +93,20 @@ func (s *Server) handleSetBackend(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for name, v := range config {
-			if v.Mode == model.ModeExpression {
+			switch v.Mode {
+			case model.ModeExpression:
 				if err := hclgen.ValidateExpr(v.Expr); err != nil {
 					writeErr(w, http.StatusBadRequest, name+": "+err.Error())
 					return
 				}
+			case model.ModeReference:
+				// A backend block is evaluated before anything else exists, so it
+				// can reference nothing at all. Rejected here rather than at
+				// generation time, where store persist swallows the error and
+				// every later engine op fails on unparseable HCL. (A secret is
+				// fine: it never reaches the HCL — see hclgen.writeBackendAttrs.)
+				writeErr(w, http.StatusBadRequest, name+": a backend block cannot reference other values; use a literal or a secret")
+				return
 			}
 		}
 		if len(config) == 0 {
