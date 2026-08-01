@@ -108,6 +108,8 @@
 	// tracks resources (the server refuses otherwise — it would orphan them).
 	let replaceState = $state(false);
 	let importMsg = $state('');
+	// Per-warning detail from the last import (skipped blocks, rewritten sources).
+	let importWarnings = $state<string[]>([]);
 	let showEditor = $state(false);
 
 	// New-project modal
@@ -334,8 +336,8 @@
 		openTerraform: () => openBackend(),
 		openNewFile: () => openFile(),
 		openEnvironments: () => (showEnvironments = true),
-		openImportHcl: () => { importMsg = ''; showImportHcl = true; },
-		openImportState: () => { importMsg = ''; showImportState = true; },
+		openImportHcl: () => { importMsg = ''; importWarnings = []; showImportHcl = true; },
+		openImportState: () => { importMsg = ''; importWarnings = []; showImportState = true; },
 		showImportHcl: () => (showImportHcl = true),
 		showImportState: () => (showImportState = true),
 		openImportMenu: () => (showImportMenu = true),
@@ -957,19 +959,40 @@
 		}
 	}
 
+	// The KEY is the file's path, not its basename: hclimport scopes by path
+	// (`modules/<name>/…` becomes that local module's definition), so a file
+	// picked out of a module folder must not arrive as a bare "main.tf" — it
+	// would be parsed into the root instead, and a second "main.tf" would
+	// silently overwrite the first in this record. `webkitRelativePath` is set
+	// when a directory is chosen; individually picked files only have a name, so
+	// a collision is reported instead of being swallowed.
 	async function readFiles(list: FileList | null, target: 'hcl' | 'state') {
 		if (!list) return;
+		const clashes: string[] = [];
 		for (const f of Array.from(list)) {
+			if (target !== 'hcl') {
+				importStateText = await f.text();
+				continue;
+			}
+			const key = (f.webkitRelativePath || f.name).replace(/^\.?\//, '');
+			// A folder pick hands over EVERYTHING under it, so filter before
+			// reading: .terraform/ holds provider binaries (hundreds of MB) and
+			// reading them as text would hang the tab. Only HCL is importable.
+			if (!/\.(tf|hcl)$/i.test(key) || key.split('/').some((seg) => seg.startsWith('.'))) continue;
 			const text = await f.text();
-			if (target === 'hcl') importHclFiles = { ...importHclFiles, [f.name]: text };
-			else importStateText = text;
+			if (importHclFiles[key] !== undefined && importHclFiles[key] !== text) clashes.push(key);
+			importHclFiles = { ...importHclFiles, [key]: text };
 		}
+		importMsg = clashes.length
+			? `Warning: ${clashes.join(', ')} replaced a file of the same path — pick the folder itself to keep module files in modules/<name>/`
+			: importMsg;
 	}
 
 	async function doImportHcl() {
 		if (!project) return;
 		busy = 'import';
 		importMsg = '';
+		importWarnings = [];
 		try {
 			const files = { ...importHclFiles };
 			if (importHclText.trim()) files['pasted.tf'] = importHclText;
@@ -986,10 +1009,16 @@
 				res.addedLocals ? `${res.addedLocals} locals` : '',
 				res.addedOutputs ? `${res.addedOutputs} outputs` : '',
 				res.addedLocalModules ? `${res.addedLocalModules} local modules` : '',
-				res.addedModules ? `${res.addedModules} registry modules` : '',
+				// Calls, not "registry modules": mergeModules counts every module
+				// block, and a local call is the common case.
+				res.addedModules ? `${res.addedModules} module calls` : '',
 				`${res.addedProviders} providers`
 			].filter(Boolean);
-			importMsg = `Imported into ${where}: ${parts.join(', ')}${res.warnings?.length ? ` · ${res.warnings.length} warning(s)` : ''}`;
+			importMsg = `Imported into ${where}: ${parts.join(', ')}`;
+			// The warnings ARE the diagnosis — a skipped module call or a rewritten
+			// source only ever showed up here as a number, which told the user
+			// nothing about the block that went missing.
+			importWarnings = res.warnings ?? [];
 			showImportHcl = false;
 			importHclText = '';
 			importHclFiles = {};
@@ -1475,7 +1504,7 @@
 				bind:measuredWidth={toolsWidth}
 				bind:menuOpen={showToolMenu}
 				bind:importMenuOpen={showImportMenu}
-				onImportOpen={() => (importMsg = '')}
+				onImportOpen={() => { importMsg = ''; importWarnings = []; }}
 			/>
 		{/if}
 
@@ -1498,8 +1527,22 @@
 	{#if error}
 		<div class="border-b border-[var(--al-danger)] bg-[var(--al-danger)]/10 px-4 py-1.5 text-sm text-[var(--al-danger)]">{error}</div>
 	{/if}
-	{#if importMsg}
-		<div class="border-b border-[var(--al-border)] bg-[var(--al-panel-2)] px-4 py-1.5 text-xs text-[var(--al-muted)]">{importMsg}</div>
+	{#if importMsg || importWarnings.length}
+		<div class="border-b border-[var(--al-border)] bg-[var(--al-panel-2)] px-4 py-1.5 text-xs text-[var(--al-muted)]">
+			<div class="flex items-start gap-2">
+				<span class="min-w-0 flex-1">{importMsg}</span>
+				{#if importMsg || importWarnings.length}
+					<button class="flex-none text-[var(--al-muted)] hover:text-[var(--al-text)]" onclick={() => { importMsg = ''; importWarnings = []; }} aria-label="Dismiss">✕</button>
+				{/if}
+			</div>
+			{#if importWarnings.length}
+				<ul class="mt-1 space-y-0.5">
+					{#each importWarnings as w (w)}
+						<li class="text-[var(--al-warn)]">⚠ {w}</li>
+					{/each}
+				</ul>
+			{/if}
+		</div>
 	{/if}
 
 	<div class="flex min-h-0 flex-1 overflow-hidden">

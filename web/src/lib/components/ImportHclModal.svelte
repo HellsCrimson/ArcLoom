@@ -36,9 +36,18 @@
 		<span class="mono font-medium text-[var(--al-text)]">{scopeLabel}</span>
 	</div>
 	<p class="mb-2 text-xs text-[var(--al-muted)]">Select one or more <span class="mono">.tf</span> files, or paste HCL below. Resources, variables, providers and required_providers are reconstructed into the model.</p>
-	<input type="file" multiple accept=".tf,.hcl" class="mb-2 text-xs" onchange={(e) => onFiles(e.currentTarget.files)} />
+	<div class="mb-2 flex flex-wrap items-center gap-3 text-xs">
+		<input type="file" multiple accept=".tf,.hcl" onchange={(e) => onFiles(e.currentTarget.files)} />
+		<!-- Folder pick keeps each file's relative path, which is what carries a
+		     module's scope: modules/<name>/*.tf becomes that module's definition,
+		     while loose files chosen one by one arrive as bare names. -->
+		<label class="cursor-pointer text-[var(--al-muted)] underline hover:text-[var(--al-accent)]">
+			or choose a folder
+			<input type="file" webkitdirectory multiple class="hidden" onchange={(e) => onFiles(e.currentTarget.files)} />
+		</label>
+	</div>
 	{#if Object.keys(files).length > 0}
-		<p class="mb-2 text-xs text-[var(--al-muted)]">Files: {Object.keys(files).join(', ')}</p>
+		<p class="mb-2 text-xs text-[var(--al-muted)]">Files: <span class="mono">{Object.keys(files).join(', ')}</span></p>
 	{/if}
 	<textarea class={ta} rows="12" placeholder="resource &quot;...&quot; ..." bind:value={text}></textarea>
 	{#snippet footer()}

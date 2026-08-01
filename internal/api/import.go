@@ -93,8 +93,13 @@ func (s *Server) handleImportHCL(w http.ResponseWriter, r *http.Request) {
 				resp.Warnings = append(resp.Warnings, "nested modules are not supported inside a module and were skipped")
 			}
 		} else {
-			resp.AddedModules = mergeModules(p, parsed.Modules)
-			resp.AddedLocalModules = mergeLocalModules(p, parsed.LocalModules)
+			var skipped []string
+			resp.AddedModules, skipped = mergeModules(p, parsed.Modules)
+			resp.Warnings = append(resp.Warnings,
+				skipWarnings("module call", skipped, " (a call's name is its address; rename it to call the same module twice)")...)
+			resp.AddedLocalModules, skipped = mergeLocalModules(p, parsed.LocalModules)
+			resp.Warnings = append(resp.Warnings,
+				skipWarnings("local module", skipped, " — the project's own definition was kept, the imported one dropped")...)
 			// A backend block belongs to the root; only adopt it if the project
 			// doesn't already have one (never silently repoint state).
 			if parsed.Backend != nil && p.Backend == nil {
@@ -108,9 +113,15 @@ func (s *Server) handleImportHCL(w http.ResponseWriter, r *http.Request) {
 
 		resp.AddedResources = mergeResourcesInto(scope, parsed.Resources)
 		resp.AddedDataSources = mergeDataSourcesInto(data, parsed.DataSources)
-		resp.AddedVariables = mergeVariablesInto(vars, parsed.Variables)
-		resp.AddedLocals = mergeLocalsInto(locals, parsed.Locals)
-		resp.AddedOutputs = mergeOutputsInto(outputs, parsed.Outputs)
+		// Unlike resources (renamed to `x_2`), a name clash here drops the block
+		// whole, so each one is reported.
+		var skip []string
+		resp.AddedVariables, skip = mergeVariablesInto(vars, parsed.Variables)
+		resp.Warnings = append(resp.Warnings, skipWarnings("variable", skip, "")...)
+		resp.AddedLocals, skip = mergeLocalsInto(locals, parsed.Locals)
+		resp.Warnings = append(resp.Warnings, skipWarnings("local", skip, "")...)
+		resp.AddedOutputs, skip = mergeOutputsInto(outputs, parsed.Outputs)
+		resp.Warnings = append(resp.Warnings, skipWarnings("output", skip, "")...)
 		return nil
 	})
 	if errors.Is(err, errModuleNotFound) {
@@ -474,91 +485,67 @@ func mergeDataSourcesInto(dst *[]model.Resource, incoming []model.Resource) int 
 	return added
 }
 
-func mergeVariablesInto(dst *[]model.Variable, incoming []model.Variable) int {
+// mergeNamed appends every incoming item whose name is still free and REPORTS
+// the ones it skipped. The report is the point: a block that collides is
+// dropped whole (unlike resources, which are renamed to `x_2`), and a silent
+// drop is indistinguishable from a parse failure — a second `module` call whose
+// label was already taken simply vanished, with the import summary still
+// reading "success".
+func mergeNamed[T any](dst *[]T, incoming []T, name func(T) string) (int, []string) {
 	taken := map[string]bool{}
-	for _, v := range *dst {
-		taken[v.Name] = true
+	for _, item := range *dst {
+		taken[name(item)] = true
 	}
 	added := 0
-	for _, v := range incoming {
-		if taken[v.Name] {
+	var skipped []string
+	for _, item := range incoming {
+		n := name(item)
+		if taken[n] {
+			skipped = append(skipped, n)
 			continue
 		}
-		taken[v.Name] = true
-		*dst = append(*dst, v)
+		taken[n] = true
+		*dst = append(*dst, item)
 		added++
 	}
-	return added
+	return added, skipped
 }
 
-func mergeLocalsInto(dst *[]model.Local, incoming []model.Local) int {
-	taken := map[string]bool{}
-	for _, l := range *dst {
-		taken[l.Name] = true
+// skipWarnings turns a merge's skipped names into user-facing warnings. `kind`
+// names the block ("variable"), `hint` says what to do about it.
+func skipWarnings(kind string, skipped []string, hint string) []string {
+	out := make([]string, 0, len(skipped))
+	for _, n := range skipped {
+		out = append(out, fmt.Sprintf("%s %q already exists — skipped%s", kind, n, hint))
 	}
-	added := 0
-	for _, l := range incoming {
-		if taken[l.Name] {
-			continue
-		}
-		taken[l.Name] = true
-		*dst = append(*dst, l)
-		added++
-	}
-	return added
+	return out
 }
 
-func mergeOutputsInto(dst *[]model.Output, incoming []model.Output) int {
-	taken := map[string]bool{}
-	for _, o := range *dst {
-		taken[o.Name] = true
-	}
-	added := 0
-	for _, o := range incoming {
-		if taken[o.Name] {
-			continue
-		}
-		taken[o.Name] = true
-		*dst = append(*dst, o)
-		added++
-	}
-	return added
+func mergeVariablesInto(dst *[]model.Variable, incoming []model.Variable) (int, []string) {
+	return mergeNamed(dst, incoming, func(v model.Variable) string { return v.Name })
 }
 
-func mergeModules(p *model.Project, incoming []model.Module) int {
-	taken := map[string]bool{}
-	for _, m := range p.Modules {
-		taken[m.Name] = true
-	}
-	added := 0
-	for _, m := range incoming {
-		if taken[m.Name] {
-			continue
-		}
-		taken[m.Name] = true
-		p.Modules = append(p.Modules, m)
-		added++
-	}
-	return added
+func mergeLocalsInto(dst *[]model.Local, incoming []model.Local) (int, []string) {
+	return mergeNamed(dst, incoming, func(l model.Local) string { return l.Name })
 }
 
-// mergeLocalModules appends imported local modules, skipping any whose name is
-// already present (by name).
-func mergeLocalModules(p *model.Project, incoming []model.LocalModule) int {
-	taken := map[string]bool{}
-	for _, m := range p.LocalModules {
-		taken[m.Name] = true
-	}
-	added := 0
-	for _, m := range incoming {
-		if taken[m.Name] {
-			continue
-		}
-		taken[m.Name] = true
-		p.LocalModules = append(p.LocalModules, m)
-		added++
-	}
-	return added
+func mergeOutputsInto(dst *[]model.Output, incoming []model.Output) (int, []string) {
+	return mergeNamed(dst, incoming, func(o model.Output) string { return o.Name })
+}
+
+// mergeModules appends imported module CALLS. Several calls to one source are
+// normal (that is what the call/definition split is for), so the only thing
+// that collides is the call's own name — its address.
+func mergeModules(p *model.Project, incoming []model.Module) (int, []string) {
+	return mergeNamed(&p.Modules, incoming, func(m model.Module) string { return m.Name })
+}
+
+// mergeLocalModules appends imported local module DEFINITIONS, skipping any
+// whose name is already present. Skipping is right — the definition in the
+// project wins — but it means the imported folder's contents were dropped,
+// which is worth saying out loud.
+func mergeLocalModules(p *model.Project, incoming []model.LocalModule) (int, []string) {
+	return mergeNamed(&p.LocalModules, incoming, func(m model.LocalModule) string { return m.Name })
 }
 
 // mergeResources appends imported resources, renaming on (type,name) collision.
