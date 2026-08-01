@@ -11,6 +11,7 @@
 <script lang="ts">
 	import Modal from '$lib/components/Modal.svelte';
 	import { btnPrimary, btnGhost } from '$lib/styles';
+	import { BACKENDS, backendField, backendFields, backendKind } from '$lib/model/backends';
 	import { Loader2, Trash2 } from 'lucide-svelte';
 
 	let {
@@ -33,7 +34,30 @@
 		onSave: () => void;
 	} = $props();
 
-	const BACKEND_TYPES = ['local', 's3', 'gcs', 'azurerm', 'http', 'pg', 'consul', 'kubernetes', 'oss', 'cos', 'remote'];
+	// Known keys for the selected type — advisory only (the rows stay free-form),
+	// so an unlisted key still saves and an unknown type just renders no help.
+	const kind = $derived(backendKind(type));
+	const fields = $derived(backendFields(type));
+	const used = $derived(new Set(rows.map((r) => r.key.trim()).filter(Boolean)));
+	const missing = $derived(fields.filter((f) => !used.has(f.key)));
+	let showAllKeys = $state(false);
+
+	// Seeding happens in the type input's handler, NEVER in an $effect: the modal
+	// is re-entrant (Ctrl+K over an open modal re-opens it) and an effect keyed on
+	// `type` would fire on every open, wiping a config the user came back to edit.
+	function typeChanged() {
+		if (rows.some((r) => r.key.trim() || r.expr.trim())) return; // never clobber real values
+		rows = backendFields(type)
+			.filter((f) => f.required)
+			.map((f) => ({ key: f.key, expr: '' }));
+		showAllKeys = false;
+	}
+
+	function addKey(key: string) {
+		const blank = rows.findIndex((r) => !r.key.trim() && !r.expr.trim());
+		if (blank >= 0) rows[blank].key = key;
+		else rows = [...rows, { key, expr: '' }];
+	}
 </script>
 
 <Modal title="Terraform block" bind:open>
@@ -62,10 +86,16 @@
 		</p>
 		<div>
 			<label for="bk-type" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Backend type</label>
-			<input id="bk-type" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="s3 · gcs · http · pg · … (empty = local)" bind:value={type} list="bk-types" />
+			<input id="bk-type" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="s3 · gcs · http · pg · … (empty = local)" bind:value={type} onchange={typeChanged} list="bk-types" />
 			<datalist id="bk-types">
-				{#each BACKEND_TYPES as t (t)}<option value={t}></option>{/each}
+				{#each BACKENDS as b (b.type)}<option value={b.type}>{b.label}</option>{/each}
 			</datalist>
+			{#if kind}
+				<p class="mt-1 text-xs text-[var(--al-muted)]">{kind.label}</p>
+			{/if}
+			{#if kind?.note}
+				<p class="mt-1 rounded-md border border-[var(--al-warn)] px-2 py-1 text-xs text-[var(--al-muted)]">{kind.note}</p>
+			{/if}
 		</div>
 		<div>
 			<div class="mb-1 flex items-center justify-between">
@@ -77,13 +107,37 @@
 			{/if}
 			<div class="space-y-1.5">
 				{#each rows as row, i (i)}
-					<div class="flex items-center gap-2">
-						<input class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" placeholder="bucket" bind:value={row.key} />
-						<input class="mono min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" placeholder={'"my-bucket" · true · 5432'} bind:value={row.expr} />
-						<button class="text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => (rows = rows.filter((_, j) => j !== i))} aria-label="Remove value"><Trash2 size={12} /></button>
+					{@const f = backendField(type, row.key)}
+					<div>
+						<div class="flex items-center gap-2">
+							<input class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" aria-label="Configuration key" placeholder={fields[0]?.key ?? 'key'} bind:value={row.key} list={fields.length ? 'bk-keys' : undefined} />
+							<input class="mono min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs outline-none focus:border-[var(--al-accent)]" aria-label="Configuration value" placeholder={f?.example ?? '"a string" · true · 5432'} bind:value={row.expr} />
+							<button class="text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => (rows = rows.filter((_, j) => j !== i))} aria-label="Remove value"><Trash2 size={12} /></button>
+						</div>
+						{#if f}
+							<p class="ml-[10.5rem] mt-0.5 text-[11px] text-[var(--al-muted)]">{f.hint}{#if f.required}<span class="text-[var(--al-warn)]">&nbsp;· required</span>{/if}</p>
+						{/if}
 					</div>
 				{/each}
 			</div>
+			{#if fields.length}
+				<datalist id="bk-keys">
+					{#each fields as f (f.key)}<option value={f.key}>{f.hint}</option>{/each}
+				</datalist>
+				{#if missing.length}
+					<div class="mt-2 flex flex-wrap items-center gap-1.5">
+						<span class="text-[11px] uppercase tracking-wide text-[var(--al-muted)]">Add</span>
+						{#each showAllKeys ? missing : missing.filter((f) => f.required) as f (f.key)}
+							<button class="mono rounded-md border border-[var(--al-border)] px-1.5 py-0.5 text-[11px] text-[var(--al-muted)] hover:border-[var(--al-accent)] hover:text-[var(--al-text)]" title={f.hint} onclick={() => addKey(f.key)}>+ {f.key}</button>
+						{/each}
+						{#if !showAllKeys && missing.some((f) => !f.required)}
+							<button class="text-[11px] text-[var(--al-muted)] underline hover:text-[var(--al-accent)]" onclick={() => (showAllKeys = true)}>show all {missing.length} keys</button>
+						{:else if showAllKeys}
+							<button class="text-[11px] text-[var(--al-muted)] underline hover:text-[var(--al-accent)]" onclick={() => (showAllKeys = false)}>show less</button>
+						{/if}
+					</div>
+				{/if}
+			{/if}
 		</div>
 		{#if canDeploy}
 			<div>
