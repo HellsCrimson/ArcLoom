@@ -105,6 +105,23 @@
 						{/if}
 					</div>
 				{/if}
+			{:else if info.needsToset}
+				<!-- The engine's own refusal, before the plan: "the for_each argument
+				     must be a map, or set of strings, and you have provided a value
+				     of type tuple". A `[…]` literal IS a tuple — there is no way to
+				     declare a local as a set — so this is the normal state of a list
+				     of names, not an unusual mistake. -->
+				<p class="mt-1.5 text-[11px] text-[var(--al-warn)]">
+					This is a list — <span class="mono">for_each</span> only accepts a map or a set of strings, so the engine
+					will refuse it (<span class="mono">…provided a value of type tuple</span>). Wrap it in
+					<span class="mono">toset(…)</span>; the button is on the field above. Its
+					{info.expansion.keys.length} members would then key the instances:
+				</p>
+				<div class="mt-1 flex flex-wrap gap-1">
+					{#each info.elements as el (el.key)}
+						<span class={chip + ' text-[var(--al-muted)]'}>{el.key}</span>
+					{/each}
+				</div>
 			{:else if info.expansion.keys.length === 0}
 				<p class="mt-1.5 text-[11px] text-[var(--al-muted)]">Empty collection — this block creates no instances.</p>
 			{:else}

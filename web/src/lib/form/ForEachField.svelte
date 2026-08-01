@@ -23,8 +23,9 @@
 	import type { Scope } from '$lib/model/expand';
 	import DynamicEditor from '$lib/form/DynamicEditor.svelte';
 	import { parseHclCollection, toHclText } from '$lib/model/hcltext';
-	import { refParts } from '$lib/model/expand';
-	import { Braces, Code2, List } from 'lucide-svelte';
+	import { refParts, stripWrappers } from '$lib/model/expand';
+	import { describeForEach } from '$lib/model/foreach';
+	import { Braces, Code2, List, Wand2 } from 'lucide-svelte';
 
 	let {
 		count = $bindable(''),
@@ -55,7 +56,9 @@
 	function detect(text: string): Mode {
 		const t = text.trim();
 		if (!t) return 'pick';
-		if (refParts(t)) return 'pick';
+		// `toset(var.x)` is still a pick — the wrapper is how a list is made
+		// acceptable to for_each, not a different way of choosing the collection.
+		if (refParts(stripWrappers(t))) return 'pick';
 		return parseHclCollection(t) ? 'build' : 'expr';
 	}
 
@@ -84,6 +87,34 @@
 		}
 		if (next === 'pick' && !refParts(forEach.trim())) forEach = '';
 		mode = next;
+	}
+
+	// for_each takes a map or a SET; a `[...]` list is a tuple in HCL and the
+	// engine rejects it outright. describeForEach knows which shape the chosen
+	// collection has, so the wrapper can be offered exactly when it is needed
+	// instead of being learned from a failed plan.
+	const info = $derived(describeForEach(forEach, scope));
+	const needsToset = $derived(info?.needsToset ?? false);
+
+	function wrapToset() {
+		const t = forEach.trim();
+		if (t) forEach = `toset(${t})`;
+	}
+
+	// The picker writes the wrapper itself: for a list-shaped variable or local
+	// the bare reference cannot work, so offering it unwrapped would only be a
+	// step towards an error. `pickValue` keeps the select in sync with a stored
+	// `toset(...)`.
+	const pickValue = $derived(stripWrappers(forEach.trim()));
+	function pick(addr: string) {
+		if (!addr) {
+			forEach = '';
+			return;
+		}
+		forEach = addr;
+		// Re-read the shape now that the expression names the collection.
+		const d = describeForEach(addr, scope);
+		if (d?.needsToset) forEach = `toset(${addr})`;
 	}
 
 	// Build mode projects the draft onto the text on every edit, so the HCL
@@ -138,12 +169,23 @@
 		</div>
 
 		{#if mode === 'pick' && count.trim() === ''}
-			<select class="{inp} w-full" bind:value={forEach} disabled={disabled || count.trim() !== ''}>
+			<select
+				class="{inp} w-full"
+				value={pickValue}
+				onchange={(e) => pick((e.currentTarget as HTMLSelectElement).value)}
+				disabled={disabled || count.trim() !== ''}
+			>
 				<option value="">Select a variable or local…</option>
 				{#each candidates as c (c.addr)}
 					<option value={c.addr}>{c.addr}{c.type ? ` · ${c.type}` : ''}</option>
 				{/each}
 			</select>
+			{#if info?.wrapped}
+				<p class="mt-1 text-[11px] text-[var(--al-muted)]">
+					Written as <span class="mono text-[var(--al-text)]">{forEach.trim()}</span> — for_each takes a map or a set,
+					and a list of strings is a tuple until <span class="mono">toset()</span> converts it.
+				</p>
+			{/if}
 			{#if candidates.length === 0}
 				<p class="mt-1 text-[11px] text-[var(--al-muted)]">
 					No variables or locals in this scope yet — declare one in Variables, or switch to Build.
@@ -158,6 +200,17 @@
 			</div>
 		{:else}
 			<input class="{inp} w-full" bind:value={forEach} placeholder={'toset(["a", "b"]) · var.map · { for … }'} disabled={disabled || count.trim() !== ''} />
+		{/if}
+		{#if needsToset}
+			<div class="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-[var(--al-warn)]">
+				<span>
+					This is a list (a <span class="mono">tuple</span> in HCL) — <span class="mono">for_each</span> takes a map or a set of strings.
+				</span>
+				<button
+					class="inline-flex items-center gap-1 rounded border border-[var(--al-warn)] px-1.5 py-0.5 text-[var(--al-text)] hover:bg-[var(--al-panel-2)]"
+					onclick={wrapToset}
+				><Wand2 size={11} /> Wrap in toset()</button>
+			</div>
 		{/if}
 		{#if switchError}
 			<p class="mt-1 text-[11px] text-[var(--al-warn)]">{switchError}</p>

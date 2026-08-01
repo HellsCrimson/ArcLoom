@@ -35,7 +35,7 @@ export function indexSuffix(e: Pick<Expansion, "kind">, key: string): string {
 
 // stripWrappers peels the set/map builders that don't change the key set, so
 // `toset([...])` is evaluated as the collection inside it.
-function stripWrappers(expr: string): string {
+export function stripWrappers(expr: string): string {
   let s = expr.trim();
   for (;;) {
     const m = /^(toset|tolist|tomap)\s*\(([\s\S]*)\)$/.exec(s);
@@ -145,7 +145,13 @@ function rawExpr(v: AttrValue | undefined): string | null {
 function keysFromStructural(v: AttrValue | undefined): string[] | null {
   if (!v || v.mode !== "literal") return null;
   if (v.entries) return v.entries.map((e) => e.key).filter((k) => k !== "");
-  if (v.items) return v.items.map((_, i) => String(i));
+  // A for_each over a set of strings is keyed BY the string — `x["www"]`, not
+  // `x[0]`. Only fall back to the index for an element that is not a literal
+  // string, where the engine's key is not knowable here anyway.
+  if (v.items)
+    return v.items.map((it, i) =>
+      it.mode === "literal" && typeof it.literal === "string" ? it.literal : String(i),
+    );
   return null;
 }
 

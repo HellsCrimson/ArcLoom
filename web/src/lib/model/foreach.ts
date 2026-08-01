@@ -19,6 +19,7 @@ import {
   expandInstances,
   refParts,
   resolveRef,
+  stripWrappers,
   type Expansion,
   type Scope,
 } from "$lib/model/expand";
@@ -49,8 +50,18 @@ export interface ForEachInfo {
   valueFields: string[];
   /** A set of strings: `each.value` IS `each.key`, there are no fields. */
   valueIsKey: boolean;
-  /** map = keyed members (each.value is the member); list = a set of strings. */
+  /** map = keyed members (each.value is the member); list = ordered members. */
   shape: "map" | "list" | null;
+  /** The expression is already wrapped in toset()/tolist()/tomap(). */
+  wrapped: boolean;
+  /**
+   * The collection is an ordered list/tuple and NOT a set, so the engine will
+   * refuse it: "the for_each argument must be a map, or set of strings, and you
+   * have provided a value of type tuple". A `[...]` literal is a tuple in HCL —
+   * there is no way to declare a local as a set — so this is the normal state of
+   * a list of names, and `toset(...)` is the fix.
+   */
+  needsToset: boolean;
 }
 
 const MAX_PREVIEW_ENTRIES = 4;
@@ -104,7 +115,7 @@ export function describeForEach(
   const expr = (forEach ?? "").trim();
   if (!expr) return null;
 
-  const bare = stripSetWrapper(expr);
+  const bare = stripWrappers(expr);
   // A comprehension names its source collection: `{ for k, v in var.x : … }`.
   // Falling back to it is what keeps the panel useful for the filtered case,
   // which is otherwise just "ask the engine".
@@ -115,9 +126,17 @@ export function describeForEach(
   // A ref resolves through the declaration; an INLINE collection is read
   // straight out of the expression, so a for_each written in the Build editor
   // gets the same member previews and each.value detail as a declared one.
-  const value = ref
+  const resolved = ref
     ? resolveRef(srcExpr, scope)
     : (parseHclCollection(srcExpr) ?? undefined);
+  // A declaration may hold its collection as RAW HCL (`local.x = ["a","b"]` is
+  // stored as an expression, not as items), so parse that too — otherwise the
+  // most ordinary list of names looks shapeless and the toset() warning, the
+  // member previews and each.value all go quiet on it.
+  const value =
+    resolved?.mode === "expression"
+      ? (parseHclCollection(resolved.expr ?? "") ?? resolved)
+      : resolved;
   const declared = ref
     ? ref.kind === "variable"
       ? (scope.variables ?? []).find((v) => v.name === ref.name)
@@ -157,7 +176,7 @@ export function describeForEach(
       ? "map"
       : value?.items !== undefined
         ? "list"
-        : stripSetWrapper(expr).startsWith("[") && expansion !== null
+        : stripWrappers(expr).startsWith("[") && expansion !== null
           ? "list"
           : typed
             ? typed.widget === "map"
@@ -165,6 +184,12 @@ export function describeForEach(
               : "list"
             : null;
   const valueIsKey = shape === "list" && valueFields.length === 0;
+
+  // A declared `set(...)` is already acceptable; `list(...)`/`tuple(...)` and a
+  // bare `[...]` are not. With no evidence either way, claim nothing.
+  const declaredSet = typed?.type === "set";
+  const wrapped = stripWrappers(expr) !== expr;
+  const needsToset = shape === "list" && !declaredSet && !wrapped;
 
   return {
     ref,
@@ -176,14 +201,9 @@ export function describeForEach(
     valueFields,
     valueIsKey,
     shape,
+    wrapped,
+    needsToset,
   };
-}
-
-// stripSetWrapper peels one toset()/tomap()/tolist() so `toset(var.x)` still
-// resolves to the variable behind it — the same collection, same keys.
-function stripSetWrapper(expr: string): string {
-  const m = /^(toset|tolist|tomap)\s*\(([\s\S]*)\)$/.exec(expr.trim());
-  return m ? m[2].trim() : expr.trim();
 }
 
 /**
