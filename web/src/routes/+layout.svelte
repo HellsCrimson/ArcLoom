@@ -22,7 +22,14 @@
 </script>
 
 <svelte:head>
-	<link rel="icon" href={favicon} />
+	<!--
+	  The SVG tab icon (hashed by Vite, hence the import). It is the SEAMLESS
+	  tile from brand/: at 16-32 px the twist slits fall under half a pixel and
+	  turn the cord to mush, so the small mark keeps only the interlace. The
+	  .ico / apple-touch / manifest fallbacks are declared in app.html, which is
+	  served on the first byte — this one arrives at hydration.
+	-->
+	<link rel="icon" href={favicon} type="image/svg+xml" />
 	<title>ArcLoom</title>
 </svelte:head>
 

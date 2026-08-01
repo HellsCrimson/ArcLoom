@@ -43,6 +43,7 @@
 	import { form } from '$lib/stores/resourceForm.svelte';
 	import EditorView from '$lib/editor/EditorView.svelte';
 	import HclView from '$lib/editor/HclView.svelte';
+	import Logo from '$lib/components/Logo.svelte';
 	import type { ProjectConfig as ProjectConfigT, ProjectFile, SecretMeta } from '$lib/types';
 	import {
 		Boxes, Plus, Trash2, FolderGit2, Settings, Undo2, Redo2, AlertTriangle, Search
@@ -1438,7 +1439,7 @@
 	     line once they cannot share one (roughly below 1000px). -->
 	<header class="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-[var(--al-border)] bg-[var(--al-panel)] px-4 py-2">
 		<div class="flex flex-none items-center gap-2 font-semibold">
-			<Boxes size={18} class="text-[var(--al-accent)]" /> <span class="hidden sm:inline">ArcLoom</span>
+			<Logo size={18} class="text-[var(--al-accent)]" /> <span class="hidden sm:inline">ArcLoom</span>
 		</div>
 		<div class="flex flex-none items-center gap-1.5">
 			<FolderGit2 size={15} class="hidden shrink-0 text-[var(--al-muted)] sm:block" />

@@ -4,6 +4,17 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
+		<!--
+		  Icons live in the SHELL, not in <svelte:head>: this app is client-side
+		  rendered, so a head link added by the layout only lands after hydration,
+		  while the browser asks for the tab icon on the first byte. The .svg (added
+		  by +layout, hashed by Vite) wins wherever it is supported; these are the
+		  fallbacks. All of them come from brand/ — see brand/README.md.
+		-->
+		<link rel="icon" href="/favicon.ico" sizes="16x16 32x32" />
+		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+		<link rel="manifest" href="/site.webmanifest" />
+		<meta name="theme-color" content="#0d1117" />
 		<script>
 			// Resolve + apply the theme before first paint (no flash of the wrong
 			// theme). "system"/unset resolves to the OS preference; the concrete

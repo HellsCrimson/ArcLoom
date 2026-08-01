@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { auth } from '$lib/stores/auth.svelte';
-	import { Boxes, Loader2, LogIn } from 'lucide-svelte';
+	import Logo from '$lib/components/Logo.svelte';
+	import { Loader2, LogIn } from 'lucide-svelte';
 
 	let username = $state('');
 	let password = $state('');
@@ -39,7 +40,7 @@
 		class="w-full max-w-sm space-y-4 rounded-xl border border-[var(--al-border)] bg-[var(--al-panel)] p-6 shadow-xl"
 	>
 		<div class="flex items-center gap-2 text-lg font-semibold text-[var(--al-text)]">
-			<Boxes size={22} class="text-[var(--al-accent)]" /> ArcLoom
+			<Logo size={22} class="text-[var(--al-accent)]" /> ArcLoom
 		</div>
 		<p class="text-sm text-[var(--al-muted)]">Sign in to continue.</p>
 

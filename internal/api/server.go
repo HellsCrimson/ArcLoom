@@ -5,6 +5,7 @@ package api
 import (
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strings"
 	"sync"
@@ -334,6 +335,9 @@ func (s *Server) Handler() http.Handler {
 // spaHandler serves embedded static assets and falls back to 200.html for any
 // client-side route so deep links work.
 func (s *Server) spaHandler() http.Handler {
+	// Go's built-in table has no entry for .webmanifest, so the icon manifest
+	// would go out as text/plain and Chrome would refuse it.
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
 	fileServer := http.FileServer(http.FS(s.static))
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		path := strings.TrimPrefix(req.URL.Path, "/")
