@@ -32,6 +32,7 @@
 	import ResizeHandle from '$lib/components/ResizeHandle.svelte';
 	import RunOutputPane from '$lib/components/RunOutputPane.svelte';
 	import StructureSidebar from '$lib/components/StructureSidebar.svelte';
+	import { expandInstances } from '$lib/model/expand';
 	import { attrToText, attrsToBackendRows, backendRowsToAttrs, buildAttrs, rowsToAttrs, type BackendRow } from '$lib/form/attrs';
 	import { findInScope, localFolder, providerForType, providerVersionForSource, resolveAddress, suggestName } from '$lib/model/scope';
 	import { iconBtn, hdrBtn } from '$lib/styles';
@@ -83,7 +84,10 @@
 	let providerUpdates = $state<Record<string, ProviderUpdate>>({});
 	let bumping = $state('');
 	let showImportResource = $state(false);
-	let importId = $state('');
+	// One row per instance to import. A block with no count/for_each uses a
+	// single row whose key is empty (the address is then the base address).
+	let importRows = $state<{ key: string; id: string }[]>([{ key: '', id: '' }]);
+	let importProgress = $state('');
 	// Backend (remote state) modal
 	let showBackend = $state(false);
 	let bkRequiredVersion = $state('');
@@ -1365,9 +1369,83 @@
 		`${activeModule ? `module.${activeModule}.` : ''}${form.selectedType}.${form.name}`
 	);
 
-	function runImport() {
-		showImportResource = false;
-		runStateOp('import', { address: importAddress, id: importId.trim() });
+	// Instances of the resource in the form, when the model can work them out —
+	// the same expansion the structure tree and the for_each panel use.
+	const importExpansion = $derived(
+		expandInstances({ count: form.count, forEach: form.forEach }, scopeConfig)
+	);
+	const importMulti = $derived(form.count.trim() !== '' || form.forEach.trim() !== '');
+	const importKind = $derived<'count' | 'for_each'>(form.count.trim() !== '' ? 'count' : 'for_each');
+
+	// Seeded HERE, not by an effect in the modal: every opener is re-entrant, so
+	// a seed-on-open effect would be a no-op the second time and leave the
+	// previous resource's rows under this one's address.
+	function openImportResource() {
+		importProgress = '';
+		importRows = importExpansion?.keys.length
+			? importExpansion.keys.map((key) => ({ key, id: '' }))
+			: [{ key: '', id: '' }];
+		showImportResource = true;
+	}
+
+	// streamOp is fire-and-forget; importing several instances has to wait for
+	// each one, so wrap a single run in a promise. Rejecting on the error event
+	// is what stops the loop at the first failure instead of firing the rest at
+	// a state the engine just refused.
+	function streamOnce(op: 'import', params: Record<string, string>): Promise<void> {
+		return new Promise((resolve, reject) => {
+			streamOp(
+				project!.id,
+				op,
+				(ev) => {
+					if (ev.kind === 'log') runPane.append(ev.line);
+					else if (ev.kind === 'error') reject(new Error(ev.error));
+					else if (ev.kind === 'done') resolve();
+				},
+				params,
+				activeEnv
+			);
+		});
+	}
+
+	// `terraform import` takes one literal address and one literal ID — no
+	// expressions — so a counted/for_each'd resource is imported one instance at
+	// a time. They run in order; a failure stops the run and says how far it got,
+	// because the instances already imported ARE in the state and re-importing
+	// them would fail.
+	async function runImport() {
+		if (!project) return;
+		const jobs = importRows
+			.map((r) => ({ key: r.key.trim(), id: r.id.trim() }))
+			.filter((r) => r.id !== '' && (!importMulti || r.key !== ''));
+		if (jobs.length === 0) return;
+
+		error = '';
+		runPane.reset();
+		busy = 'import';
+		let done = 0;
+		try {
+			for (const job of jobs) {
+				const address = job.key
+					? `${importAddress}${importKind === 'count' ? `[${job.key}]` : `["${job.key}"]`}`
+					: importAddress;
+				importProgress = `Importing ${address} (${done + 1}/${jobs.length})…`;
+				if (jobs.length > 1) runPane.append(`\n== import ${address}`);
+				await streamOnce('import', { address, id: job.id });
+				done++;
+			}
+			runPane.result = jobs.length > 1 ? `Imported ${done} instances into state` : 'Imported into state';
+			showImportResource = false;
+			importProgress = '';
+		} catch (err) {
+			error = done > 0
+				? `${(err as Error).message} — ${done} of ${jobs.length} imported; the ones that succeeded are in the state already.`
+				: (err as Error).message;
+			importProgress = '';
+		} finally {
+			busy = '';
+			loadState();
+		}
 	}
 
 	// Apply/destroy run against the project's persisted state, so a later plan
@@ -1621,7 +1699,7 @@
 			onOpenDefinition={() => (showConfig = true)}
 			onSaveResource={saveResource}
 			onSaveProvider={saveProviderConfig}
-			onImportResource={() => { importId = ''; showImportResource = true; }}
+			onImportResource={openImportResource}
 			onNewProject={newProject}
 		/>
 
@@ -1769,7 +1847,17 @@
 	/>
 
 	<!-- Import a live resource into state -->
-	<ImportResourceModal bind:open={showImportResource} bind:id={importId} address={importAddress} onImport={runImport} />
+	<ImportResourceModal
+		bind:open={showImportResource}
+		bind:rows={importRows}
+		address={importAddress}
+		multi={importMulti}
+		kind={importKind}
+		keysKnown={!!importExpansion?.keys.length}
+		busy={busy === 'import'}
+		progress={importProgress}
+		onImport={runImport}
+	/>
 
 	<!-- Apply confirmation -->
 	<ApplyConfirmModal
