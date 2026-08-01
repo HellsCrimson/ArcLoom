@@ -16,6 +16,8 @@
 -->
 <script lang="ts">
 	import Modal from '$lib/components/Modal.svelte';
+	import ForEachPanel from '$lib/form/ForEachPanel.svelte';
+	import type { Scope } from '$lib/model/expand';
 	import { btnPrimary, btnGhost } from '$lib/styles';
 	import { Loader2, Trash2 } from 'lucide-svelte';
 
@@ -28,6 +30,8 @@
 		rows = $bindable<{ key: string; expr: string }[]>([]),
 		count = $bindable(''),
 		forEach = $bindable(''),
+		scope = {},
+		onOpenDefinition,
 		saving = false,
 		onSave
 	}: {
@@ -39,6 +43,9 @@
 		rows?: { key: string; expr: string }[];
 		count?: string;
 		forEach?: string;
+		/** Root variables + locals, for the for_each panel (a call is root-scope). */
+		scope?: Scope;
+		onOpenDefinition?: () => void;
 		saving?: boolean;
 		onSave: () => void;
 	} = $props();
@@ -77,6 +84,9 @@
 				<p class="pb-1.5 text-xs text-[var(--al-muted)]">Inputs can use <span class="mono">{count.trim() !== '' ? 'count.index' : 'each.key'}</span>.</p>
 			{/if}
 		</div>
+		<!-- The members this call iterates: a module's arguments are written in
+		     terms of each.value, so the set belongs next to them. -->
+		<ForEachPanel {forEach} {count} {scope} {onOpenDefinition} />
 		<div>
 			<div class="mb-1 flex items-center justify-between">
 				<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Inputs (raw HCL)</span>

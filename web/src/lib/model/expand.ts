@@ -1,4 +1,4 @@
-import type { Project, Variable } from "$lib/types";
+import type { AttrValue, Local, Project, Variable } from "$lib/types";
 
 // Expanding a count / for_each into the instances it produces.
 //
@@ -11,9 +11,10 @@ import type { Project, Variable } from "$lib/types";
 // panel. A guess here would be worse than no guess, so those return null and
 // the caller falls back to a single row.
 //
-// One indirection IS followed: `var.x` resolves against the variable's default,
-// because a for_each over a variable with a literal default is the single most
-// common shape ArcLoom writes.
+// One indirection IS followed: `var.x` resolves against the variable's default
+// and `local.x` against the local's value, because a for_each over one of those
+// is the single most common shape ArcLoom writes. A second hop (a local naming
+// another local) is the engine's job.
 
 /** How many instances to enumerate before collapsing the tail into a count. */
 export const MAX_INSTANCES = 24;
@@ -102,31 +103,49 @@ function literalString(expr: string): string | null {
   return inner;
 }
 
-/** varDefault returns the raw HCL of `var.<name>`'s default, if it has one. */
-function varDefault(expr: string, variables: Variable[]): string | null {
-  const m = /^var\.([A-Za-z_][A-Za-z0-9_-]*)$/.exec(expr.trim());
-  if (!m) return null;
-  const v = variables.find((x) => x.name === m[1]);
-  const d = v?.default;
-  if (!d) return null;
-  // Only a raw expression default can be re-parsed here; a structural default
-  // (entries/items) is handled by forEachKeysFromValue below.
-  if (d.mode === "expression") return d.expr ?? null;
-  if (d.mode === "literal" && d.entries) return null; // handled by the caller
-  return null;
+/**
+ * Scope is the set of declarations a `var.*` / `local.*` in the expression can
+ * refer to: the root's for a root-scope block, the module's inside a module.
+ */
+export interface Scope {
+  variables?: Variable[];
+  locals?: Local[];
 }
 
-/** keysFromStructuralDefault reads keys off a variable default held as entries. */
-function keysFromStructuralDefault(
+/** A `var.x` / `local.x` reference, split into its kind and name. */
+export function refParts(
   expr: string,
-  variables: Variable[],
-): string[] | null {
-  const m = /^var\.([A-Za-z_][A-Za-z0-9_-]*)$/.exec(expr.trim());
+): { kind: "variable" | "local"; name: string } | null {
+  const m = /^(var|local)\.([A-Za-z_][A-Za-z0-9_-]*)$/.exec(expr.trim());
   if (!m) return null;
-  const d = variables.find((x) => x.name === m[1])?.default;
-  if (!d || d.mode !== "literal") return null;
-  if (d.entries) return d.entries.map((e) => e.key).filter((k) => k !== "");
-  if (d.items) return d.items.map((_, i) => String(i));
+  return { kind: m[1] === "var" ? "variable" : "local", name: m[2] };
+}
+
+/**
+ * resolveRef returns the value a `var.x` / `local.x` reference stands for: a
+ * variable's default or a local's value. One hop only — a local pointing at
+ * another local is the engine's job.
+ */
+export function resolveRef(expr: string, scope: Scope): AttrValue | undefined {
+  const ref = refParts(expr);
+  if (!ref) return undefined;
+  return ref.kind === "variable"
+    ? (scope.variables ?? []).find((v) => v.name === ref.name)?.default
+    : (scope.locals ?? []).find((l) => l.name === ref.name)?.value;
+}
+
+/** rawExpr returns the re-parsable HCL text of a value, if it has any. */
+function rawExpr(v: AttrValue | undefined): string | null {
+  // Only a raw expression can be re-parsed here; a structural value
+  // (entries/items) is read directly by keysFromStructural.
+  return v?.mode === "expression" ? (v.expr ?? null) : null;
+}
+
+/** keysFromStructural reads keys off a value held structurally (entries/items). */
+function keysFromStructural(v: AttrValue | undefined): string[] | null {
+  if (!v || v.mode !== "literal") return null;
+  if (v.entries) return v.entries.map((e) => e.key).filter((k) => k !== "");
+  if (v.items) return v.items.map((_, i) => String(i));
   return null;
 }
 
@@ -150,17 +169,15 @@ function expandCount(count: string): Expansion | null {
  * object/map whose keys are literal. Resolves one level of `var.x` through the
  * variable's default.
  */
-function expandForEach(
-  forEach: string,
-  variables: Variable[],
-): Expansion | null {
+function expandForEach(forEach: string, scope: Scope): Expansion | null {
   let expr = stripWrappers(forEach);
 
-  const structural = keysFromStructuralDefault(expr, variables);
+  const resolved = resolveRef(expr, scope);
+  const structural = keysFromStructural(resolved);
   if (structural) return capped(structural);
 
-  const viaVar = varDefault(expr, variables);
-  if (viaVar !== null) expr = stripWrappers(viaVar);
+  const viaRef = rawExpr(resolved);
+  if (viaRef !== null) expr = stripWrappers(viaRef);
 
   if (!balanced(expr)) return null;
 
@@ -235,17 +252,20 @@ function capped(keys: string[]): Expansion {
  */
 export function expandInstances(
   meta: { count?: string; forEach?: string },
-  variables: Variable[] = [],
+  scope: Scope = {},
 ): Expansion | null {
   if (meta.count) return expandCount(meta.count);
-  if (meta.forEach) return expandForEach(meta.forEach, variables);
+  if (meta.forEach) return expandForEach(meta.forEach, scope);
   return null;
 }
 
-/** expandCall is expandInstances for a root module call, using root variables. */
+/** expandCall is expandInstances for a root module call, using root scope. */
 export function expandCall(
   meta: { count?: string; forEach?: string },
   project: Project | null,
 ): Expansion | null {
-  return expandInstances(meta, project?.variables ?? []);
+  return expandInstances(meta, {
+    variables: project?.variables ?? [],
+    locals: project?.locals ?? [],
+  });
 }

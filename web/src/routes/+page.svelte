@@ -1568,6 +1568,8 @@
 			{providers}
 			canResources={auth.can('resources')}
 			canDeploy={auth.can('deploy')}
+			scope={scopeConfig}
+			onOpenDefinition={() => (showConfig = true)}
 			onSaveResource={saveResource}
 			onSaveProvider={saveProviderConfig}
 			onImportResource={() => { importId = ''; showImportResource = true; }}
@@ -1770,6 +1772,8 @@
 		bind:rows={rmRows}
 		bind:count={rmCount}
 		bind:forEach={rmForEach}
+		scope={{ variables: project?.variables ?? [], locals: project?.locals ?? [] }}
+		onOpenDefinition={() => (showConfig = true)}
 		saving={busy === 'regmodule'}
 		onSave={saveCall}
 	/>

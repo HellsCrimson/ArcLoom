@@ -10,7 +10,9 @@
 	import type { AttrDiff } from '$lib/api/client';
 	import type { ProviderInstance } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
+	import ForEachPanel from '$lib/form/ForEachPanel.svelte';
 	import PlanDiffPanel from '$lib/components/PlanDiffPanel.svelte';
+	import type { Scope } from '$lib/model/expand';
 	import { stripIndex } from '$lib/model/scope';
 	import { btnPrimary, btnGhost } from '$lib/styles';
 	import { form } from '$lib/stores/resourceForm.svelte';
@@ -29,6 +31,8 @@
 		providers,
 		canResources,
 		canDeploy,
+		scope,
+		onOpenDefinition,
 		onSaveResource,
 		onSaveProvider,
 		onImportResource,
@@ -46,6 +50,10 @@
 		providers: ProviderInstance[];
 		canResources: boolean;
 		canDeploy: boolean;
+		/** Variables + locals the active scope's for_each can refer to. */
+		scope: Scope;
+		/** Opens the Variables/locals editor, for the for_each panel's link. */
+		onOpenDefinition?: () => void;
 		onSaveResource: () => void;
 		onSaveProvider: () => void;
 		onImportResource: () => void;
@@ -181,6 +189,9 @@
 				</button>
 			{/if}
 		</div>
+		<!-- What the meta-arg above actually iterates: the members of the set, not
+		     just the expression naming it. -->
+		<ForEachPanel forEach={form.forEach} count={form.count} {scope} {onOpenDefinition} />
 		{#if formPlanChanges.length > 0}
 			<PlanDiffPanel
 				changes={formPlanChanges}
