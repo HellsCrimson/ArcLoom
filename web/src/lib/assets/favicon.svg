@@ -1,13 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="ArcLoom">
   <title>ArcLoom</title>
   <!-- Small-size tile (<=32px: favicon). No twist seams; see generate.py. -->
-  <defs><mask id="alTwistIS" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="64" fill="#fff"/><path d="M42 21 L48 52.5" stroke="#000" stroke-width="10.1"/></mask></defs>
+  <defs><mask id="alTwistIS" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="64" fill="#fff"/><path d="M34 19 L47 55" stroke="#000" stroke-width="10.1"/></mask></defs>
   <rect width="64" height="64" rx="14" fill="url(#alTile)"/>
   <defs><linearGradient id="alTile" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1e2d4d"/><stop offset="1" stop-color="#0d1117"/></linearGradient></defs>
   <g transform="translate(32 32) scale(0.84) translate(-32 -32)">
     <g fill="none" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M16 52.5 L22 21 A10 10 0 0 1 42 21 L48 52.5" stroke="#4c8dff" stroke-width="7.5"/>
-      <path d="M8 36 H56" stroke="#3fcfb4" stroke-width="6.5" mask="url(#alTwistIS)"/>
+      <path d="M14 55 L14 19 A10 10 0 0 1 34 19 L47 55" stroke="#4c8dff" stroke-width="7.5"/>
+      <path d="M4 37 H51.37 Q57.37 37 57.37 28" stroke="#3fcfb4" stroke-width="6.5" mask="url(#alTwistIS)"/>
     </g>
   </g>
 </svg>

@@ -40,9 +40,12 @@
 			<rect width="64" height="64" fill="#fff" />
 			<!-- The right leg stroked 7.5 + 2×1.3 wide: uniform perpendicular
 			     clearance where the cord dives under it. -->
-			<path d="M42 21 L48 52.5" stroke="#000" stroke-width="10.1" />
+			<path d="M34 19 L47 55" stroke="#000" stroke-width="10.1" />
 		</mask>
 	</defs>
-	<path d="M16 52.5 L22 21 A10 10 0 0 1 42 21 L48 52.5" stroke-width="7.5" />
-	<path d="M8 36 H56" stroke-width="6.5" mask="url(#{maskId})" />
+	<!-- The A: vertical left leg (which is also the L's stem), apex arc, splayed
+	     right leg. -->
+	<path d="M14 55 L14 19 A10 10 0 0 1 34 19 L47 55" stroke-width="7.5" />
+	<!-- The cord: the A's crossbar, the L's foot, and a hook for the loose end. -->
+	<path d="M4 37 H51.37 Q57.37 37 57.37 28" stroke-width="6.5" mask="url(#{maskId})" />
 </svg>
