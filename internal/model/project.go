@@ -46,6 +46,39 @@ type Project struct {
 	// They live in the model — not loose on disk — so they ride along with
 	// generation, Git and undo like everything else the UI edits.
 	Files []ProjectFile `json:"files,omitempty" yaml:"files,omitempty"`
+	// Imports are config-driven `import` blocks: they adopt existing objects
+	// into state on the next apply, in bulk, instead of one CLI call per
+	// instance. They are part of the MODEL (so they generate, commit and undo
+	// like everything else) and are deliberately NOT removed automatically after
+	// an apply — leaving them is harmless (an import block whose target is
+	// already in state is a no-op) and removing them behind the user's back
+	// would erase a record of what was adopted.
+	Imports []Import `json:"imports,omitempty" yaml:"imports,omitempty"`
+}
+
+// Import is one `import { ... }` block.
+//
+//	import {
+//	  for_each = var.subdomains          // optional, engine >= 1.7
+//	  to       = aws_route53_record.r[each.key]
+//	  id       = each.value
+//	}
+//
+// Every field is a raw HCL expression, for the same reason count/for_each are:
+// the engine evaluates them, and `id` in particular is usually built from
+// `each.value`. `To` is an address expression, not a parsed address — with a
+// for_each it MUST carry an index (`x.y[each.key]`), which is exactly the part a
+// structured address type could not express.
+type Import struct {
+	// ID is ArcLoom's own identifier for the block (import blocks have no name
+	// in HCL), so the UI can edit and delete one.
+	ID       string `json:"id" yaml:"id"`
+	ForEach  string `json:"forEach,omitempty" yaml:"for_each,omitempty"`
+	To       string `json:"to" yaml:"to"`
+	ImportID string `json:"importId" yaml:"import_id"`
+	// Provider selects a non-default provider instance ("aws.euwest"), matching
+	// the meta-argument on resources.
+	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`
 }
 
 // ProjectFile is a companion file emitted next to the generated HCL. Path is

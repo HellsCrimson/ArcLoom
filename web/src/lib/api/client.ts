@@ -16,7 +16,8 @@ import type {
 	AttrValue,
 	DriftConfig,
 	DriftStatus,
-	ProviderUpdate
+	ProviderUpdate,
+	ImportBlock
 } from '$lib/types';
 import { auth } from '$lib/stores/auth.svelte';
 
@@ -179,6 +180,15 @@ export const api = {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ requiredVersion })
+		}).then((r) => json<Project>(r)),
+
+	// setImports REPLACES the project's import blocks: they are edited as one
+	// list, and "remove them all now they are adopted" is then a single call.
+	setImports: (id: string, imports: ImportBlock[]) =>
+		fetch(`/api/projects/${id}/imports`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ imports })
 		}).then((r) => json<Project>(r)),
 
 	setBackend: (id: string, body: { type: string; config: Record<string, AttrValue> }) =>

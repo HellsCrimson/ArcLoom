@@ -17,7 +17,7 @@
 <script lang="ts">
 	import Modal from '$lib/components/Modal.svelte';
 	import { btnPrimary, btnGhost } from '$lib/styles';
-	import { HardDriveDownload, Plus, Trash2 } from 'lucide-svelte';
+	import { FileCode2, HardDriveDownload, Plus, Trash2, Zap } from 'lucide-svelte';
 
 	let {
 		open = $bindable(false),
@@ -31,7 +31,11 @@
 		keysKnown = false,
 		busy = false,
 		progress = '',
-		onImport
+		mode = $bindable<'now' | 'block'>('now'),
+		block = $bindable<{ forEach: string; to: string; importId: string }>({ forEach: '', to: '', importId: '' }),
+		canBlock = false,
+		onImport,
+		onAddBlock
 	}: {
 		open?: boolean;
 		rows?: { key: string; id: string }[];
@@ -41,7 +45,13 @@
 		keysKnown?: boolean;
 		busy?: boolean;
 		progress?: string;
+		/** 'now' runs the CLI import per instance; 'block' writes config. */
+		mode?: 'now' | 'block';
+		block?: { forEach: string; to: string; importId: string };
+		/** The engine supports config-driven import (>= 1.7 for for_each). */
+		canBlock?: boolean;
 		onImport: () => void;
+		onAddBlock: () => void;
 	} = $props();
 
 	const inp =
@@ -57,8 +67,56 @@
 	const fillable = $derived(rows.filter((r) => r.id.trim() !== '' && (!multi || r.key.trim() !== '')));
 </script>
 
-<Modal title="Import into state" bind:open wide={multi}>
-	{#if !multi}
+<Modal title="Import into state" bind:open wide={multi || mode === 'block'}>
+	<!--
+	  Two ways to adopt, because the engine has two: `terraform import` runs now
+	  and takes one literal address + id per call, while an `import` block is
+	  CONFIG the next apply performs — the only one that can do a whole for_each
+	  in one pass, since its `id` may be an expression over each.value.
+	-->
+	<div class="mb-3 inline-flex overflow-hidden rounded-md border border-[var(--al-border)] text-xs">
+		<button
+			class="inline-flex items-center gap-1.5 px-2.5 py-1 {mode === 'now' ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}"
+			onclick={() => (mode = 'now')}
+		><Zap size={12} /> Run now</button>
+		<button
+			class="inline-flex items-center gap-1.5 px-2.5 py-1 {mode === 'block' ? 'bg-[var(--al-accent-weak)] text-[var(--al-text)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}"
+			onclick={() => (mode = 'block')}
+		><FileCode2 size={12} /> import block</button>
+	</div>
+
+	{#if mode === 'block'}
+		<p class="mb-3 text-sm text-[var(--al-text)]">
+			Writes an <span class="mono">import</span> block into the config. The next
+			<strong>plan shows what it would adopt</strong> and the apply performs it — one pass for the whole
+			collection, which is the only way to adopt a <span class="mono">for_each</span> in bulk, because
+			<span class="mono">id</span> here may be an expression.
+		</p>
+		{#if !canBlock}
+			<p class="mb-3 rounded-md border border-[var(--al-warn)] px-2 py-1 text-[11px] text-[var(--al-muted)]">
+				<span class="mono">import</span> blocks need Terraform ≥ 1.5, and <span class="mono">for_each</span>
+				inside one needs ≥ 1.7 (OpenTofu ≥ 1.7). This project's engine may be older — the plan will say so.
+			</p>
+		{/if}
+		<div class="space-y-2">
+			<div>
+				<label for="blk-foreach" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">for_each <span class="normal-case text-[var(--al-muted)]">— optional; the collection to adopt</span></label>
+				<input id="blk-foreach" class={inp} placeholder={'toset(["a", "b"]) · var.ids · { a = "id-1" }'} bind:value={block.forEach} />
+			</div>
+			<div>
+				<label for="blk-to" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">to <span class="normal-case text-[var(--al-muted)]">— the address, indexed under a for_each</span></label>
+				<input id="blk-to" class={inp} placeholder="{address}[each.key]" bind:value={block.to} />
+			</div>
+			<div>
+				<label for="blk-id" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">id <span class="normal-case text-[var(--al-muted)]">— what the provider knows it by</span></label>
+				<input id="blk-id" class={inp} placeholder={'each.value · "i-0abc123"'} bind:value={block.importId} />
+			</div>
+		</div>
+		<p class="mt-2 text-[11px] text-[var(--al-muted)]">
+			A quoted string is a literal; anything else is an expression. Blocks are listed in the State panel and
+			generate into <span class="mono">imports.tf</span> — delete them once the objects are adopted.
+		</p>
+	{:else if !multi}
 		<p class="mb-3 text-sm text-[var(--al-text)]">
 			Adopt an existing real-world resource as
 			<span class="mono text-[var(--al-accent)]">{address}</span>.
@@ -109,15 +167,23 @@
 			onclick={() => (rows = [...rows, { key: '', id: '' }])}
 		><Plus size={12} /> add instance</button>
 	{/if}
-	<p class="mt-2 text-xs text-[var(--al-muted)]">Attributes that differ from the form will show as changes on the next plan.</p>
+	{#if mode === 'now'}
+		<p class="mt-2 text-xs text-[var(--al-muted)]">Attributes that differ from the form will show as changes on the next plan.</p>
+	{/if}
 	{#if progress}
 		<p class="mt-1.5 text-xs text-[var(--al-accent)]">{progress}</p>
 	{/if}
 	{#snippet footer()}
 		<button class={btnGhost} onclick={() => (open = false)} disabled={busy}>Cancel</button>
-		<button class={btnPrimary} onclick={onImport} disabled={fillable.length === 0 || busy}>
-			<HardDriveDownload size={14} />
-			Import{multi ? ` ${fillable.length} instance${fillable.length === 1 ? '' : 's'}` : ''}
-		</button>
+		{#if mode === 'block'}
+			<button class={btnPrimary} onclick={onAddBlock} disabled={busy || !block.to.trim() || !block.importId.trim()}>
+				<FileCode2 size={14} /> Add import block
+			</button>
+		{:else}
+			<button class={btnPrimary} onclick={onImport} disabled={fillable.length === 0 || busy}>
+				<HardDriveDownload size={14} />
+				Import{multi ? ` ${fillable.length} instance${fillable.length === 1 ? '' : 's'}` : ''}
+			</button>
+		{/if}
 	{/snippet}
 </Modal>

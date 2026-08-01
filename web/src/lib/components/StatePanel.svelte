@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Modal from './Modal.svelte';
 	import type { DriftInfo, StateEntry } from '$lib/api/client';
-	import type { DriftConfig } from '$lib/types';
+	import type { DriftConfig, ImportBlock } from '$lib/types';
 	import { Loader2, RefreshCw, PenLine, Trash2, Settings, AlertTriangle, CheckCircle2, Check, Biohazard, HeartPulse, LockOpen, ChevronRight, ChevronDown, Folder } from 'lucide-svelte';
 
 	let {
@@ -11,8 +11,10 @@
 		busy = false,
 		canDeploy = false,
 		backendType = '',
+		imports = [],
 		drift = null,
 		onSaveDrift,
+		onRemoveImport,
 		onConfigureBackend,
 		onRefresh,
 		onRm,
@@ -28,6 +30,9 @@
 		busy?: boolean;
 		canDeploy?: boolean;
 		backendType?: string; // '' = default local state
+		/** Config-driven `import` blocks waiting to be applied. */
+		imports?: ImportBlock[];
+		onRemoveImport?: (id: string) => void;
 		drift?: DriftInfo | null;
 		onSaveDrift?: (cfg: DriftConfig) => void;
 		onConfigureBackend?: () => void;
@@ -181,6 +186,42 @@
 			</button>
 		{/if}
 	</div>
+
+	<!--
+	  Config-driven imports. They are not state yet: they sit in imports.tf until
+	  a plan/apply performs them, which is exactly why they need a home outside
+	  the resource form — otherwise a half-finished adoption is invisible.
+	-->
+	{#if imports.length > 0}
+		<div class="mb-2 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5">
+			<div class="mb-1 flex items-center gap-2">
+				<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Import blocks</span>
+				<span class="text-[11px] text-[var(--al-muted)]">
+					{imports.length} pending — the next apply adopts them; delete once they are in state.
+				</span>
+			</div>
+			<div class="space-y-1">
+				{#each imports as b (b.id)}
+					<div class="flex items-start gap-2">
+						<div class="mono min-w-0 flex-1 text-[11px] text-[var(--al-text)]">
+							<div class="truncate" title={b.to}>to = {b.to}</div>
+							<div class="truncate text-[var(--al-muted)]" title={b.importId}>id = {b.importId}</div>
+							{#if b.forEach}
+								<div class="truncate text-[var(--al-muted)]" title={b.forEach}>for_each = {b.forEach}</div>
+							{/if}
+						</div>
+						{#if onRemoveImport}
+							<button
+								class="flex-none rounded p-1 text-[var(--al-muted)] hover:text-[var(--al-danger)]"
+								onclick={() => onRemoveImport?.(b.id)}
+								aria-label="Remove import block"
+							><Trash2 size={13} /></button>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		</div>
+	{/if}
 	{#if canDeploy && onForceUnlock}
 		<div class="mb-2 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-2">
 			<div class="flex flex-wrap items-center gap-2">

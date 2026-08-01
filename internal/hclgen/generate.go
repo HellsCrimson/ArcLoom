@@ -353,6 +353,58 @@ func GenerateModuleFile(lm model.LocalModule) ([]byte, error) {
 	return hclwrite.Format(f.Bytes()), nil
 }
 
+// GenerateImports renders the project's `import` blocks into their own file.
+//
+// Their own file on purpose: import blocks are TRANSIENT config — you add them,
+// apply once, and delete them — so keeping them out of main.tf makes them easy
+// to see, review and remove without reading around the resources they adopt.
+// Returns nil when the project has none, and the caller then emits no file.
+func GenerateImports(p *model.Project) ([]byte, error) {
+	if len(p.Imports) == 0 {
+		return nil, nil
+	}
+	f := hclwrite.NewEmptyFile()
+	body := f.Body()
+	for i, imp := range p.Imports {
+		if strings.TrimSpace(imp.To) == "" || strings.TrimSpace(imp.ImportID) == "" {
+			return nil, fmt.Errorf("import block %d: `to` and `id` are required", i+1)
+		}
+		if i > 0 {
+			body.AppendNewline()
+		}
+		blk := body.AppendNewBlock("import", nil)
+		// for_each leads the block, as it does on resources and modules: it is
+		// what the other two arguments are written in terms of.
+		if e := strings.TrimSpace(imp.ForEach); e != "" {
+			toks, err := tokensForExpr(e)
+			if err != nil {
+				return nil, fmt.Errorf("import block %d: for_each: %w", i+1, err)
+			}
+			blk.Body().SetAttributeRaw("for_each", toks)
+		}
+		if ref := strings.TrimSpace(imp.Provider); ref != "" {
+			trav, err := parseTraversal(ref)
+			if err != nil {
+				return nil, fmt.Errorf("import block %d: provider: %w", i+1, err)
+			}
+			blk.Body().SetAttributeTraversal("provider", trav)
+		}
+		// `to` is an ADDRESS expression, not a string: with a for_each it carries
+		// an index (`x.y[each.key]`), so it is lexed like any other expression.
+		toToks, err := tokensForExpr(strings.TrimSpace(imp.To))
+		if err != nil {
+			return nil, fmt.Errorf("import block %d: to: %w", i+1, err)
+		}
+		blk.Body().SetAttributeRaw("to", toToks)
+		idToks, err := tokensForExpr(strings.TrimSpace(imp.ImportID))
+		if err != nil {
+			return nil, fmt.Errorf("import block %d: id: %w", i+1, err)
+		}
+		blk.Body().SetAttributeRaw("id", idToks)
+	}
+	return hclwrite.Format(f.Bytes()), nil
+}
+
 // GenerateFiles renders the whole project as a set of files keyed by path
 // relative to the generated/ directory: "main.tf", one
 // "modules/<name>/main.tf" per local module, and the project's companion files
@@ -369,6 +421,14 @@ func GenerateFiles(p *model.Project) (map[string][]byte, error) {
 		return nil, err
 	}
 	files := map[string][]byte{"main.tf": root}
+	// import blocks live in their own file — see GenerateImports.
+	imports, err := GenerateImports(p)
+	if err != nil {
+		return nil, err
+	}
+	if imports != nil {
+		files["imports.tf"] = imports
+	}
 	for _, lm := range p.LocalModules {
 		mf, err := GenerateModuleFile(lm)
 		if err != nil {

@@ -28,6 +28,7 @@ type Result struct {
 	DataSources  []model.Resource
 	Resources    []model.Resource
 	Modules      []model.Module
+	Imports      []model.Import
 	LocalModules []model.LocalModule
 	Outputs      []model.Output
 	Warnings     []string
@@ -153,6 +154,13 @@ func parseRootBody(body *hclsyntax.Body, src []byte, name string, res *Result, p
 			if len(blk.Labels) == 1 {
 				res.Modules = append(res.Modules, importModule(blk, src))
 			}
+
+		case "import":
+			// Config-driven import (`import { to = …, id = … }`). Kept as raw
+			// expression text like every other meta-arg: `to` carries an index
+			// under a for_each and `id` is usually built from each.value, so
+			// neither survives being parsed into anything more structured.
+			res.Imports = append(res.Imports, importImportBlock(blk, src, newID()))
 		}
 	}
 }
@@ -235,6 +243,27 @@ func linkLocalModules(res *Result, locals map[string]*model.LocalModule, order *
 			*order = append(*order, folder)
 		}
 	}
+}
+
+// importImportBlock reads one `import` block. Its attributes are stored as the
+// source text between the "=" and the end of the expression, which is what
+// hclgen emits back verbatim.
+func importImportBlock(blk *hclsyntax.Block, src []byte, id string) model.Import {
+	imp := model.Import{ID: id}
+	for name, attr := range blk.Body.Attributes {
+		text := strings.TrimSpace(string(attr.Expr.Range().SliceBytes(src)))
+		switch name {
+		case "for_each":
+			imp.ForEach = text
+		case "to":
+			imp.To = text
+		case "id":
+			imp.ImportID = text
+		case "provider":
+			imp.Provider = text
+		}
+	}
+	return imp
 }
 
 // moduleScope returns the local-module name for a file path (the segment after

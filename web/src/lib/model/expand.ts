@@ -16,7 +16,10 @@ import type { AttrValue, Local, Project, Variable } from "$lib/types";
 // is the single most common shape ArcLoom writes. A second hop (a local naming
 // another local) is the engine's job.
 
-/** How many instances to enumerate before collapsing the tail into a count. */
+/** How many instances to enumerate before collapsing the tail into a count.
+ *  It exists to stop a `count = 500` from turning the structure tree into 500
+ *  rows; callers that WANT the whole set (the import table, which is a list the
+ *  user asked for) pass their own limit. */
 export const MAX_INSTANCES = 24;
 
 export interface Expansion {
@@ -159,10 +162,10 @@ function keysFromStructural(v: AttrValue | undefined): string[] | null {
  * expandCount enumerates a literal `count`. A non-numeric expression (or a
  * negative one) is not expandable.
  */
-function expandCount(count: string): Expansion | null {
+function expandCount(count: string, limit: number): Expansion | null {
   const n = /^\d+$/.test(count.trim()) ? parseInt(count.trim(), 10) : NaN;
   if (!Number.isFinite(n)) return null;
-  const shown = Math.min(n, MAX_INSTANCES);
+  const shown = Math.min(n, limit);
   return {
     keys: Array.from({ length: shown }, (_, i) => String(i)),
     kind: "count",
@@ -175,12 +178,12 @@ function expandCount(count: string): Expansion | null {
  * object/map whose keys are literal. Resolves one level of `var.x` through the
  * variable's default.
  */
-function expandForEach(forEach: string, scope: Scope): Expansion | null {
+function expandForEach(forEach: string, scope: Scope, limit: number): Expansion | null {
   let expr = stripWrappers(forEach);
 
   const resolved = resolveRef(expr, scope);
   const structural = keysFromStructural(resolved);
-  if (structural) return capped(structural);
+  if (structural) return capped(structural, limit);
 
   const viaRef = rawExpr(resolved);
   if (viaRef !== null) expr = stripWrappers(viaRef);
@@ -196,7 +199,7 @@ function expandForEach(forEach: string, scope: Scope): Expansion | null {
       if (lit === null) return null;
       keys.push(lit);
     }
-    return capped(keys);
+    return capped(keys, limit);
   }
 
   // An object/map: { alpha = {...}, "beta" = {...} } — only the KEYS matter.
@@ -213,7 +216,7 @@ function expandForEach(forEach: string, scope: Scope): Expansion | null {
       if (key === null) return null;
       keys.push(key);
     }
-    return capped(keys);
+    return capped(keys, limit);
   }
 
   return null;
@@ -242,8 +245,8 @@ export function topLevelAssign(s: string): number {
 // An EMPTY expansion is a real answer, not a failure: `count = 0` and
 // `for_each = []` both mean this call creates nothing, which is worth showing.
 // Only null means "the engine has to work this out".
-function capped(keys: string[]): Expansion {
-  const shown = keys.slice(0, MAX_INSTANCES);
+function capped(keys: string[], limit: number): Expansion {
+  const shown = keys.slice(0, limit);
   return {
     keys: shown,
     kind: "for_each",
@@ -259,9 +262,10 @@ function capped(keys: string[]): Expansion {
 export function expandInstances(
   meta: { count?: string; forEach?: string },
   scope: Scope = {},
+  limit: number = MAX_INSTANCES,
 ): Expansion | null {
-  if (meta.count) return expandCount(meta.count);
-  if (meta.forEach) return expandForEach(meta.forEach, scope);
+  if (meta.count) return expandCount(meta.count, limit);
+  if (meta.forEach) return expandForEach(meta.forEach, scope, limit);
   return null;
 }
 

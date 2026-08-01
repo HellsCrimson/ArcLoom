@@ -202,6 +202,19 @@ export interface Project {
 	localModules?: LocalModule[];
 	outputs?: Output[];
 	files?: ProjectFile[];
+	imports?: ImportBlock[];
+}
+
+// ImportBlock is one config-driven `import { … }` block: it adopts existing
+// objects into state on the next apply, in bulk (with for_each), instead of one
+// CLI import per instance. Every field is a raw HCL expression — `to` carries an
+// index under a for_each and `id` is usually built from each.value.
+export interface ImportBlock {
+	id: string;
+	forEach?: string;
+	to: string;
+	importId: string;
+	provider?: string;
 }
 
 // ProjectConfig is the editable subset (variables / locals / outputs).

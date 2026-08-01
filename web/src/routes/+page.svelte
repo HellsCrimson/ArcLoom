@@ -88,6 +88,9 @@
 	// single row whose key is empty (the address is then the base address).
 	let importRows = $state<{ key: string; id: string }[]>([{ key: '', id: '' }]);
 	let importProgress = $state('');
+	// The config-driven half: an `import` block draft, and the mode the modal is in.
+	let importMode = $state<'now' | 'block'>('now');
+	let importBlock = $state({ forEach: '', to: '', importId: '' });
 	// Backend (remote state) modal
 	let showBackend = $state(false);
 	let bkRequiredVersion = $state('');
@@ -1371,8 +1374,12 @@
 
 	// Instances of the resource in the form, when the model can work them out —
 	// the same expansion the structure tree and the for_each panel use.
+	// No MAX_INSTANCES cap here: that limit protects the structure tree from a
+	// `count = 500` row explosion, but this table IS the list the user asked for
+	// — capping it silently pre-filled 24 rows of a larger set and left the rest
+	// to be typed by hand.
 	const importExpansion = $derived(
-		expandInstances({ count: form.count, forEach: form.forEach }, scopeConfig)
+		expandInstances({ count: form.count, forEach: form.forEach }, scopeConfig, Infinity)
 	);
 	const importMulti = $derived(form.count.trim() !== '' || form.forEach.trim() !== '');
 	const importKind = $derived<'count' | 'for_each'>(form.count.trim() !== '' ? 'count' : 'for_each');
@@ -1382,10 +1389,61 @@
 	// previous resource's rows under this one's address.
 	function openImportResource() {
 		importProgress = '';
+		importMode = 'now';
 		importRows = importExpansion?.keys.length
 			? importExpansion.keys.map((key) => ({ key, id: '' }))
 			: [{ key: '', id: '' }];
+		// The block draft starts from the resource's OWN meta-arg: adopting a
+		// for_each'd resource means iterating the same collection, with `to`
+		// indexed by each.key. The id is the one thing only the user knows.
+		importBlock = {
+			forEach: form.forEach.trim(),
+			to: importMulti
+				? `${importAddress}[each.key]`
+				: importAddress,
+			importId: importMulti ? 'each.value' : ''
+		};
 		showImportResource = true;
+	}
+
+	// Appends the drafted block and persists. Import blocks are replace-the-list
+	// server-side, so send what the project has plus this one.
+	async function addImportBlock() {
+		if (!project) return;
+		error = '';
+		busy = 'import';
+		try {
+			const next = [
+				...(project.imports ?? []),
+				{
+					id: '',
+					forEach: importBlock.forEach.trim(),
+					to: importBlock.to.trim(),
+					importId: importBlock.importId.trim()
+				}
+			];
+			project = await api.setImports(project.id, next);
+			await refreshHcl();
+			showImportResource = false;
+			importMsg = 'Import block added — run a plan to see what it would adopt, then apply.';
+		} catch (err) {
+			error = (err as Error).message;
+		} finally {
+			busy = '';
+		}
+	}
+
+	// Removing an adopted block is the normal end of the flow, so it lives next
+	// to the list in the State panel.
+	async function removeImportBlock(id: string) {
+		if (!project) return;
+		error = '';
+		try {
+			project = await api.setImports(project.id, (project.imports ?? []).filter((b) => b.id !== id));
+			await refreshHcl();
+		} catch (err) {
+			error = (err as Error).message;
+		}
 	}
 
 	// streamOp is fire-and-forget; importing several instances has to wait for
@@ -1822,6 +1880,8 @@
 		backendType={project.backend?.type ?? ''}
 		drift={driftInfo}
 		onSaveDrift={auth.can('deploy') ? saveDrift : undefined}
+		imports={project?.imports ?? []}
+		onRemoveImport={auth.can('resources') ? removeImportBlock : undefined}
 		onConfigureBackend={auth.can('resources') ? openBackend : undefined}
 		onRefresh={() => { loadState(); loadDrift(); }}
 		onRm={(address) => runStateOp('state-rm', { address })}
@@ -1856,7 +1916,11 @@
 		keysKnown={!!importExpansion?.keys.length}
 		busy={busy === 'import'}
 		progress={importProgress}
+		bind:mode={importMode}
+		bind:block={importBlock}
+		canBlock={true}
 		onImport={runImport}
+		onAddBlock={addImportBlock}
 	/>
 
 	<!-- Apply confirmation -->
