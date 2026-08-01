@@ -37,19 +37,38 @@
 
 <div class="space-y-2">
 	{#each items ?? [] as item, i (item)}
-		<div class="flex items-start gap-2">
-			<div class="flex-1">
-				<FieldRenderer field={elem} bind:value={items[i]} {references} {secrets} {onCreateSecret} compact={compactVal} />
+		{#if compactVal}
+			<div class="flex items-start gap-2">
+				<div class="min-w-0 flex-1">
+					<FieldRenderer field={elem} bind:value={items[i]} {references} {secrets} {onCreateSecret} compact />
+				</div>
+				<button
+					type="button"
+					class="mt-1 flex-none rounded p-1 text-[var(--al-muted)] hover:text-[var(--al-danger)]"
+					onclick={() => remove(i)}
+					aria-label="Remove item"
+				>
+					<Trash2 size={16} />
+				</button>
 			</div>
-			<button
-				type="button"
-				class="mt-1 rounded p-1 text-[var(--al-muted)] hover:text-[var(--al-danger)]"
-				onclick={() => remove(i)}
-				aria-label="Remove item"
-			>
-				<Trash2 size={16} />
-			</button>
-		</div>
+		{:else}
+			<!-- Container items get an index header of their own, so the value keeps
+			     the full width at every level (see MapEditor for the same rule). -->
+			<div class="rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)]/40 p-2">
+				<div class="mb-1.5 flex items-center gap-2">
+					<span class="mono flex-1 text-[10px] uppercase tracking-wide text-[var(--al-muted)]">item {i}</span>
+					<button
+						type="button"
+						class="flex-none rounded p-1 text-[var(--al-muted)] hover:text-[var(--al-danger)]"
+						onclick={() => remove(i)}
+						aria-label="Remove item"
+					>
+						<Trash2 size={16} />
+					</button>
+				</div>
+				<FieldRenderer field={elem} bind:value={items[i]} {references} {secrets} {onCreateSecret} />
+			</div>
+		{/if}
 	{/each}
 	<button
 		type="button"

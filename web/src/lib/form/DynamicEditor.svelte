@@ -9,7 +9,7 @@
 	import type { AttrValue, Field } from '$lib/types';
 	import FieldRenderer from './FieldRenderer.svelte';
 	import Self from './DynamicEditor.svelte'; // recursion: nested objects/lists
-	import { Plus, Trash2 } from 'lucide-svelte';
+	import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-svelte';
 
 	let {
 		value = $bindable(),
@@ -116,14 +116,26 @@
 		value.items = (value.items ?? []).filter((_, idx) => idx !== i);
 	}
 
+	// Containers fold, like every other container editor. The kind selector moves
+	// into the fold header rather than sitting to the LEFT of the box: as a
+	// sibling it pushed each level ~96px further right, so a third level had
+	// nothing left to draw in.
+	let folded = $state(false);
+	const childCount = $derived(kind === 'object' ? (value.entries ?? []).length : (value.items ?? []).length);
+	const summary = $derived(
+		kind === 'object'
+			? `${childCount} ${childCount === 1 ? 'key' : 'keys'}`
+			: `${childCount} ${childCount === 1 ? 'item' : 'items'}`
+	);
+
 	const sel =
 		'rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-1.5 py-1 text-[11px] text-[var(--al-muted)] outline-none focus:border-[var(--al-accent)]';
 	const keyInp =
-		'mono w-44 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs text-[var(--al-text)] outline-none focus:border-[var(--al-accent)]';
+		'mono min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-xs text-[var(--al-text)] outline-none focus:border-[var(--al-accent)]';
 	const addBtn = 'text-xs text-[var(--al-muted)] hover:text-[var(--al-accent)]';
 </script>
 
-<div class="flex items-start gap-1.5">
+{#snippet kindSelect()}
 	<select
 		class={sel}
 		value={kind}
@@ -138,52 +150,96 @@
 		<option value="bool">✓ bool</option>
 		<option value="secret">🔒 secret</option>
 	</select>
+{/snippet}
 
-	{#if kind === 'object'}
-		<div class="min-w-0 flex-1 rounded-md border border-[var(--al-border)] p-1.5">
-			{#if (value.entries ?? []).length === 0}
-				<p class="px-1 pb-1 text-[11px] text-[var(--al-muted)]">Empty object — add a key.</p>
-			{/if}
-			{#each value.entries ?? [] as entry, i (entry)}
-				<div class="mb-1 flex items-start gap-1.5">
-					<input
-						class="{keyInp} {dupKeys.has(entry.key.trim()) ? 'border-[var(--al-danger)]' : ''}"
-						placeholder="key"
-						title={dupKeys.has(entry.key.trim()) ? `Duplicate key "${entry.key.trim()}" — keys must be unique in an object` : ''}
-						bind:value={entry.key}
-					/>
-					<div class="min-w-0 flex-1">
-						<Self bind:value={entry.value} {references} {secrets} {onCreateSecret} depth={depth + 1} />
-					</div>
-					<button class="mt-1 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => removeEntry(i)} aria-label="Remove key"><Trash2 size={12} /></button>
-				</div>
-			{/each}
-			<button class={addBtn} onclick={addEntry}><Plus size={11} class="inline" /> add key</button>
-			{#if dupKeys.size > 0}
-				<p class="mt-1 text-[11px] text-[var(--al-danger)]">
-					Duplicate key{dupKeys.size > 1 ? 's' : ''}: {[...dupKeys].join(', ')} — an object cannot repeat a key.
-				</p>
-			{/if}
+{#if kind === 'object' || kind === 'list'}
+	<div>
+		<!-- Fold header: kind selector + child count. The body sits under a thin
+		     rail, so one level of nesting costs ~10px of width instead of ~110. -->
+		<div class="flex items-center gap-1.5">
+			<button
+				type="button"
+				class="inline-flex items-center gap-1 rounded px-0.5 py-0.5 text-[11px] text-[var(--al-muted)] hover:text-[var(--al-text)]"
+				onclick={() => (folded = !folded)}
+				aria-expanded={!folded}
+			>
+				{#if folded}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
+			</button>
+			{@render kindSelect()}
+			<span class="mono text-[11px] text-[var(--al-muted)]">{summary}</span>
 		</div>
-	{:else if kind === 'list'}
-		<div class="min-w-0 flex-1 rounded-md border border-[var(--al-border)] p-1.5">
-			{#if (value.items ?? []).length === 0}
-				<p class="px-1 pb-1 text-[11px] text-[var(--al-muted)]">Empty list — add an item.</p>
-			{/if}
-			{#each value.items ?? [] as item, i (item)}
-				<div class="mb-1 flex items-start gap-1.5">
-					<span class="mono mt-1.5 w-6 flex-none text-right text-[10px] text-[var(--al-muted)]">{i}</span>
-					<div class="min-w-0 flex-1">
-						<Self bind:value={value.items![i]} {references} {secrets} {onCreateSecret} depth={depth + 1} />
-					</div>
-					<button class="mt-1 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => removeItem(i)} aria-label="Remove item"><Trash2 size={12} /></button>
-				</div>
-			{/each}
-			<button class={addBtn} onclick={addItem}><Plus size={11} class="inline" /> add item</button>
-		</div>
-	{:else}
+		{#if !folded}
+			<div class="mt-1 border-l border-[var(--al-border)] pl-2">
+				{#if kind === 'object'}
+					{#if (value.entries ?? []).length === 0}
+						<p class="pb-1 text-[11px] text-[var(--al-muted)]">Empty object — add a key.</p>
+					{/if}
+					{#each value.entries ?? [] as entry, i (entry)}
+						{@const nested = entry.value.entries !== undefined || entry.value.items !== undefined}
+						{@const dup = dupKeys.has(entry.key.trim())}
+						{@const dupTitle = dup ? `Duplicate key "${entry.key.trim()}" — keys must be unique in an object` : ''}
+						{#if nested}
+							<!-- A container child puts its key on its own line: beside the
+							     value, the key column stacked up per level and squeezed the
+							     value out (same rule as MapEditor). -->
+							<div class="mb-1.5 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)]/40 p-1.5">
+								<div class="mb-1 flex items-center gap-1.5">
+									<span class="mono flex-none text-[10px] uppercase tracking-wide text-[var(--al-muted)]">key</span>
+									<input
+										class="{keyInp} max-w-xs {dup ? 'border-[var(--al-danger)]' : ''}"
+										placeholder="key"
+										title={dupTitle}
+										bind:value={entry.key}
+									/>
+									<span class="flex-1"></span>
+									<button class="flex-none text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => removeEntry(i)} aria-label="Remove key"><Trash2 size={12} /></button>
+								</div>
+								<Self bind:value={entry.value} {references} {secrets} {onCreateSecret} depth={depth + 1} />
+							</div>
+						{:else}
+							<div class="mb-1 flex items-start gap-1.5">
+								<input
+									class="{keyInp} max-w-44 {dup ? 'border-[var(--al-danger)]' : ''}"
+									placeholder="key"
+									title={dupTitle}
+									bind:value={entry.key}
+								/>
+								<div class="min-w-0 flex-1">
+									<Self bind:value={entry.value} {references} {secrets} {onCreateSecret} depth={depth + 1} />
+								</div>
+								<button class="mt-1 flex-none text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => removeEntry(i)} aria-label="Remove key"><Trash2 size={12} /></button>
+							</div>
+						{/if}
+					{/each}
+					<button class={addBtn} onclick={addEntry}><Plus size={11} class="inline" /> add key</button>
+					{#if dupKeys.size > 0}
+						<p class="mt-1 text-[11px] text-[var(--al-danger)]">
+							Duplicate key{dupKeys.size > 1 ? 's' : ''}: {[...dupKeys].join(', ')} — an object cannot repeat a key.
+						</p>
+					{/if}
+				{:else}
+					{#if (value.items ?? []).length === 0}
+						<p class="pb-1 text-[11px] text-[var(--al-muted)]">Empty list — add an item.</p>
+					{/if}
+					{#each value.items ?? [] as item, i (item)}
+						<div class="mb-1 flex items-start gap-1.5">
+							<span class="mono mt-1.5 w-6 flex-none text-right text-[10px] text-[var(--al-muted)]">{i}</span>
+							<div class="min-w-0 flex-1">
+								<Self bind:value={value.items![i]} {references} {secrets} {onCreateSecret} depth={depth + 1} />
+							</div>
+							<button class="mt-1 flex-none text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => removeItem(i)} aria-label="Remove item"><Trash2 size={12} /></button>
+						</div>
+					{/each}
+					<button class={addBtn} onclick={addItem}><Plus size={11} class="inline" /> add item</button>
+				{/if}
+			</div>
+		{/if}
+	</div>
+{:else}
+	<div class="flex items-start gap-1.5">
+		{@render kindSelect()}
 		<div class="min-w-0 flex-1">
 			<FieldRenderer field={leafField} bind:value {references} {secrets} {onCreateSecret} compact />
 		</div>
-	{/if}
-</div>
+	</div>
+{/if}

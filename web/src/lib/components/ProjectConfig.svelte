@@ -168,18 +168,37 @@
 		'inline-flex items-center gap-1 rounded-md border border-[var(--al-border)] px-2 py-1 text-xs text-[var(--al-muted)] hover:text-[var(--al-text)]';
 	const del = 'shrink-0 rounded p-1 text-[var(--al-muted)] hover:text-[var(--al-danger)]';
 	const label = 'mb-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]';
+	// A structured row grows tall; boxing it keeps the eye on which name owns the
+	// tree below it once several rows are open at once.
+	const rowBox = 'rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)]/30 p-2';
+	// The dialog goes xl only when something structured is open — a page of plain
+	// one-line rows reads better at the ordinary width.
+	const anyStructured = $derived(
+		vars.some((v) => v.def.structured) || locals.some((l) => l.value.structured) || outputs.some((o) => o.value.structured)
+	);
 	const btn = 'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-40';
 </script>
 
 <!--
   valueEditor — one row's value, in whichever representation it is currently in.
-  Structured mode drops onto its own line: a nested object needs the full width,
-  and it grows vertically, so it cannot share the flex row with the name/type.
+  A structured value is rendered on its OWN line (see the `structRow` snippet):
+  sharing the flex row with name/type/toggles left a nested object ~330px less
+  width than the dialog had, which is what pushed deep levels off the edge. Only
+  the one-line HCL box stays inline.
 -->
 {#snippet valueEditor(row: ValueRow, placeholder: string, refs: string[] = references, type?: string)}
+	{#if !row.structured}
+		<input class={mono + ' min-w-0 flex-1'} {placeholder} bind:value={row.text} />
+	{:else}
+		<!-- Placeholder in the header row so the name/type keep their positions. -->
+		<span class="min-w-0 flex-1 pt-1.5 text-[11px] text-[var(--al-muted)]">structured value ↓</span>
+	{/if}
+{/snippet}
+
+{#snippet structRow(row: ValueRow, refs: string[] = references, type?: string)}
 	{#if row.structured}
 		{@const typed = parseHclType(type)}
-		<div class="min-w-0 flex-1">
+		<div class="mt-1 min-w-0">
 			{#if typed}
 				<!-- The declared type drives the widgets: a map(object({…})) edits as
 				     keyed rows whose values already carry the declared attributes,
@@ -189,8 +208,6 @@
 				<DynamicEditor bind:value={row.struct} references={refs} {secrets} {onCreateSecret} />
 			{/if}
 		</div>
-	{:else}
-		<input class={mono + ' min-w-0 flex-1'} {placeholder} bind:value={row.text} />
 	{/if}
 {/snippet}
 
@@ -210,24 +227,27 @@
 	</button>
 {/snippet}
 
-<Modal {title} bind:open>
+<Modal {title} bind:open xl={anyStructured}>
 	<div class="space-y-5">
 		<!-- Variables -->
 		<section>
 			<div class={label}>Variables</div>
 			<div class="space-y-1.5">
 				{#each vars as v, i (i)}
-					<div class="flex items-start gap-1.5">
-						<input class={mono + ' mt-0 w-28 shrink-0'} placeholder="name" bind:value={v.name} />
-						<input class={mono + ' w-28 shrink-0'} placeholder="type" bind:value={v.type} title={'HCL type, e.g. string or map(object({ name = string }))'} />
-						<!-- No references: a variable default must be a constant — Terraform
-						     forbids referring to any other value from it. -->
-						{@render valueEditor(v.def, 'default (HCL)', [], v.type)}
-						{@render structToggle(v.def, v.type)}
-						<label class="flex shrink-0 items-center gap-1 pt-1.5 text-[10px] text-[var(--al-muted)]" title="sensitive">
-							<input type="checkbox" class="h-3 w-3 accent-[var(--al-accent)]" bind:checked={v.sensitive} /> sens
-						</label>
-						<button class={del} onclick={() => (vars = vars.filter((_, j) => j !== i))} aria-label="Remove variable"><Trash2 size={14} /></button>
+					<div class={v.def.structured ? rowBox : ''}>
+						<div class="flex items-start gap-1.5">
+							<input class={mono + ' mt-0 w-28 shrink-0'} placeholder="name" bind:value={v.name} />
+							<input class={mono + ' w-40 shrink-0'} placeholder="type" bind:value={v.type} title={'HCL type, e.g. string or map(object({ name = string }))'} />
+							<!-- No references: a variable default must be a constant — Terraform
+							     forbids referring to any other value from it. -->
+							{@render valueEditor(v.def, 'default (HCL)', [], v.type)}
+							{@render structToggle(v.def, v.type)}
+							<label class="flex shrink-0 items-center gap-1 pt-1.5 text-[10px] text-[var(--al-muted)]" title="sensitive">
+								<input type="checkbox" class="h-3 w-3 accent-[var(--al-accent)]" bind:checked={v.sensitive} /> sens
+							</label>
+							<button class={del} onclick={() => (vars = vars.filter((_, j) => j !== i))} aria-label="Remove variable"><Trash2 size={14} /></button>
+						</div>
+						{@render structRow(v.def, [], v.type)}
 					</div>
 				{/each}
 			</div>
@@ -239,11 +259,14 @@
 			<div class={label}>Locals</div>
 			<div class="space-y-1.5">
 				{#each locals as l, i (i)}
-					<div class="flex items-start gap-1.5">
-						<input class={mono + ' w-28 shrink-0'} placeholder="name" bind:value={l.name} />
-						{@render valueEditor(l.value, 'value (HCL, e.g. "prod" or random_pet.x.id)')}
-						{@render structToggle(l.value)}
-						<button class={del} onclick={() => (locals = locals.filter((_, j) => j !== i))} aria-label="Remove local"><Trash2 size={14} /></button>
+					<div class={l.value.structured ? rowBox : ''}>
+						<div class="flex items-start gap-1.5">
+							<input class={mono + ' w-28 shrink-0'} placeholder="name" bind:value={l.name} />
+							{@render valueEditor(l.value, 'value (HCL, e.g. "prod" or random_pet.x.id)')}
+							{@render structToggle(l.value)}
+							<button class={del} onclick={() => (locals = locals.filter((_, j) => j !== i))} aria-label="Remove local"><Trash2 size={14} /></button>
+						</div>
+						{@render structRow(l.value)}
 					</div>
 				{/each}
 			</div>
@@ -255,14 +278,17 @@
 			<div class={label}>Outputs</div>
 			<div class="space-y-1.5">
 				{#each outputs as o, i (i)}
-					<div class="flex items-start gap-1.5">
-						<input class={mono + ' w-28 shrink-0'} placeholder="name" bind:value={o.name} />
-						{@render valueEditor(o.value, 'value (HCL)')}
-						{@render structToggle(o.value)}
-						<label class="flex shrink-0 items-center gap-1 pt-1.5 text-[10px] text-[var(--al-muted)]" title="sensitive">
-							<input type="checkbox" class="h-3 w-3 accent-[var(--al-accent)]" bind:checked={o.sensitive} /> sens
-						</label>
-						<button class={del} onclick={() => (outputs = outputs.filter((_, j) => j !== i))} aria-label="Remove output"><Trash2 size={14} /></button>
+					<div class={o.value.structured ? rowBox : ''}>
+						<div class="flex items-start gap-1.5">
+							<input class={mono + ' w-28 shrink-0'} placeholder="name" bind:value={o.name} />
+							{@render valueEditor(o.value, 'value (HCL)')}
+							{@render structToggle(o.value)}
+							<label class="flex shrink-0 items-center gap-1 pt-1.5 text-[10px] text-[var(--al-muted)]" title="sensitive">
+								<input type="checkbox" class="h-3 w-3 accent-[var(--al-accent)]" bind:checked={o.sensitive} /> sens
+							</label>
+							<button class={del} onclick={() => (outputs = outputs.filter((_, j) => j !== i))} aria-label="Remove output"><Trash2 size={14} /></button>
+						</div>
+						{@render structRow(o.value)}
 					</div>
 				{/each}
 			</div>

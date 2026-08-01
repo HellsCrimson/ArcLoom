@@ -38,24 +38,51 @@
 
 <div class="space-y-2">
 	{#each entries ?? [] as entry, i (entry)}
-		<div class="flex items-start gap-2">
-			<input
-				class="w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]"
-				placeholder="key"
-				bind:value={entry.key}
-			/>
-			<div class="flex-1">
-				<FieldRenderer field={elem} bind:value={entry.value} {references} {secrets} {onCreateSecret} compact={compactVal} />
+		{#if compactVal}
+			<!-- map(string) and friends: the clean key→value pair, side by side. -->
+			<div class="flex items-start gap-2">
+				<input
+					class="w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]"
+					placeholder="key"
+					bind:value={entry.key}
+				/>
+				<div class="min-w-0 flex-1">
+					<FieldRenderer field={elem} bind:value={entry.value} {references} {secrets} {onCreateSecret} compact />
+				</div>
+				<button
+					type="button"
+					class="mt-1 flex-none rounded p-1 text-[var(--al-muted)] hover:text-[var(--al-danger)]"
+					onclick={() => remove(i)}
+					aria-label="Remove entry"
+				>
+					<Trash2 size={16} />
+				</button>
 			</div>
-			<button
-				type="button"
-				class="mt-1 rounded p-1 text-[var(--al-muted)] hover:text-[var(--al-danger)]"
-				onclick={() => remove(i)}
-				aria-label="Remove entry"
-			>
-				<Trash2 size={16} />
-			</button>
-		</div>
+		{:else}
+			<!-- Container-valued entry (map(object({…}))): the key goes ABOVE its
+			     value instead of beside it. Side by side, every level stole another
+			     ~170px from the left, so by the third the value had no width left and
+			     the dialog grew a horizontal scrollbar. -->
+			<div class="rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)]/40 p-2">
+				<div class="mb-1.5 flex items-center gap-2">
+					<span class="mono flex-none text-[10px] uppercase tracking-wide text-[var(--al-muted)]">key</span>
+					<input
+						class="mono min-w-0 flex-1 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2 py-1 text-sm outline-none focus:border-[var(--al-accent)]"
+						placeholder="key"
+						bind:value={entry.key}
+					/>
+					<button
+						type="button"
+						class="flex-none rounded p-1 text-[var(--al-muted)] hover:text-[var(--al-danger)]"
+						onclick={() => remove(i)}
+						aria-label="Remove entry"
+					>
+						<Trash2 size={16} />
+					</button>
+				</div>
+				<FieldRenderer field={elem} bind:value={entry.value} {references} {secrets} {onCreateSecret} />
+			</div>
+		{/if}
 	{/each}
 	<button
 		type="button"

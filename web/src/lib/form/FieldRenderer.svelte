@@ -9,6 +9,7 @@
 	import { ensureLiteralShape, isContainer } from './defaults';
 	import SecretPicker from './SecretPicker.svelte';
 	import { referenceGroups } from '$lib/model/scope';
+	import { ChevronDown, ChevronRight } from 'lucide-svelte';
 
 	let {
 		field,
@@ -45,9 +46,28 @@
 	// tracked reactively, not just on mount, because the mode can be set from
 	// outside (the dynamic editor's kind selector picks "secret" directly) and a
 	// collapsed row would then hide the secret picker it needs to show.
-	const collapsible = $derived(compact && !isContainer(field));
+	const container = $derived(isContainer(field));
+	const collapsible = $derived(compact && !container);
 	let expanded = $state(false);
 	const advanced = $derived(expanded || value.mode !== 'literal');
+
+	// A container in the ordinary literal case shows a header instead of the
+	// four-button mode toggle: repeating that toggle at every level was the bulk
+	// of the noise in a nested object (three levels deep, the toggles outnumbered
+	// the values). The advanced modes stay one ƒx click away, and the header
+	// doubles as the fold control — without it a large map is a wall of rows with
+	// no way to see the shape.
+	const containerHeader = $derived(container && !advanced);
+	let folded = $state(false);
+	const childCount = $derived(value.entries?.length ?? value.items?.length ?? 0);
+	const listLike = $derived(field.widget === 'list' || field.widget === 'block');
+	// An object's fields are fixed by its schema, so counting them says nothing;
+	// a map's or list's size is the useful summary.
+	const summary = $derived(
+		field.widget === 'object'
+			? 'fields'
+			: `${childCount} ${listLike ? (childCount === 1 ? 'item' : 'items') : childCount === 1 ? 'key' : 'keys'}`
+	);
 
 	function setMode(m: ValueMode) {
 		value.mode = m;
@@ -70,6 +90,36 @@
 		>
 			ƒx
 		</button>
+	</div>
+{:else if containerHeader}
+	<!-- Container, literal: fold control + summary + ƒx, then the body indented by
+	     a thin rail. The rail costs ~10px a level, where the old bordered card cost
+	     ~28px — which is what made a third level run out of width and overflow. -->
+	<div>
+		<div class="flex items-center gap-1.5">
+			<button
+				type="button"
+				class="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[11px] text-[var(--al-muted)] hover:text-[var(--al-text)]"
+				onclick={() => (folded = !folded)}
+				aria-expanded={!folded}
+			>
+				{#if folded}<ChevronRight size={12} />{:else}<ChevronDown size={12} />{/if}
+				<span class="mono">{summary}</span>
+			</button>
+			<button
+				type="button"
+				class="rounded border border-[var(--al-border)] px-1.5 py-0.5 text-[11px] italic text-[var(--al-muted)] hover:text-[var(--al-text)]"
+				title="Set this whole value from a reference, expression or secret instead"
+				onclick={() => (expanded = true)}
+			>
+				ƒx
+			</button>
+		</div>
+		{#if !folded}
+			<div class="mt-1 border-l border-[var(--al-border)] pl-2">
+				<PlainField {field} bind:value {references} {secrets} {onCreateSecret} />
+			</div>
+		{/if}
 	</div>
 {:else}
 <div>

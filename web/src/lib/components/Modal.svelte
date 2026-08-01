@@ -6,9 +6,13 @@
 		title,
 		open = $bindable(false),
 		wide = false,
+		// `xl` is for editors that nest: a structured object three levels deep has
+		// no horizontal budget left in a 2xl dialog, and the overflow used to land
+		// as a horizontal scrollbar inside the modal body. It wins over `wide`.
+		xl = false,
 		children,
 		footer
-	}: { title: string; open: boolean; wide?: boolean; children: Snippet; footer?: Snippet } = $props();
+	}: { title: string; open: boolean; wide?: boolean; xl?: boolean; children: Snippet; footer?: Snippet } = $props();
 
 	function close() {
 		open = false;
@@ -30,7 +34,7 @@
 		}}
 	>
 		<div
-			class="flex max-h-[85vh] w-full flex-col overflow-hidden rounded-lg border border-[var(--al-border)] bg-[var(--al-panel)] shadow-2xl {wide ? 'max-w-4xl' : 'max-w-2xl'}"
+			class="flex max-h-[90vh] w-full flex-col overflow-hidden rounded-lg border border-[var(--al-border)] bg-[var(--al-panel)] shadow-2xl {xl ? 'max-w-[min(96rem,95vw)]' : wide ? 'max-w-4xl' : 'max-w-2xl'}"
 		>
 			<div class="flex items-center justify-between border-b border-[var(--al-border)] px-4 py-2.5">
 				<h2 class="text-sm font-semibold text-[var(--al-text)]">{title}</h2>
