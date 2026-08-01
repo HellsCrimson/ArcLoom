@@ -161,16 +161,23 @@
 			<span class="pb-1.5 text-[11px] text-[var(--al-muted)]">Saved with the config. One <span class="mono">required_providers</span> entry is emitted per provider key.</span>
 		</div>
 		{#if (form.schema.fields?.length ?? 0) === 0}
-			<p class="text-sm text-[var(--al-muted)]">This provider has no configurable arguments.</p>
-		{:else}
-			<SchemaForm
-				schema={form.schema}
-				bind:values={form.values}
-				{references}
-				{secrets}
-				{onCreateSecret}
-			/>
+			<p class="mb-3 text-sm text-[var(--al-muted)]">This provider has no configurable arguments.</p>
 		{/if}
+		<!--
+		  SchemaForm is rendered even with an empty field list: it is what reports
+		  attributes the schema does not declare and offers the raw editor, and a
+		  block holding leftovers from the WRONG provider is exactly the case where
+		  the valid schema has nothing to show. Skipping it here left that block
+		  unreachable — the message said "no arguments" while the config carried
+		  several.
+		-->
+		<SchemaForm
+			schema={form.schema}
+			bind:values={form.values}
+			{references}
+			{secrets}
+			{onCreateSecret}
+		/>
 	{:else if form.schema}
 		<!-- flex-wrap: the meta row carries name + count/for_each + provider +
 		     address + actions, and the centre pane is user-resizable down to a

@@ -899,7 +899,12 @@
 				kind: form.kind,
 				type: form.selectedType,
 				name: form.name,
-				providerSource: form.providerSource,
+				// The source for THIS type, not the palette's current selection —
+				// the palette follows whichever provider was touched last, and the
+				// server treats this as a hint for registering a provider it does
+				// not have yet. Sending the stale one is what used to overwrite an
+				// existing provider's source (see ensureProvider).
+				providerSource: providerForType(project, form.selectedType, form.providerSource),
 				module: activeModule ?? undefined,
 				attrs: buildAttrs(form.values),
 				dependsOn: form.dependsOn,

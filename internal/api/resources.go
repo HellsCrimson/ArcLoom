@@ -605,17 +605,34 @@ func (s *Server) handleProjectHCL(w http.ResponseWriter, r *http.Request) {
 // ensureProvider adds a ProviderInstance for the resource type's provider if it
 // is not already present. source is the real registry address supplied by the
 // client (e.g. "hellscrimson/arcane"); if empty, it falls back to the hashicorp
-// namespace. If the provider already exists but was registered with a fallback
-// source, a real source upgrades it.
+// namespace.
+//
+// It upgrades ONLY the fallback placeholder ("hashicorp/<key>") to a real
+// source, and never rewrites a source the project already holds. The hint comes
+// from the client's palette, which follows whichever provider was touched last
+// — so saving a resource of provider B while the palette still held provider
+// A's source used to overwrite B's source with A's, keeping only the key. Every
+// later plan then failed, and the config form fetched A's schema for B, writing
+// A-shaped attributes into B's block. A stale hint must be inert, not
+// authoritative: the source is edited in the provider form (PUT
+// providers/{key}), which is the one place that may change it.
 func ensureProvider(p *model.Project, resourceType, source string) {
 	key := model.ProviderLocalName(resourceType)
-	if source == "" {
-		source = "hashicorp/" + key
+	placeholder := "hashicorp/" + key
+	// A source only describes THIS provider when its last segment is the local
+	// name the resource type implies: "hashicorp/null" can never be the source
+	// for a `random_*` resource. Checking that is what makes a stale hint inert —
+	// the placeholder test alone is not enough, because for a hashicorp provider
+	// the genuine source and the placeholder are the same string, so "upgrading"
+	// it happily accepted another provider's address.
+	if source == "" || providerKeyFromSource(source) != key {
+		source = placeholder
 	}
 	for i, prov := range p.Providers {
 		if prov.Key == key {
-			// Upgrade a placeholder source to the real one if provided.
-			if prov.Source != source && !strings.HasPrefix(source, "hashicorp/") {
+			// Only ever fill in the fallback; a source the project already holds
+			// is authoritative and changes only in the provider form.
+			if prov.Source == placeholder && source != placeholder {
 				p.Providers[i].Source = source
 			}
 			return

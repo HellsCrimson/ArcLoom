@@ -123,6 +123,69 @@ function isIdent(s: string): boolean {
 }
 
 /**
+ * renderHclAttrs writes a block body as `key = value` lines, sorted like hclgen
+ * writes them so the text matches the generated config.
+ */
+export function renderHclAttrs(attrs: Record<string, AttrValue>): string {
+  return Object.keys(attrs)
+    .sort()
+    .map((k) => `${k} = ${toHclText(attrs[k])}`)
+    .join("\n");
+}
+
+/**
+ * parseHclAttrs reads `key = value` lines back into attributes — the escape
+ * hatch for a block holding something the form cannot show: an attribute the
+ * provider's schema does not declare has no widget, so it is invisible AND
+ * preserved on every save, with no way to delete it.
+ *
+ * Returns null on the first line it cannot read, so a typo leaves the stored
+ * config untouched rather than half-applied.
+ */
+export function parseHclAttrs(text: string): Record<string, AttrValue> | null {
+  const out: Record<string, AttrValue> = {};
+  // Split on newlines that are not inside a nested collection, so a multi-line
+  // object value stays with its key.
+  const lines = splitTopLines(text);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//")) continue;
+    const eq = topLevelAssign(trimmed);
+    if (eq < 0) return null;
+    const key = trimmed.slice(0, eq).trim().replace(/^"(.*)"$/, "$1");
+    const rest = trimmed.slice(eq + 1).trim();
+    if (!key || !rest || !balanced(rest)) return null;
+    out[key] = parseValue(rest);
+  }
+  return out;
+}
+
+// splitTopLines breaks on newlines at bracket depth 0 only.
+function splitTopLines(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let quote = "";
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = "";
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    else if (c === "\n" && depth === 0) {
+      out.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(text.slice(start));
+  return out;
+}
+
+/**
  * eachReferences lists the addresses a block's fields can use to reach the
  * current instance, for the reference picker: `each.key` / `each.value` (plus
  * one entry per known member attribute) under a for_each, `count.index` under a
