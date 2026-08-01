@@ -17,6 +17,7 @@
 <script lang="ts">
 	import Modal from '$lib/components/Modal.svelte';
 	import ForEachPanel from '$lib/form/ForEachPanel.svelte';
+	import ForEachField from '$lib/form/ForEachField.svelte';
 	import type { Scope } from '$lib/model/expand';
 	import { btnPrimary, btnGhost } from '$lib/styles';
 	import { Loader2, Trash2 } from 'lucide-svelte';
@@ -71,19 +72,13 @@
 				<input id="rm-version" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="~> 5.0" bind:value={version} disabled={isLocal} title={isLocal ? 'A local module has no version — it is the code in this project' : ''} />
 			</div>
 		</div>
-		<div class="flex items-end gap-3">
-			<div>
-				<label for="rm-count" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]" title="count meta-argument — an HCL expression, e.g. 3 or var.replicas">count</label>
-				<input id="rm-count" class="mono w-28 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" placeholder="3 · var.n" bind:value={count} disabled={forEach.trim() !== ''} />
-			</div>
-			<div>
-				<label for="rm-foreach" class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]" title="for_each meta-argument — a set or map expression, e.g. var.teams">for_each</label>
-				<input id="rm-foreach" class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" placeholder="var.teams · toset([…])" bind:value={forEach} disabled={count.trim() !== ''} />
-			</div>
-			{#if count.trim() !== '' || forEach.trim() !== ''}
-				<p class="pb-1.5 text-xs text-[var(--al-muted)]">Inputs can use <span class="mono">{count.trim() !== '' ? 'count.index' : 'each.key'}</span>.</p>
-			{/if}
-		</div>
+		<ForEachField bind:count={count} bind:forEach={forEach} {scope} />
+		{#if count.trim() !== '' || forEach.trim() !== ''}
+			<p class="text-xs text-[var(--al-muted)]">
+				Inputs below can use <span class="mono">{count.trim() !== '' ? 'count.index' : 'each.key / each.value'}</span> —
+				they are raw HCL here, so write the address directly.
+			</p>
+		{/if}
 		<!-- The members this call iterates: a module's arguments are written in
 		     terms of each.value, so the set belongs next to them. -->
 		<ForEachPanel {forEach} {count} {scope} {onOpenDefinition} />

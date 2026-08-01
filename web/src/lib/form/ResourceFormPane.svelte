@@ -11,6 +11,9 @@
 	import type { ProviderInstance } from '$lib/types';
 	import SchemaForm from '$lib/form/SchemaForm.svelte';
 	import ForEachPanel from '$lib/form/ForEachPanel.svelte';
+	import ForEachField from '$lib/form/ForEachField.svelte';
+	import { describeForEach } from '$lib/model/foreach';
+	import { eachReferences } from '$lib/model/hcltext';
 	import PlanDiffPanel from '$lib/components/PlanDiffPanel.svelte';
 	import type { Scope } from '$lib/model/expand';
 	import { stripIndex } from '$lib/model/scope';
@@ -71,6 +74,17 @@
 	const importAddress = $derived(
 		`${activeModule ? `module.${activeModule}.` : ''}${form.selectedType}.${form.name}`
 	);
+
+	// Values that only exist because of the meta-arg above: `each.key` /
+	// `each.value[.field]` under a for_each, `count.index` under a count. They go
+	// into the SAME reference list as var/local/resource addresses because that is
+	// exactly what they are — a traversal — which answers the question the form
+	// otherwise leaves hanging: the mode for `each.value.name` is Reference.
+	const forEachInfo = $derived(describeForEach(form.forEach, scope));
+	const metaReferences = $derived([
+		...eachReferences({ count: form.count, forEach: form.forEach }, forEachInfo?.valueFields ?? []),
+		...references
+	]);
 
 	// --- Plan overlay in the form: which attributes the last plan touches. ---
 	// The canvas and the run pane point AT a resource; the form is where the user
@@ -158,18 +172,16 @@
 			/>
 		{/if}
 	{:else if form.schema}
-		<div class="mb-4 flex items-end gap-3">
+		<!-- flex-wrap: the meta row carries name + count/for_each + provider +
+		     address + actions, and the centre pane is user-resizable down to a
+		     column narrower than any one of them. -->
+		<div class="mb-4 flex flex-wrap items-end gap-x-3 gap-y-2">
 			<div>
 				<label for="resource-name" class="mb-1 block text-xs text-[var(--al-muted)]">resource name</label>
 				<input id="resource-name" class="mono rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={form.name} />
 			</div>
-			<div>
-				<label for="resource-count" class="mb-1 block text-xs text-[var(--al-muted)]" title="count meta-argument — an HCL expression, e.g. 3 or var.replicas">count</label>
-				<input id="resource-count" class="mono w-28 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" bind:value={form.count} placeholder="3 · var.n" disabled={form.forEach.trim() !== ''} />
-			</div>
-			<div>
-				<label for="resource-foreach" class="mb-1 block text-xs text-[var(--al-muted)]" title="for_each meta-argument — a set or map expression, e.g. toset([&quot;a&quot;, &quot;b&quot;])">for_each</label>
-				<input id="resource-foreach" class="mono w-40 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)] disabled:opacity-40" bind:value={form.forEach} placeholder="toset([…]) · var.map" disabled={form.count.trim() !== ''} />
+			<div class="min-w-[22rem] flex-1">
+				<ForEachField bind:count={form.count} bind:forEach={form.forEach} {scope} />
 			</div>
 			{#if formProviderInstances.length > 1}
 				<div>
@@ -201,7 +213,7 @@
 		<SchemaForm
 				schema={form.schema}
 				bind:values={form.values}
-				{references}
+				references={metaReferences}
 				{secrets}
 				{onCreateSecret}
 				planDiffs={formPlanDiffs}

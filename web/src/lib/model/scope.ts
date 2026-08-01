@@ -113,6 +113,9 @@ export function providerVersionForSource(project: Project | null, source: string
 // Order is authoring order, not alphabetical: the values you parameterise a
 // resource with (variables, locals) come before the things you wire it to.
 const REFERENCE_GROUPS: { label: string; match: (ref: string) => boolean }[] = [
+	// First, because they only exist inside the block being edited and are the
+	// reason its meta-arg is there at all.
+	{ label: 'This instance', match: (r) => r.startsWith('each.') || r === 'count.index' },
 	{ label: 'Variables', match: (r) => r.startsWith('var.') },
 	{ label: 'Locals', match: (r) => r.startsWith('local.') },
 	{ label: 'Modules', match: (r) => r.startsWith('module.') },

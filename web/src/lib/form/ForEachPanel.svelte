@@ -117,8 +117,20 @@
 					{:else if info.valueFields.length}
 						· <span class="mono">each.value</span>:
 						{#each info.valueFields as f (f)}<span class="mono text-[var(--al-text)]">.{f}</span>{' '}{/each}
+					{:else if info.shape === 'map'}
+						· <span class="mono">each.value</span> is the member's value
 					{/if}
 				</div>
+				<!-- The question every for_each raises once the set is understood:
+				     how do I USE it below. each.key / each.value are traversals, so
+				     the mode is Reference — they are listed there under "This
+				     instance", and nothing has to be typed. -->
+				<p class="mt-1 text-[11px] text-[var(--al-muted)]">
+					In the fields below, pick <span class="mono text-[var(--al-text)]">each.key</span>
+					{#if !info.valueIsKey}or <span class="mono text-[var(--al-text)]">each.value…</span>{/if}
+					from <span class="text-[var(--al-text)]">Reference</span> mode (behind <span class="mono">ƒx</span> on compact rows) — they are addresses, not text.
+					Only an expression around them, like <span class="mono">{'"web-${each.key}"'}</span>, needs Expression mode.
+				</p>
 				<div class="mt-1 space-y-0.5">
 					{#each info.elements as el (el.key)}
 						<div class="flex items-start gap-2">

@@ -47,7 +47,7 @@ function stripWrappers(expr: string): string {
 
 // balanced reports whether every bracket/quote in s closes, which is what makes
 // the regex peel above safe: `toset(a) + toset(b)` must not be read as one call.
-function balanced(s: string): boolean {
+export function balanced(s: string): boolean {
   let depth = 0;
   let quote = "";
   for (let i = 0; i < s.length; i++) {
@@ -68,7 +68,7 @@ function balanced(s: string): boolean {
 }
 
 // splitTop splits on top-level commas only, so a nested list/object stays whole.
-function splitTop(s: string): string[] {
+export function splitTop(s: string): string[] {
   const out: string[] = [];
   let depth = 0;
   let quote = "";
@@ -93,7 +93,7 @@ function splitTop(s: string): string[] {
 }
 
 /** literalString returns the value of a quoted HCL string, else null. */
-function literalString(expr: string): string | null {
+export function literalString(expr: string): string | null {
   const s = expr.trim();
   if (s.length < 2 || s[0] !== '"' || s[s.length - 1] !== '"') return null;
   const inner = s.slice(1, -1);
@@ -214,7 +214,7 @@ function expandForEach(forEach: string, scope: Scope): Expansion | null {
 }
 
 // topLevelAssign finds the `=` (or `:`) separating an object key from its value.
-function topLevelAssign(s: string): number {
+export function topLevelAssign(s: string): number {
   let depth = 0;
   let quote = "";
   for (let i = 0; i < s.length; i++) {

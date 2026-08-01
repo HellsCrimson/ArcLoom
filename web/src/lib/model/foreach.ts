@@ -14,6 +14,7 @@
 import type { AttrValue, Field, Local, Variable } from "$lib/types";
 import { elemField } from "$lib/form/defaults";
 import { parseHclType } from "$lib/model/hcltype";
+import { parseHclCollection } from "$lib/model/hcltext";
 import {
   expandInstances,
   refParts,
@@ -48,6 +49,8 @@ export interface ForEachInfo {
   valueFields: string[];
   /** A set of strings: `each.value` IS `each.key`, there are no fields. */
   valueIsKey: boolean;
+  /** map = keyed members (each.value is the member); list = a set of strings. */
+  shape: "map" | "list" | null;
 }
 
 const MAX_PREVIEW_ENTRIES = 4;
@@ -109,7 +112,12 @@ export function describeForEach(
   const srcExpr = refParts(bare) ? bare : (comprehension?.[1] ?? bare);
   const derived = !refParts(bare) && comprehension !== null;
   const ref = refParts(srcExpr);
-  const value = resolveRef(srcExpr, scope);
+  // A ref resolves through the declaration; an INLINE collection is read
+  // straight out of the expression, so a for_each written in the Build editor
+  // gets the same member previews and each.value detail as a declared one.
+  const value = ref
+    ? resolveRef(srcExpr, scope)
+    : (parseHclCollection(srcExpr) ?? undefined);
   const declared = ref
     ? ref.kind === "variable"
       ? (scope.variables ?? []).find((v) => v.name === ref.name)
@@ -136,21 +144,27 @@ export function describeForEach(
   if (valueFields.length === 0 && firstMember?.entries) {
     valueFields = firstMember.entries.map((e) => e.key).filter(Boolean);
   }
-  // `toset(["a","b"])`: each.value IS the string. Claimed only with evidence —
-  // either the members are in hand and none is an object, or the declared type
-  // says the element is a scalar. A raw-HCL collection whose members we cannot
-  // see says nothing, and guessing "value == key" there would be a lie about
-  // the very thing this panel exists to answer.
-  // An inline `[...]` that expanded at all is evidence too: expand.ts only
-  // returns keys for a list whose every element is a literal string.
-  const inlineList =
-    expansion !== null && stripSetWrapper(expr).startsWith("[");
-  const valueIsKey =
-    valueFields.length === 0 &&
-    (inlineList ||
-      (members !== null
-        ? Object.values(members).every((m) => !m?.entries)
-        : typed !== null && !(elemField(typed).fields?.length ?? 0)));
+  // `each.value IS each.key` holds for a SET/LIST of strings and nothing else.
+  // For a MAP it is plainly false — `{ web = "10.0.1.0/24" }` gives key "web"
+  // and value "10.0.1.0/24" — so the shape has to be established first, not
+  // just "are the members scalars". Evidence, in order: the resolved value's
+  // own shape, an inline `[…]` (expand.ts only yields keys for a list whose
+  // every element is a literal string), or the declared type's container kind.
+  // No evidence at all claims nothing: this panel exists to answer exactly this
+  // question, so a guess here is worse than silence.
+  const shape: "map" | "list" | null =
+    value?.entries !== undefined
+      ? "map"
+      : value?.items !== undefined
+        ? "list"
+        : stripSetWrapper(expr).startsWith("[") && expansion !== null
+          ? "list"
+          : typed
+            ? typed.widget === "map"
+              ? "map"
+              : "list"
+            : null;
+  const valueIsKey = shape === "list" && valueFields.length === 0;
 
   return {
     ref,
@@ -161,6 +175,7 @@ export function describeForEach(
     elements,
     valueFields,
     valueIsKey,
+    shape,
   };
 }
 
