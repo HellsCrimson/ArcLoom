@@ -17,7 +17,11 @@
 	import { Loader2, Plus } from 'lucide-svelte';
 
 	let {
-		secretRef = $bindable<string | undefined>(''),
+		// NO fallback value: a bound prop with one rejects `undefined`
+		// (svelte.dev/e/props_invalid_value), and `value.secretRef` is exactly
+		// that until a secret has been chosen — so seeding this with '' made the
+		// picker throw the moment a field was switched to Secret mode.
+		secretRef = $bindable(),
 		secrets = [],
 		onCreateSecret,
 		delivery = 'TF_VAR'

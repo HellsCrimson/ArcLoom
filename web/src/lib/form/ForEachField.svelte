@@ -48,9 +48,13 @@
 		...(scope.locals ?? []).map((l) => ({ addr: `local.${l.name}`, type: '' }))
 	]);
 
+	// An EMPTY meta-arg opens on the picker, never on Build: Build projects its
+	// draft into the text, so opening there on a block that has no for_each would
+	// write `{}` into it — an empty collection means "create no instances", so a
+	// plain resource would silently stop existing.
 	function detect(text: string): Mode {
 		const t = text.trim();
-		if (!t) return candidates.length ? 'pick' : 'build';
+		if (!t) return 'pick';
 		if (refParts(t)) return 'pick';
 		return parseHclCollection(t) ? 'build' : 'expr';
 	}
@@ -91,7 +95,12 @@
 	$effect(() => {
 		if (mode !== 'build') return;
 		const text = toHclText(draft);
-		if (text !== forEach) forEach = text;
+		if (text === forEach) return;
+		// Emptying a collection the block HAD is a real edit (`{}` = no
+		// instances); an untouched empty editor on a block that never had one is
+		// not, and must not fabricate a for_each.
+		if ((text === '{}' || text === '[]') && !forEach.trim()) return;
+		forEach = text;
 	});
 
 	const inp =
