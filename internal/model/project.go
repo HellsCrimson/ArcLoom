@@ -54,6 +54,13 @@ type Project struct {
 	// already in state is a no-op) and removing them behind the user's back
 	// would erase a record of what was adopted.
 	Imports []Import `json:"imports,omitempty" yaml:"imports,omitempty"`
+	// Moved are config-driven `moved` blocks: they rename state addresses on the
+	// next apply. Same reasoning as Imports — part of the model (so they
+	// generate, commit and undo), in their own file, and never removed
+	// automatically: a `moved` whose source no longer exists is a no-op, and
+	// dropping one behind the user's back would erase the record of a rename
+	// AND (if a collaborator has not applied yet) destroy-and-recreate for them.
+	Moved []Moved `json:"moved,omitempty" yaml:"moved,omitempty"`
 }
 
 // Import is one `import { ... }` block.
@@ -79,6 +86,33 @@ type Import struct {
 	// Provider selects a non-default provider instance ("aws.euwest"), matching
 	// the meta-argument on resources.
 	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`
+}
+
+// Moved is one `moved { ... }` block.
+//
+//	moved {
+//	  from = null_resource.www
+//	  to   = null_resource.sub["www"]
+//	}
+//
+// It is the config-driven form of `terraform state mv`, and the reason it is
+// worth having: refactoring several hand-written resources into one for_each'd
+// block changes every address, and without the rename the next apply DESTROYS
+// and recreates the real objects. As config it is shown by the plan, performed
+// by the apply, reviewable in Git and undoable — one plan instead of N locked
+// CLI runs.
+//
+// Unlike Import, both fields are static ADDRESSES: the engine forbids
+// expressions here (no each.key, no variables), so an index must be a literal.
+// They are still stored as text and validated with hclgen.ValidateAddress,
+// because an address with an index is not a name — `x.y["www"]` and
+// `module.team["a"].x.y[0]` are the normal cases.
+type Moved struct {
+	// ID is ArcLoom's own identifier (moved blocks have no name in HCL), so the
+	// UI can list and delete one.
+	ID   string `json:"id" yaml:"id"`
+	From string `json:"from" yaml:"from"`
+	To   string `json:"to" yaml:"to"`
 }
 
 // ProjectFile is a companion file emitted next to the generated HCL. Path is

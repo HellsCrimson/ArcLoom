@@ -41,6 +41,7 @@ type importResponse struct {
 	AddedModules      int `json:"addedModules,omitempty"`
 	AddedLocalModules int `json:"addedLocalModules,omitempty"`
 	AddedImports      int `json:"addedImports,omitempty"`
+	AddedMoved        int `json:"addedMoved,omitempty"`
 	// MatchedResources is how many state resources were recognized as resources
 	// the model already describes (state import only) — matched, not duplicated.
 	MatchedResources int `json:"matchedResources,omitempty"`
@@ -106,6 +107,10 @@ func (s *Server) handleImportHCL(w http.ResponseWriter, r *http.Request) {
 			// silently would lose an adoption the user wrote down.
 			p.Imports = append(p.Imports, parsed.Imports...)
 			resp.AddedImports = len(parsed.Imports)
+			// moved blocks append for the same reason: no name, and a rename
+			// record the user wrote down must not vanish on import.
+			p.Moved = append(p.Moved, parsed.Moved...)
+			resp.AddedMoved = len(parsed.Moved)
 			// A backend block belongs to the root; only adopt it if the project
 			// doesn't already have one (never silently repoint state).
 			if parsed.Backend != nil && p.Backend == nil {

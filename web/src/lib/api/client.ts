@@ -17,7 +17,8 @@ import type {
 	DriftConfig,
 	DriftStatus,
 	ProviderUpdate,
-	ImportBlock
+	ImportBlock,
+	MovedBlock
 } from '$lib/types';
 import { auth } from '$lib/stores/auth.svelte';
 
@@ -189,6 +190,15 @@ export const api = {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ imports })
+		}).then((r) => json<Project>(r)),
+
+	// setMoved REPLACES the project's moved blocks — same contract as setImports,
+	// and what makes "clear the ones that have been applied" one call.
+	setMoved: (id: string, moved: MovedBlock[]) =>
+		fetch(`/api/projects/${id}/moved`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ moved })
 		}).then((r) => json<Project>(r)),
 
 	setBackend: (id: string, body: { type: string; config: Record<string, AttrValue> }) =>
@@ -756,6 +766,8 @@ export interface ImportResult {
 	addedDataSources?: number;
 	addedModules?: number;
 	addedLocalModules?: number;
+	addedImports?: number;
+	addedMoved?: number;
 	warnings?: string[];
 }
 

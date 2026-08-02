@@ -31,6 +31,7 @@ var auditActions = map[string]string{
 	"PUT /projects/{id}/backend":                 "backend.set",
 	"PUT /projects/{id}/terraform":               "terraform.set",
 	"PUT /projects/{id}/imports":                 "imports.set",
+	"PUT /projects/{id}/moved":                   "moved.set",
 	"PUT /projects/{id}/secrets/{name}":          "secret.set",
 	"DELETE /projects/{id}/secrets/{name}":       "secret.delete",
 	"POST /projects/{id}/resources":              "resource.upsert",

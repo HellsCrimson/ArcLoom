@@ -219,6 +219,7 @@ func (s *Server) Handler() http.Handler {
 				r.Put("/projects/{id}/backend", s.handleSetBackend)
 				r.Put("/projects/{id}/terraform", s.handleSetTerraform)
 				r.Put("/projects/{id}/imports", s.handleSetImports)
+				r.Put("/projects/{id}/moved", s.handleSetMoved)
 				r.Put("/projects/{id}/secrets/{name}", s.handleSetSecret)
 				r.Delete("/projects/{id}/secrets/{name}", s.handleDeleteSecret)
 				r.Post("/projects/{id}/resources", s.handleUpsertResource)

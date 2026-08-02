@@ -1,8 +1,8 @@
 <script lang="ts">
 	import Modal from './Modal.svelte';
 	import type { DriftInfo, StateEntry } from '$lib/api/client';
-	import type { DriftConfig, ImportBlock } from '$lib/types';
-	import { Loader2, RefreshCw, PenLine, Trash2, Settings, AlertTriangle, CheckCircle2, Check, Biohazard, HeartPulse, LockOpen, ChevronRight, ChevronDown, Folder } from 'lucide-svelte';
+	import type { DriftConfig, ImportBlock, MovedBlock } from '$lib/types';
+	import { Loader2, RefreshCw, PenLine, Trash2, Settings, AlertTriangle, CheckCircle2, Check, Biohazard, HeartPulse, LockOpen, ChevronRight, ChevronDown, Folder, ArrowRight, Shuffle } from 'lucide-svelte';
 
 	let {
 		open = $bindable(false),
@@ -12,9 +12,12 @@
 		canDeploy = false,
 		backendType = '',
 		imports = [],
+		moved = [],
 		drift = null,
 		onSaveDrift,
 		onRemoveImport,
+		onRemoveMoved,
+		onBulkMove,
 		onConfigureBackend,
 		onRefresh,
 		onRm,
@@ -33,6 +36,11 @@
 		/** Config-driven `import` blocks waiting to be applied. */
 		imports?: ImportBlock[];
 		onRemoveImport?: (id: string) => void;
+		/** Config-driven `moved` blocks waiting to be applied. */
+		moved?: MovedBlock[];
+		onRemoveMoved?: (id: string) => void;
+		/** Open the bulk move screen (several addresses at once). */
+		onBulkMove?: () => void;
 		drift?: DriftInfo | null;
 		onSaveDrift?: (cfg: DriftConfig) => void;
 		onConfigureBackend?: () => void;
@@ -222,6 +230,39 @@
 			</div>
 		</div>
 	{/if}
+	<!--
+	  Pending renames. Like the import blocks above they are not state yet: they
+	  sit in moved.tf until an apply performs them, and a half-finished refactor
+	  is otherwise invisible. Deliberately never auto-removed — a `moved` whose
+	  source is gone is a no-op, and dropping one silently would erase the record
+	  of the rename.
+	-->
+	{#if moved.length > 0}
+		<div class="mb-2 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5">
+			<div class="mb-1 flex items-center gap-2">
+				<span class="text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]">Moved blocks</span>
+				<span class="text-[11px] text-[var(--al-muted)]">
+					{moved.length} pending — the next plan lists them and the apply performs them; delete once applied.
+				</span>
+			</div>
+			<div class="space-y-0.5">
+				{#each moved as b (b.id)}
+					<div class="flex items-center gap-2">
+						<span class="mono min-w-0 flex-1 truncate text-[11px] text-[var(--al-muted)]" title={b.from}>{b.from}</span>
+						<ArrowRight size={11} class="flex-none text-[var(--al-muted)]" />
+						<span class="mono min-w-0 flex-1 truncate text-[11px] text-[var(--al-text)]" title={b.to}>{b.to}</span>
+						{#if onRemoveMoved}
+							<button
+								class="flex-none rounded p-1 text-[var(--al-muted)] hover:text-[var(--al-danger)]"
+								onclick={() => onRemoveMoved?.(b.id)}
+								aria-label="Remove moved block"
+							><Trash2 size={13} /></button>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		</div>
+	{/if}
 	{#if canDeploy && onForceUnlock}
 		<div class="mb-2 rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-2">
 			<div class="flex flex-wrap items-center gap-2">
@@ -314,6 +355,18 @@
 			Resources tracked in this project's persisted state. Output of state operations streams to the run pane.
 		</p>
 		<span class="ml-3 flex flex-none items-center gap-1.5">
+			{#if onBulkMove}
+				<!-- Renaming several addresses at once — the per-row PenLine below is
+				     one prompt at a time, which is unusable past two. -->
+				<button
+					class="flex items-center gap-1 rounded-md border border-[var(--al-border)] px-2 py-1 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)] disabled:opacity-40"
+					onclick={onBulkMove}
+					disabled={busy}
+					title="Move several addresses at once — e.g. after folding resources into one for_each'd block"
+				>
+					<Shuffle size={12} /> Bulk move…
+				</button>
+			{/if}
 			{#if canDeploy && onAcceptDrift}
 				<button
 					class="flex items-center gap-1 rounded-md border border-[var(--al-border)] px-2 py-1 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)] disabled:opacity-40"

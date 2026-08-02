@@ -16,6 +16,7 @@
 	import ImportHclModal from '$lib/components/ImportHclModal.svelte';
 	import ImportStateModal from '$lib/components/ImportStateModal.svelte';
 	import ImportResourceModal from '$lib/components/ImportResourceModal.svelte';
+	import BulkMoveModal from '$lib/components/BulkMoveModal.svelte';
 	import DeployActions from '$lib/components/DeployActions.svelte';
 	import ProjectConfig from '$lib/components/ProjectConfig.svelte';
 	import SecretsModal from '$lib/components/SecretsModal.svelte';
@@ -33,6 +34,7 @@
 	import RunOutputPane from '$lib/components/RunOutputPane.svelte';
 	import StructureSidebar from '$lib/components/StructureSidebar.svelte';
 	import { expandInstances } from '$lib/model/expand';
+	import { moveTo, type MoveRow } from '$lib/model/bulkmove';
 	import { attrToText, attrsToBackendRows, backendRowsToAttrs, buildAttrs, rowsToAttrs, type BackendRow } from '$lib/form/attrs';
 	import { findInScope, localFolder, providerForType, providerVersionForSource, resolveAddress, suggestName } from '$lib/model/scope';
 	import { iconBtn, hdrBtn } from '$lib/styles';
@@ -91,6 +93,14 @@
 	// The config-driven half: an `import` block draft, and the mode the modal is in.
 	let importMode = $state<'now' | 'block'>('now');
 	let importBlock = $state({ forEach: '', to: '', importId: '' });
+	// Bulk state move: the selected source addresses paired with the instance key
+	// each becomes, plus the target block. Seeded by the opener like the import
+	// rows, and for the same re-entrancy reason.
+	let showBulkMove = $state(false);
+	let moveRows = $state<MoveRow[]>([]);
+	let moveTarget = $state('');
+	let moveMode = $state<'block' | 'now'>('block');
+	let moveProgress = $state('');
 	// Backend (remote state) modal
 	let showBackend = $state(false);
 	let bkRequiredVersion = $state('');
@@ -1025,6 +1035,11 @@
 				// Calls, not "registry modules": mergeModules counts every module
 				// block, and a local call is the common case.
 				res.addedModules ? `${res.addedModules} module calls` : '',
+				// Worth naming: these two change what the next APPLY does (adopt an
+				// object, rename a state address), so importing them silently would
+				// be a surprise waiting in the plan.
+				res.addedImports ? `${res.addedImports} import blocks` : '',
+				res.addedMoved ? `${res.addedMoved} moved blocks` : '',
 				`${res.addedProviders} providers`
 			].filter(Boolean);
 			importMsg = `Imported into ${where}: ${parts.join(', ')}`;
@@ -1446,11 +1461,131 @@
 		}
 	}
 
+	// ── Bulk state move ──────────────────────────────────────────────────────
+	// Every address the state holds, parents and instances alike: moving one
+	// instance out of a counted resource is as legitimate as moving the block.
+	const stateAddresses = $derived(
+		stateEntries.flatMap((e) => [e.address, ...(e.instances ?? []).map((k) => `${e.address}[${k}]`)])
+	);
+	// Targets are the ROOT blocks the model describes (a module-scope address
+	// goes through a call and is not a single address), plus whatever the user
+	// types — the field stays free so `module.team.null_resource.x` is reachable.
+	const moveTargets = $derived(
+		(project?.resources ?? []).map((r) => ({
+			address: `${r.type}.${r.name}`,
+			badge: r.forEach ? 'for_each' : r.count ? `count = ${r.count}` : 'single'
+		}))
+	);
+	const moveTargetRes = $derived(
+		(project?.resources ?? []).find((r) => `${r.type}.${r.name}` === moveTarget.trim())
+	);
+	// Which meta-arg the target carries decides whether the new addresses are
+	// indexed at all; the keys come from the same expansion the import table and
+	// the structure tree use, uncapped because this list IS the answer.
+	const moveKind = $derived<'count' | 'for_each' | null>(
+		moveTargetRes?.forEach ? 'for_each' : moveTargetRes?.count ? 'count' : null
+	);
+	const moveExpansion = $derived(
+		moveTargetRes
+			? expandInstances({ count: moveTargetRes.count, forEach: moveTargetRes.forEach }, scopeConfig, Infinity)
+			: null
+	);
+	const movePairs = $derived(
+		moveRows.map((r) => ({ from: r.from, to: moveTo(moveTarget, moveKind, r.key) }))
+	);
+	// Addresses the ROOT config still declares. A `moved` block whose `from` is
+	// still a declared resource is rejected by the engine ("resource is still
+	// declared"), because the refactor it records has not happened in the config
+	// yet — the whole point is that those blocks were folded into the target. The
+	// CLI path does not care, so this only gates the block mode.
+	const declaredAddresses = $derived([
+		...(project?.resources ?? []).map((r) => `${r.type}.${r.name}`),
+		...(project?.dataSources ?? []).map((d) => `data.${d.type}.${d.name}`)
+	]);
+
+	function openBulkMove() {
+		moveProgress = '';
+		moveMode = 'block';
+		moveRows = [];
+		moveTarget = '';
+		showBulkMove = true;
+	}
+
+	// The config path: one `moved` block per pair, appended to the project's list
+	// (replace-the-list server-side, like import blocks).
+	async function addMovedBlocks() {
+		if (!project) return;
+		error = '';
+		busy = 'move';
+		try {
+			const next = [
+				...(project.moved ?? []),
+				...movePairs.map((p) => ({ id: '', from: p.from, to: p.to }))
+			];
+			project = await api.setMoved(project.id, next);
+			await refreshHcl();
+			showBulkMove = false;
+			importMsg = `${movePairs.length} moved block${movePairs.length === 1 ? '' : 's'} added — run a plan to review the renames, then apply.`;
+		} catch (err) {
+			error = (err as Error).message;
+		} finally {
+			busy = '';
+		}
+	}
+
+	async function removeMovedBlock(id: string) {
+		if (!project) return;
+		error = '';
+		try {
+			project = await api.setMoved(project.id, (project.moved ?? []).filter((b) => b.id !== id));
+			await refreshHcl();
+		} catch (err) {
+			error = (err as Error).message;
+		}
+	}
+
+	// The CLI path: `state mv` per pair, sequentially — each takes the workspace
+	// lock, so they cannot overlap. A failure stops the run and reports how far
+	// it got: the moves that succeeded have already happened, and re-running them
+	// would fail on a source that is no longer there.
+	//
+	// dryRun asks the engine what it WOULD move without writing, which is the one
+	// check a locally-computed preview cannot make (it knows the addresses, not
+	// whether the state holds them).
+	async function runBulkMove(dryRun = false) {
+		if (!project || movePairs.length === 0) return;
+		error = '';
+		runPane.reset();
+		busy = 'move';
+		let done = 0;
+		try {
+			for (const p of movePairs) {
+				moveProgress = `${dryRun ? 'Checking' : 'Moving'} ${p.from} (${done + 1}/${movePairs.length})…`;
+				runPane.append(`\n== state mv${dryRun ? ' -dry-run' : ''} ${p.from} ${p.to}`);
+				await streamOnce('state-mv', { from: p.from, to: p.to, ...(dryRun ? { dryRun: 'true' } : {}) });
+				done++;
+			}
+			runPane.result = dryRun
+				? `Dry run: ${done} address${done === 1 ? '' : 'es'} would move`
+				: `Moved ${done} address${done === 1 ? '' : 'es'} in state`;
+			moveProgress = '';
+			if (!dryRun) showBulkMove = false;
+		} catch (err) {
+			error = done > 0 && !dryRun
+				? `${(err as Error).message} — ${done} of ${movePairs.length} moved; those have already happened.`
+				: (err as Error).message;
+			moveProgress = '';
+		} finally {
+			busy = '';
+			loadState();
+		}
+	}
+
 	// streamOp is fire-and-forget; importing several instances has to wait for
 	// each one, so wrap a single run in a promise. Rejecting on the error event
 	// is what stops the loop at the first failure instead of firing the rest at
 	// a state the engine just refused.
-	function streamOnce(op: 'import', params: Record<string, string>): Promise<void> {
+	function streamOnce(op: 'import' | 'state-mv', params: Record<string, string>): Promise<void> {
 		return new Promise((resolve, reject) => {
 			streamOp(
 				project!.id,
@@ -1875,13 +2010,16 @@
 		bind:open={showState}
 		entries={stateEntries}
 		loading={stateLoading}
-		busy={busy === 'import' || busy === 'state-rm' || busy === 'state-mv' || busy === 'init-backend' || busy === 'force-unlock'}
+		busy={busy === 'import' || busy === 'move' || busy === 'state-rm' || busy === 'state-mv' || busy === 'init-backend' || busy === 'force-unlock'}
 		canDeploy={auth.can('deploy')}
 		backendType={project.backend?.type ?? ''}
 		drift={driftInfo}
 		onSaveDrift={auth.can('deploy') ? saveDrift : undefined}
 		imports={project?.imports ?? []}
 		onRemoveImport={auth.can('resources') ? removeImportBlock : undefined}
+		moved={project?.moved ?? []}
+		onRemoveMoved={auth.can('resources') ? removeMovedBlock : undefined}
+		onBulkMove={auth.can('resources') || auth.can('deploy') ? openBulkMove : undefined}
 		onConfigureBackend={auth.can('resources') ? openBackend : undefined}
 		onRefresh={() => { loadState(); loadDrift(); }}
 		onRm={(address) => runStateOp('state-rm', { address })}
@@ -1890,6 +2028,26 @@
 		onTaint={(address) => runStateOp('taint', { address })}
 		onUntaint={(address) => runStateOp('untaint', { address })}
 		onForceUnlock={auth.can('deploy') ? (lockId) => runStateOp('force-unlock', { lockId }) : undefined}
+	/>
+
+	<!-- Bulk state move: several addresses at once, as moved blocks or CLI ops -->
+	<BulkMoveModal
+		bind:open={showBulkMove}
+		bind:rows={moveRows}
+		bind:target={moveTarget}
+		bind:mode={moveMode}
+		sources={stateAddresses}
+		targetOptions={moveTargets}
+		expansion={moveExpansion}
+		kind={moveKind}
+		declared={declaredAddresses}
+		busy={busy === 'move'}
+		progress={moveProgress}
+		canResources={auth.can('resources')}
+		canDeploy={auth.can('deploy')}
+		onAddBlocks={addMovedBlocks}
+		onRunNow={() => runBulkMove(false)}
+		onDryRun={() => runBulkMove(true)}
 	/>
 
 	<!-- terraform block: required_version + state backend -->

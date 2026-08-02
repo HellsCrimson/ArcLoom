@@ -352,7 +352,9 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		logW.flush()
 	case "state-mv":
 		q := r.URL.Query()
-		err = run.StateMv(r.Context(), dir, files, tfVars, strings.TrimSpace(q.Get("from")), strings.TrimSpace(q.Get("to")), logW)
+		// ?dryRun=true reports what the move WOULD do and writes nothing, so a
+		// bulk rename can be checked against the real state first.
+		err = run.StateMv(r.Context(), dir, files, tfVars, strings.TrimSpace(q.Get("from")), strings.TrimSpace(q.Get("to")), q.Get("dryRun") == "true", logW)
 		logW.flush()
 	case "force-unlock":
 		err = run.ForceUnlock(r.Context(), dir, files, strings.TrimSpace(r.URL.Query().Get("lockId")), logW)

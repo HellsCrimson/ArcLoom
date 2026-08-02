@@ -29,6 +29,7 @@ type Result struct {
 	Resources    []model.Resource
 	Modules      []model.Module
 	Imports      []model.Import
+	Moved        []model.Moved
 	LocalModules []model.LocalModule
 	Outputs      []model.Output
 	Warnings     []string
@@ -161,6 +162,13 @@ func parseRootBody(body *hclsyntax.Body, src []byte, name string, res *Result, p
 			// under a for_each and `id` is usually built from each.value, so
 			// neither survives being parsed into anything more structured.
 			res.Imports = append(res.Imports, importImportBlock(blk, src, newID()))
+
+		case "moved":
+			// Config-driven rename (`moved { from = …, to = … }`). Both fields
+			// are addresses, kept as their source text like the import block's:
+			// an address with an index is not a name, and re-lexing it is what
+			// hclgen emits back verbatim.
+			res.Moved = append(res.Moved, importMovedBlock(blk, src, newID()))
 		}
 	}
 }
@@ -264,6 +272,21 @@ func importImportBlock(blk *hclsyntax.Block, src []byte, id string) model.Import
 		}
 	}
 	return imp
+}
+
+// importMovedBlock reads one `moved` block.
+func importMovedBlock(blk *hclsyntax.Block, src []byte, id string) model.Moved {
+	mv := model.Moved{ID: id}
+	for name, attr := range blk.Body.Attributes {
+		text := strings.TrimSpace(string(attr.Expr.Range().SliceBytes(src)))
+		switch name {
+		case "from":
+			mv.From = text
+		case "to":
+			mv.To = text
+		}
+	}
+	return mv
 }
 
 // moduleScope returns the local-module name for a file path (the segment after

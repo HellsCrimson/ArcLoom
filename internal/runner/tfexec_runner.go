@@ -410,14 +410,16 @@ func (t *TfExec) Untaint(ctx context.Context, dir string, files map[string][]byt
 	return nil
 }
 
-// StateMv renames an address inside the persisted state.
-func (t *TfExec) StateMv(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, from, to string, out io.Writer) error {
+// StateMv renames an address inside the persisted state. With dryRun the engine
+// only reports what it would move — the state is not written, which is how a
+// bulk move can be checked against reality before the first real one runs.
+func (t *TfExec) StateMv(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, from, to string, dryRun bool, out io.Writer) error {
 	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
 	defer cleanup()
 	if err != nil {
 		return err
 	}
-	if err := tf.StateMv(ctx, from, to); err != nil {
+	if err := tf.StateMv(ctx, from, to, tfexec.DryRun(dryRun)); err != nil {
 		return fmt.Errorf("state mv: %w", err)
 	}
 	return nil

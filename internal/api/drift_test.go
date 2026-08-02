@@ -110,7 +110,7 @@ func (f *fakeRunner) Import(context.Context, string, map[string][]byte, map[stri
 func (f *fakeRunner) StateRm(context.Context, string, map[string][]byte, map[string]string, string, io.Writer) error {
 	return nil
 }
-func (f *fakeRunner) StateMv(context.Context, string, map[string][]byte, map[string]string, string, string, io.Writer) error {
+func (f *fakeRunner) StateMv(context.Context, string, map[string][]byte, map[string]string, string, string, bool, io.Writer) error {
 	return nil
 }
 func (f *fakeRunner) Taint(_ context.Context, _ string, _ map[string][]byte, _ map[string]string, address string, _ io.Writer) error {

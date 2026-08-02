@@ -405,6 +405,43 @@ func GenerateImports(p *model.Project) ([]byte, error) {
 	return hclwrite.Format(f.Bytes()), nil
 }
 
+// GenerateMoved renders the project's `moved` blocks into their own file.
+//
+// Own file for the same reason imports.tf is one: these are refactoring
+// records, not infrastructure, and burying them among the resources makes them
+// hard to find when they are eventually cleaned up. Returns nil when the
+// project has none.
+func GenerateMoved(p *model.Project) ([]byte, error) {
+	if len(p.Moved) == 0 {
+		return nil, nil
+	}
+	f := hclwrite.NewEmptyFile()
+	body := f.Body()
+	for i, mv := range p.Moved {
+		from, to := strings.TrimSpace(mv.From), strings.TrimSpace(mv.To)
+		if from == "" || to == "" {
+			return nil, fmt.Errorf("moved block %d: `from` and `to` are required", i+1)
+		}
+		if i > 0 {
+			body.AppendNewline()
+		}
+		blk := body.AppendNewBlock("moved", nil)
+		// Emitted as expressions, not strings: an address carries an index
+		// (`x.y["www"]`), which is lexed like any other traversal.
+		fromToks, err := tokensForExpr(from)
+		if err != nil {
+			return nil, fmt.Errorf("moved block %d: from: %w", i+1, err)
+		}
+		blk.Body().SetAttributeRaw("from", fromToks)
+		toToks, err := tokensForExpr(to)
+		if err != nil {
+			return nil, fmt.Errorf("moved block %d: to: %w", i+1, err)
+		}
+		blk.Body().SetAttributeRaw("to", toToks)
+	}
+	return hclwrite.Format(f.Bytes()), nil
+}
+
 // GenerateFiles renders the whole project as a set of files keyed by path
 // relative to the generated/ directory: "main.tf", one
 // "modules/<name>/main.tf" per local module, and the project's companion files
@@ -428,6 +465,14 @@ func GenerateFiles(p *model.Project) (map[string][]byte, error) {
 	}
 	if imports != nil {
 		files["imports.tf"] = imports
+	}
+	// moved blocks likewise — see GenerateMoved.
+	moved, err := GenerateMoved(p)
+	if err != nil {
+		return nil, err
+	}
+	if moved != nil {
+		files["moved.tf"] = moved
 	}
 	for _, lm := range p.LocalModules {
 		mf, err := GenerateModuleFile(lm)
@@ -612,6 +657,26 @@ func parseTraversal(ref string) (hcl.Traversal, error) {
 func ValidateExpr(expr string) error {
 	_, err := tokensForExpr(expr)
 	return err
+}
+
+// ValidateAddress reports whether a string is a static resource address —
+// `null_resource.www`, `null_resource.sub["www"]`, `module.team["a"].x.y[0]`.
+//
+// Stricter than ValidateExpr on purpose: `moved` blocks take addresses the
+// engine resolves BEFORE evaluating anything, so `x.y[each.key]` or a variable
+// is refused by the engine itself. hclsyntax folds a literal index into the
+// traversal and leaves a computed one as an index expression, so
+// "is this an absolute traversal" is exactly the right test — and it fails at
+// the API boundary with a clear message instead of on the next plan.
+func ValidateAddress(addr string) error {
+	expr, diags := hclsyntax.ParseExpression([]byte(addr), "addr.hcl", hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		return fmt.Errorf("invalid address: %s", diags.Error())
+	}
+	if _, diags := hcl.AbsTraversalForExpr(expr); diags.HasErrors() {
+		return fmt.Errorf("not a static address (an index must be a literal, and expressions are not allowed here): %s", addr)
+	}
+	return nil
 }
 
 // tokensForExpr lexes a raw HCL expression and validates it before emitting, so

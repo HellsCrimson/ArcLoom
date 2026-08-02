@@ -187,8 +187,10 @@ type Runner interface {
 	// the next apply.
 	Untaint(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error
 	// StateMv renames an address inside the persisted state, e.g. after a
-	// resource was renamed in the model.
-	StateMv(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, from, to string, out io.Writer) error
+	// resource was renamed in the model. dryRun passes -dry-run: the engine
+	// reports what it WOULD move and writes nothing, which is what makes a bulk
+	// move checkable against the real state before any of it happens.
+	StateMv(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, from, to string, dryRun bool, out io.Writer) error
 	// ForceUnlock releases a stuck state lock (`force-unlock`), the remedy for a
 	// run the engine never got to finish — killed process, crashed container,
 	// lost network mid-apply — which leaves the lock held with no owner. lockID

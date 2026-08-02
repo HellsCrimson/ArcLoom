@@ -203,6 +203,7 @@ export interface Project {
 	outputs?: Output[];
 	files?: ProjectFile[];
 	imports?: ImportBlock[];
+	moved?: MovedBlock[];
 }
 
 // ImportBlock is one config-driven `import { … }` block: it adopts existing
@@ -215,6 +216,16 @@ export interface ImportBlock {
 	to: string;
 	importId: string;
 	provider?: string;
+}
+
+// MovedBlock is one config-driven `moved { from = … to = … }` block: it renames
+// a state address on the next apply. Both fields are static ADDRESSES, not
+// expressions — the engine resolves them before evaluating anything — but they
+// are text because an address carries an index (`x.y["www"]`).
+export interface MovedBlock {
+	id: string;
+	from: string;
+	to: string;
 }
 
 // ProjectConfig is the editable subset (variables / locals / outputs).
