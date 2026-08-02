@@ -291,6 +291,16 @@ export const api = {
 			if (!r.ok && r.status !== 204) return r.json().then((b) => { throw new Error(b.error || 'failed'); });
 		}),
 
+	// revealSecret returns ONE secret's plaintext value. POST, not GET: it is the
+	// only response in the product that carries a secret, so it must not be
+	// cacheable, must not sit in a proxy log as a self-describing URL, and must go
+	// through csrfGuard. Server-side it needs the `resources` permission and is
+	// audited as `secret.reveal`.
+	revealSecret: (id: string, name: string) =>
+		fetch(`/api/projects/${id}/secrets/${encodeURIComponent(name)}/reveal`, { method: 'POST' })
+			.then((r) => json<{ name: string; value: string }>(r))
+			.then((r) => r.value),
+
 	deleteSecret: (id: string, name: string) =>
 		fetch(`/api/projects/${id}/secrets/${encodeURIComponent(name)}`, { method: 'DELETE' }).then((r) => {
 			if (!r.ok && r.status !== 204) throw new Error('failed to delete secret');

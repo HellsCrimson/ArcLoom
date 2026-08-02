@@ -221,6 +221,10 @@ func (s *Server) Handler() http.Handler {
 				r.Put("/projects/{id}/imports", s.handleSetImports)
 				r.Put("/projects/{id}/moved", s.handleSetMoved)
 				r.Put("/projects/{id}/secrets/{name}", s.handleSetSecret)
+				// Reveal is a POST for the reasons in handleRevealSecret, and lives
+				// in the resources group so it inherits requireProjectPerm + the
+				// project ACL + csrfGuard + the audit middleware.
+				r.Post("/projects/{id}/secrets/{name}/reveal", s.handleRevealSecret)
 				r.Delete("/projects/{id}/secrets/{name}", s.handleDeleteSecret)
 				r.Post("/projects/{id}/resources", s.handleUpsertResource)
 				r.Delete("/projects/{id}/resources/{rid}", s.handleDeleteResource)

@@ -2,6 +2,7 @@
 	// One level of the secrets tree. Recursive: a node can be a folder, a secret,
 	// or both (a secret named `global` alongside `global_projectA_varA`).
 	import type { SecretNode } from '$lib/secretPath';
+	import type { Snippet } from 'svelte';
 	import Self from './SecretTreeNode.svelte';
 	import { ChevronDown, ChevronRight, KeyRound, Trash2, FolderPlus } from 'lucide-svelte';
 
@@ -9,13 +10,20 @@
 		node,
 		depth = 0,
 		onDelete,
-		onPick
+		onPick,
+		value,
+		revealWarning
 	}: {
 		node: SecretNode;
 		depth?: number;
 		onDelete: (name: string) => void;
 		/** Prefill the add form from this node (a folder path, or a leaf to replace). */
 		onPick: (name: string, isLeaf: boolean) => void;
+		/** The masked/plaintext cell + eye toggle, owned by SecretsModal so both
+		 *  views share one reveal flow (and one "what is currently shown" map). */
+		value?: Snippet<[string, boolean]>;
+		/** The inline confirmation, rendered under the row it belongs to. */
+		revealWarning?: Snippet<[string]>;
 	} = $props();
 
 	let open = $state(true);
@@ -40,7 +48,7 @@
 				onclick={() => onPick(node.name, true)}
 			>{node.segment}</button>
 			<span class="rounded bg-[var(--al-panel-2)] px-1.5 py-0.5 text-[10px] uppercase text-[var(--al-muted)]">{node.secret.backend}</span>
-			<span class="mono text-[10px] text-[var(--al-muted)]">••••••</span>
+			{#if value}{@render value(node.name, true)}{:else}<span class="mono text-[10px] text-[var(--al-muted)]">••••••</span>{/if}
 			{#if node.secret.backend === 'local'}
 				<button class="rounded p-0.5 text-[var(--al-muted)] opacity-0 hover:text-[var(--al-danger)] group-hover:opacity-100" onclick={() => onDelete(node.name)} aria-label="Delete secret"><Trash2 size={13} /></button>
 			{/if}
@@ -56,9 +64,11 @@
 		{/if}
 	</div>
 
+	{#if node.secret && revealWarning}{@render revealWarning(node.name)}{/if}
+
 	{#if isFolder && open}
 		{#each node.children as child (child.name)}
-			<Self node={child} depth={depth + 1} {onDelete} {onPick} />
+			<Self node={child} depth={depth + 1} {onDelete} {onPick} {value} {revealWarning} />
 		{/each}
 	{/if}
 </div>

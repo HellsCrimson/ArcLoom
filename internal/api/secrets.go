@@ -24,6 +24,40 @@ func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleRevealSecret returns ONE secret's plaintext value.
+//
+// The only endpoint in the product that hands a secret back to the browser, so
+// the shape is deliberate:
+//
+//   - It is a POST, not a GET. A GET would be cacheable, would land in proxy
+//     access logs as a URL that implies its own response, and is the shape a
+//     cross-site navigation can trigger; POST is none of those and, like every
+//     route in this group, goes through csrfGuard.
+//   - It reveals ONE named secret per call, never the list. `handleListSecrets`
+//     stays value-free, so the blast radius of a mistake is one name.
+//   - It resolves through the SAME path a plan does (Store.Resolve): the writable
+//     backend first, then the env fallback. Showing anything else would be a lie
+//     — the point of looking is to see what a run would actually inject.
+//   - It is gated by PermResources (plus the project's ACL, applied to this whole
+//     route group), i.e. exactly the users who can already overwrite the value,
+//     and it is audited as `secret.reveal` with the name.
+func (s *Server) handleRevealSecret(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	name := chi.URLParam(r, "name")
+	value, ok, err := s.secrets.Resolve(id, name)
+	if err != nil {
+		// A configured remote store that cannot be read must fail loudly rather
+		// than fall back to the local files — same rule as plan-time resolution.
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		writeErr(w, http.StatusNotFound, "secret not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "value": value})
+}
+
 // handleSetSecret stores a secret value in the writable backend.
 func (s *Server) handleSetSecret(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")

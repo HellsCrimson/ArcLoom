@@ -197,6 +197,14 @@
 		await refreshHcl();
 	}
 
+	// Reveal is deliberately NOT wrapped in try/catch here: the modal shows the
+	// failure in the row that asked for it (a remote store that cannot be read
+	// must say so there, not in the page banner behind the dialog).
+	function revealSecret(name: string): Promise<string> {
+		if (!project) return Promise.reject(new Error('no project selected'));
+		return api.revealSecret(project.id, name);
+	}
+
 	async function deleteSecret(name: string) {
 		if (!project) return;
 		try {
@@ -1980,6 +1988,7 @@
 		busy={busy === 'secret'}
 		onAdd={addSecret}
 		onDelete={deleteSecret}
+		onReveal={auth.can('resources') ? revealSecret : undefined}
 	/>
 	<GitPanel
 		bind:open={showGit}
