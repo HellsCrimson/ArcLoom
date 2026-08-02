@@ -242,6 +242,83 @@ export function deriveEdges(resources: Resource[], dataSources: Resource[] = [])
 	return edges;
 }
 
+// ── Edge geometry ──────────────────────────────────────────────────────────
+
+/** A laid-out node (or module box) in world coordinates. */
+export interface Box {
+	x: number;
+	y: number;
+	w: number;
+	h: number;
+}
+
+export interface EdgeGeometry {
+	/** SVG path between the two chosen ports. */
+	d: string;
+	/** Where the edge ENTERS the target, and the heading it arrives on (degrees,
+	 *  0 = pointing right) — what the arrowhead is drawn from. */
+	tip: { x: number; y: number; angle: number };
+}
+
+/**
+ * edgeGeometry picks the two points an edge is drawn between, from the boxes'
+ * relative positions.
+ *
+ * The ports used to be FIXED — always leaving the source's right edge and
+ * entering the target's left edge — which is right only while the graph flows
+ * left to right. Drag the target to the left (or let two boxes overlap
+ * horizontally) and the curve leaves rightwards, doubles back over the source
+ * and arrives from the far side: the reported "the left node has its left point
+ * linked to the right node of the node on the right".
+ *
+ * The rule is the obvious one: leave from the side that faces the target, and
+ * arrive on the side that faces the source. A pair that overlaps horizontally
+ * but not vertically uses the top/bottom ports instead, which is the only way a
+ * stacked pair gets a readable curve. Boxes that overlap on BOTH axes have no
+ * good answer, so the wider separation of their centres decides.
+ *
+ * Direction is no longer inferable from the ports (it used to always be
+ * "rightwards"), which is why the arrowhead exists — see `tip`.
+ */
+export function edgeGeometry(from: Box, to: Box): EdgeGeometry {
+	const rightGap = to.x - (from.x + from.w);
+	const leftGap = from.x - (to.x + to.w);
+	const belowGap = to.y - (from.y + from.h);
+	const aboveGap = from.y - (to.y + to.h);
+
+	const horizontal = (goRight: boolean): EdgeGeometry => {
+		const x1 = goRight ? from.x + from.w : from.x;
+		const x2 = goRight ? to.x : to.x + to.w;
+		const y1 = from.y + from.h / 2;
+		const y2 = to.y + to.h / 2;
+		const mid = (x1 + x2) / 2;
+		return {
+			d: `M ${x1} ${y1} C ${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`,
+			tip: { x: x2, y: y2, angle: goRight ? 0 : 180 }
+		};
+	};
+	const vertical = (goDown: boolean): EdgeGeometry => {
+		const y1 = goDown ? from.y + from.h : from.y;
+		const y2 = goDown ? to.y : to.y + to.h;
+		const x1 = from.x + from.w / 2;
+		const x2 = to.x + to.w / 2;
+		const mid = (y1 + y2) / 2;
+		return {
+			d: `M ${x1} ${y1} C ${x1} ${mid} ${x2} ${mid} ${x2} ${y2}`,
+			tip: { x: x2, y: y2, angle: goDown ? 90 : -90 }
+		};
+	};
+
+	if (rightGap >= 0) return horizontal(true);
+	if (leftGap >= 0) return horizontal(false);
+	if (belowGap >= 0) return vertical(true);
+	if (aboveGap >= 0) return vertical(false);
+	// Overlapping both ways: pick the axis the centres are furthest apart on.
+	const dx = to.x + to.w / 2 - (from.x + from.w / 2);
+	const dy = to.y + to.h / 2 - (from.y + from.h / 2);
+	return Math.abs(dx) >= Math.abs(dy) ? horizontal(dx >= 0) : vertical(dy >= 0);
+}
+
 // ── Auto-layout ────────────────────────────────────────────────────────────
 export type LayoutMode = 'layered-h' | 'layered-v' | 'grid' | 'by-type' | 'circle';
 
@@ -280,6 +357,56 @@ export function computeLevels(resources: Resource[], edges: Edge[]): Map<string,
 		if (!ch) break;
 	}
 	return level;
+}
+
+/**
+ * orderLevels groups nodes by dependency level and orders each level to reduce
+ * edge crossings — one barycentre down-sweep: a node sits at the average row of
+ * the things it depends on, which are all in earlier levels.
+ *
+ * Without it a level is filled in MODEL order, so two resources that depend on
+ * opposite ends of the previous column cross in the middle, and the layered
+ * modes look more tangled than the graph actually is. A node with no placed
+ * predecessor keeps its current index as its barycentre, so it stays where it
+ * was instead of being swept to one end.
+ *
+ * One pass, not iterated to a fixed point: it is deterministic, cheap, and the
+ * graphs here are small — a second pass is not worth the surprise of positions
+ * shifting again on a re-arrange.
+ */
+export function orderLevels(
+	resources: Resource[],
+	edges: Edge[],
+	level: Map<string, number>
+): Map<number, string[]> {
+	const byLevel = new Map<number, string[]>();
+	for (const r of resources) {
+		const l = level.get(r.id) ?? 0;
+		if (!byLevel.has(l)) byLevel.set(l, []);
+		byLevel.get(l)!.push(r.id);
+	}
+	// Predecessors per node, restricted to earlier levels (an edge inside one
+	// level says nothing about rows, and a back edge would fight the sweep).
+	const preds = new Map<string, string[]>();
+	for (const e of edges) {
+		const lf = level.get(e.from);
+		const lt = level.get(e.to);
+		if (lf === undefined || lt === undefined || lf >= lt) continue;
+		preds.set(e.to, [...(preds.get(e.to) ?? []), e.from]);
+	}
+	const row = new Map<string, number>();
+	for (const l of [...byLevel.keys()].sort((a, b) => a - b)) {
+		const ids = byLevel.get(l)!;
+		const bary = new Map<string, number>(
+			ids.map((id, i) => {
+				const placed = (preds.get(id) ?? []).map((p) => row.get(p)).filter((r): r is number => r !== undefined);
+				return [id, placed.length ? placed.reduce((a, b) => a + b, 0) / placed.length : i];
+			})
+		);
+		ids.sort((a, b) => bary.get(a)! - bary.get(b)!);
+		ids.forEach((id, i) => row.set(id, i));
+	}
+	return byLevel;
 }
 
 // layoutPositions computes a fresh position for every resource under the given
@@ -324,14 +451,10 @@ export function layoutPositions(
 		return pos;
 	}
 
-	// layered-h / layered-v: group by dependency level.
+	// layered-h / layered-v: group by dependency level, ordered within the level
+	// so edges cross as little as the one sweep can manage.
 	const level = computeLevels(resources, edges);
-	const byLevel = new Map<number, string[]>();
-	for (const r of resources) {
-		const l = level.get(r.id) ?? 0;
-		if (!byLevel.has(l)) byLevel.set(l, []);
-		byLevel.get(l)!.push(r.id);
-	}
+	const byLevel = orderLevels(resources, edges, level);
 	for (const [l, ids] of byLevel) {
 		ids.forEach((id, i) => {
 			pos[id] =
@@ -355,11 +478,15 @@ export function layoutMissing(
 
 	const level = computeLevels(resources, edges);
 	const next = { ...existing };
+	// Ordered over ALL resources, then filtered to the ones being placed: the
+	// barycentre of a new node is only meaningful against the whole graph, and a
+	// project opened for the FIRST time goes through here (every node is
+	// missing), so this is the path that decides what a fresh canvas looks like.
 	const byLevel = new Map<number, string[]>();
-	for (const r of missing) {
-		const l = level.get(r.id) ?? 0;
-		if (!byLevel.has(l)) byLevel.set(l, []);
-		byLevel.get(l)!.push(r.id);
+	const missingIds = new Set(missing.map((r) => r.id));
+	for (const [l, ids] of orderLevels(resources, edges, level)) {
+		const mine = ids.filter((id) => missingIds.has(id));
+		if (mine.length) byLevel.set(l, mine);
 	}
 	for (const [l, ids] of byLevel) {
 		let row = Object.values(next).filter((p) => Math.round((p.x - OX) / COL) === l).length;

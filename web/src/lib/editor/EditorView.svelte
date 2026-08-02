@@ -3,7 +3,7 @@
 	import type { PlanChange } from '$lib/api/client';
 	import {
 		deriveEdges, crossScopeEdges, interiorLayout, modId, rmodId, localFolder, typeColor, typeLetter, baseAddr,
-		layoutPositions, layoutMissing, LAYOUTS,
+		layoutPositions, layoutMissing, LAYOUTS, edgeGeometry,
 		NODE_W, NODE_H, DOT_Y, MOD_HEADER_H, ACTION_COLOR, ACTION_SYMBOL, DATA_COLOR, REGISTRY_MODULE_COLOR,
 		type Edge, type LayoutMode
 	} from './graph';
@@ -424,23 +424,18 @@
 		return m;
 	});
 
-	function edgePath(from: { x: number; y: number; w: number; h: number }, to: { x: number; y: number; w: number; h: number }): string {
-		const x1 = from.x + from.w,
-			y1 = from.y + from.h / 2,
-			x2 = to.x,
-			y2 = to.y + to.h / 2;
-		const mid = (x1 + x2) / 2;
-		return `M ${x1} ${y1} C ${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`;
-	}
-
+	// The ports are chosen by geometry (edgeGeometry, graph.ts) rather than fixed
+	// at right→left, and the tip carries the heading the edge arrives on so the
+	// arrowhead can point into the target — direction is no longer implied by
+	// "edges always flow rightwards".
 	const edges = $derived.by(() => {
 		const b = boxes;
-		const out: Array<Edge & { color: string; d: string; scope?: string }> = [];
+		const out: Array<Edge & { color: string; d: string; scope?: string; tip: { x: number; y: number; angle: number } }> = [];
 		const push = (e: Edge, color: string, scope?: string, fromBox?: { x: number; y: number; w: number; h: number }, toBox?: { x: number; y: number; w: number; h: number }) => {
 			const f = fromBox ?? b.get(e.from);
 			const t = toBox ?? b.get(e.to);
 			if (!f || !t) return;
-			out.push({ ...e, color, scope, d: edgePath(f, t) });
+			out.push({ ...e, color, scope, ...edgeGeometry(f, t) });
 		};
 		// Root ↔ root.
 		for (const e of deriveEdges(project.resources, rootDataSources)) push(e, b.get(e.from)?.color ?? accent);
@@ -1019,6 +1014,16 @@
 				{/each}
 				{#each edges as e (e.id)}
 					<path d={e.d} stroke={e.color} stroke-width="2" fill="none" stroke-dasharray={e.kind === 'depends' ? '5 4' : 'none'} opacity={e.kind === 'depends' ? '0.75' : '1'} style="pointer-events:none;" />
+					<!-- Arrowhead drawn per edge rather than with a <marker>: each edge has
+					     its own colour, and marker `context-stroke` is not old enough to
+					     rely on. The triangle points +x and is rotated onto the heading. -->
+					<polygon
+						points="0,0 -9,-4.5 -9,4.5"
+						fill={e.color}
+						opacity={e.kind === 'depends' ? '0.75' : '1'}
+						transform="translate({e.tip.x} {e.tip.y}) rotate({e.tip.angle})"
+						style="pointer-events:none;"
+					/>
 				{/each}
 				{#if tempPath}
 					<path d={tempPath} stroke={accent} stroke-width="2" stroke-dasharray="6 4" fill="none" style="pointer-events:none;" />
