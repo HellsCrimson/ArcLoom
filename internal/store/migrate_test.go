@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -97,8 +98,11 @@ func TestLoad_MigratesLegacyLocalModuleCall(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", want, root)
 		}
 	}
+	// The generated config is split by theme now, so a definition's folder is
+	// whichever of its files carry content — plus an empty main.tf when it has
+	// none at all, which is what keeps the FOLDER (and therefore `init`) valid.
 	if _, ok := files["modules/unused/main.tf"]; !ok {
-		t.Errorf("the unused definition should still generate its folder: %v", files)
+		t.Errorf("the unused definition should still generate its folder: %v", keys(files))
 	}
 
 	// Idempotent: persisting and re-reading must not mint a second call, and the
@@ -165,8 +169,8 @@ func TestLoad_KeepsAnUnusedDefinitionUnused(t *testing.T) {
 	if strings.Contains(string(files["main.tf"]), `module "team"`) {
 		t.Errorf("an uncalled definition must emit no module block:\n%s", files["main.tf"])
 	}
-	if _, ok := files["modules/team/main.tf"]; !ok {
-		t.Error("the definition's own file should still be generated")
+	if !hasPrefix(files, "modules/team/") {
+		t.Errorf("the definition's own files should still be generated: %v", keys(files))
 	}
 }
 
@@ -185,4 +189,24 @@ func TestNormalize_LeavesImportedCallsAlone(t *testing.T) {
 	if len(p.Modules) != 2 {
 		t.Fatalf("normalize invented a call: %+v", p.Modules)
 	}
+}
+
+// keys / hasPrefix: the generated file set is split by theme, so tests assert on
+// which files exist rather than on one fixed name.
+func keys(files map[string][]byte) []string {
+	out := make([]string, 0, len(files))
+	for k := range files {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func hasPrefix(files map[string][]byte, prefix string) bool {
+	for k := range files {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
 }

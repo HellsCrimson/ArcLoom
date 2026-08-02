@@ -16,80 +16,218 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 )
 
-// Generate renders a full project: terraform{required_providers}, provider
-// blocks, then resource blocks. Output is formatted for deterministic diffs.
-func Generate(p *model.Project) ([]byte, error) {
+// The generated configuration is split into files by THEME, the way a
+// hand-written project usually is. Terraform reads every *.tf in a directory
+// and does not care which block sits where, so the split is purely for the
+// reader — and for the preview pane, which shows one tab per file.
+//
+// A section that would be empty emits NO file (the rule imports.tf already
+// followed): a minimal project is terraform.tf + main.tf, not eight stubs.
+const (
+	FileTerraform = "terraform.tf" // terraform{} + provider blocks
+	FileVariables = "variables.tf" // variable blocks, incl. auto-declared secrets
+	FileLocals    = "locals.tf"
+	FileData      = "data.tf"
+	FileMain      = "main.tf" // resources + module calls
+	FileOutputs   = "outputs.tf"
+	FileImports   = "imports.tf"
+	FileMoved     = "moved.tf"
+)
+
+// blockSep returns a separator for one body: a blank line before every block
+// except the first written into it. Sections share it when they are composed
+// into ONE document (Generate) and get a fresh one per file (GenerateFiles),
+// which is what keeps a per-theme file from starting with a blank line while
+// the single-document form stays byte-identical to what it always emitted.
+func blockSep(body *hclwrite.Body) func() {
+	first := true
+	return func() {
+		if !first {
+			body.AppendNewline()
+		}
+		first = false
+	}
+}
+
+// section renders one thematic file. Returns nil when nothing was written, so
+// the caller emits no file at all.
+func section(w func(body *hclwrite.Body, sep func()) error) ([]byte, error) {
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
-
-	if err := writeTerraformBlock(body, p.Providers, p.Backend, p.RequiredVersion); err != nil {
+	if err := w(body, blockSep(body)); err != nil {
 		return nil, err
 	}
+	out := hclwrite.Format(f.Bytes())
+	if len(strings.TrimSpace(string(out))) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// writeTerraformSection emits the terraform block and every provider block.
+func writeTerraformSection(body *hclwrite.Body, p *model.Project, sep func()) error {
+	sep()
+	if err := writeTerraformBlock(body, p.Providers, p.Backend, p.RequiredVersion); err != nil {
+		return err
+	}
 	for _, prov := range p.Providers {
-		body.AppendNewline()
+		sep()
 		if err := writeProviderBlock(body, prov); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	// Conventional ordering: variables, locals, data, resources, modules, outputs.
-	for _, v := range p.Variables {
-		body.AppendNewline()
-		if err := writeVariableBlock(body, v); err != nil {
-			return nil, err
-		}
-	}
-	// Auto-declare a sensitive input variable for each referenced secret that the
-	// user hasn't already declared, so var.<name> resolves.
+	return nil
+}
+
+// writeVariablesSection emits the declared variables plus one sensitive
+// variable per referenced secret the user has not declared, so var.<name>
+// resolves.
+func writeVariablesSection(body *hclwrite.Body, vars []model.Variable, secretRefs []string, sep func()) error {
 	declared := map[string]bool{}
-	for _, v := range p.Variables {
+	for _, v := range vars {
 		declared[v.Name] = true
+		sep()
+		if err := writeVariableBlock(body, v); err != nil {
+			return err
+		}
 	}
-	for _, ref := range CollectSecretRefs(p) {
+	for _, ref := range secretRefs {
 		name := model.SecretVarName(ref)
 		if declared[name] {
 			continue
 		}
 		declared[name] = true
-		body.AppendNewline()
+		sep()
 		if err := writeVariableBlock(body, model.Variable{Name: name, Type: "string", Sensitive: true}); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	if len(p.Locals) > 0 {
-		body.AppendNewline()
-		if err := writeLocalsBlock(body, p.Locals); err != nil {
-			return nil, err
-		}
+	return nil
+}
+
+func writeLocalsSection(body *hclwrite.Body, locals []model.Local, sep func()) error {
+	if len(locals) == 0 {
+		return nil
 	}
-	for _, d := range p.DataSources {
-		body.AppendNewline()
+	sep()
+	return writeLocalsBlock(body, locals)
+}
+
+func writeDataSection(body *hclwrite.Body, data []model.Resource, sep func()) error {
+	for _, d := range data {
+		sep()
 		if err := writeBlockWithKeyword(body, "data", d); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	for _, r := range p.Resources {
-		body.AppendNewline()
+	return nil
+}
+
+// writeResourcesSection emits resource blocks and module CALLS — one loop for
+// every call, local ("./modules/x") and registry alike. A local module's
+// *definition* generates its own folder (GenerateFiles) and emits nothing here:
+// a definition that is never called is simply never used, exactly as in HCL.
+func writeResourcesSection(body *hclwrite.Body, resources []model.Resource, modules []model.Module, sep func()) error {
+	for _, r := range resources {
+		sep()
 		if err := writeBlockWithKeyword(body, "resource", r); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	// One loop for every module call: local ("./modules/x") and registry alike.
-	// A local module's *definition* generates its own file (GenerateFiles) and
-	// emits nothing here — a definition that is never called is simply never
-	// used, exactly as in HCL.
-	for _, m := range p.Modules {
-		body.AppendNewline()
+	for _, m := range modules {
+		sep()
 		if err := writeModuleBlock(body, m); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	for _, o := range p.Outputs {
-		body.AppendNewline()
+	return nil
+}
+
+func writeOutputsSection(body *hclwrite.Body, outputs []model.Output, sep func()) error {
+	for _, o := range outputs {
+		sep()
 		if err := writeOutputBlock(body, o); err != nil {
-			return nil, err
+			return err
 		}
+	}
+	return nil
+}
+
+// Generate renders the whole root configuration as ONE document, in the
+// conventional order: terraform{required_providers}, providers, variables,
+// locals, data, resources, modules, outputs. GenerateFiles is what the project
+// on disk uses — this is the single-document form, kept for callers that want
+// the config as one blob (and for tests that assert on it end to end).
+func Generate(p *model.Project) ([]byte, error) {
+	f := hclwrite.NewEmptyFile()
+	body := f.Body()
+	sep := blockSep(body)
+	if err := writeTerraformSection(body, p, sep); err != nil {
+		return nil, err
+	}
+	if err := writeVariablesSection(body, p.Variables, CollectSecretRefs(p), sep); err != nil {
+		return nil, err
+	}
+	if err := writeLocalsSection(body, p.Locals, sep); err != nil {
+		return nil, err
+	}
+	if err := writeDataSection(body, p.DataSources, sep); err != nil {
+		return nil, err
+	}
+	if err := writeResourcesSection(body, p.Resources, p.Modules, sep); err != nil {
+		return nil, err
+	}
+	if err := writeOutputsSection(body, p.Outputs, sep); err != nil {
+		return nil, err
 	}
 	return hclwrite.Format(f.Bytes()), nil
+}
+
+// GenerateRootFiles renders the root configuration split by theme: the map the
+// preview pane shows as tabs and the store writes into generated/. Keys are
+// file names, and a theme with nothing in it is absent rather than empty.
+func GenerateRootFiles(p *model.Project) (map[string][]byte, error) {
+	out := map[string][]byte{}
+	for _, s := range []struct {
+		name string
+		w    func(*hclwrite.Body, func()) error
+	}{
+		{FileTerraform, func(b *hclwrite.Body, sep func()) error { return writeTerraformSection(b, p, sep) }},
+		{FileVariables, func(b *hclwrite.Body, sep func()) error {
+			return writeVariablesSection(b, p.Variables, CollectSecretRefs(p), sep)
+		}},
+		{FileLocals, func(b *hclwrite.Body, sep func()) error { return writeLocalsSection(b, p.Locals, sep) }},
+		{FileData, func(b *hclwrite.Body, sep func()) error { return writeDataSection(b, p.DataSources, sep) }},
+		{FileMain, func(b *hclwrite.Body, sep func()) error {
+			return writeResourcesSection(b, p.Resources, p.Modules, sep)
+		}},
+		{FileOutputs, func(b *hclwrite.Body, sep func()) error { return writeOutputsSection(b, p.Outputs, sep) }},
+	} {
+		content, err := section(s.w)
+		if err != nil {
+			return nil, err
+		}
+		if content != nil {
+			out[s.name] = content
+		}
+	}
+	// import / moved blocks render themselves whole, and already return nil when
+	// the project has none.
+	imports, err := GenerateImports(p)
+	if err != nil {
+		return nil, err
+	}
+	if imports != nil {
+		out[FileImports] = imports
+	}
+	moved, err := GenerateMoved(p)
+	if err != nil {
+		return nil, err
+	}
+	if moved != nil {
+		out[FileMoved] = moved
+	}
+	return out, nil
 }
 
 // ProvidersConfig renders only the terraform{required_providers} block and the
@@ -308,49 +446,69 @@ func writeModuleBlock(body *hclwrite.Body, m model.Module) error {
 	return writeAttrs(b, m.Config)
 }
 
-// GenerateModuleFile renders a local module's own file (variables, locals, data,
-// resources, outputs) — no terraform{} or provider{} blocks (inherited).
+// GenerateModuleFile renders a local module's own configuration as ONE document
+// (variables, locals, data, resources, outputs) — no terraform{} or provider{}
+// blocks, which a child module inherits. GenerateModuleFiles is the split form.
 func GenerateModuleFile(lm model.LocalModule) ([]byte, error) {
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
-	first := true
-	nl := func() {
-		if !first {
-			body.AppendNewline()
-		}
-		first = false
+	sep := blockSep(body)
+	if err := writeVariablesSection(body, lm.Variables, nil, sep); err != nil {
+		return nil, err
 	}
-	for _, v := range lm.Variables {
-		nl()
-		if err := writeVariableBlock(body, v); err != nil {
-			return nil, err
-		}
+	if err := writeLocalsSection(body, lm.Locals, sep); err != nil {
+		return nil, err
 	}
-	if len(lm.Locals) > 0 {
-		nl()
-		if err := writeLocalsBlock(body, lm.Locals); err != nil {
-			return nil, err
-		}
+	if err := writeDataSection(body, lm.DataSources, sep); err != nil {
+		return nil, err
 	}
-	for _, d := range lm.DataSources {
-		nl()
-		if err := writeBlockWithKeyword(body, "data", d); err != nil {
-			return nil, err
-		}
+	if err := writeResourcesSection(body, lm.Resources, nil, sep); err != nil {
+		return nil, err
 	}
-	for _, r := range lm.Resources {
-		nl()
-		if err := writeBlockWithKeyword(body, "resource", r); err != nil {
-			return nil, err
-		}
-	}
-	for _, o := range lm.Outputs {
-		nl()
-		if err := writeOutputBlock(body, o); err != nil {
-			return nil, err
-		}
+	if err := writeOutputsSection(body, lm.Outputs, sep); err != nil {
+		return nil, err
 	}
 	return hclwrite.Format(f.Bytes()), nil
+}
+
+// GenerateModuleFiles renders a local module's configuration split by theme,
+// keyed relative to the module's own folder. Same rules as the root's
+// (GenerateRootFiles), minus the sections a child module cannot have: no
+// terraform/provider blocks, and no import/moved blocks — those address the
+// root's state and belong to the root configuration.
+//
+// A module with nothing but resources therefore still generates exactly
+// modules/<name>/main.tf, which is what it always did.
+func GenerateModuleFiles(lm model.LocalModule) (map[string][]byte, error) {
+	out := map[string][]byte{}
+	for _, s := range []struct {
+		name string
+		w    func(*hclwrite.Body, func()) error
+	}{
+		{FileVariables, func(b *hclwrite.Body, sep func()) error {
+			return writeVariablesSection(b, lm.Variables, nil, sep)
+		}},
+		{FileLocals, func(b *hclwrite.Body, sep func()) error { return writeLocalsSection(b, lm.Locals, sep) }},
+		{FileData, func(b *hclwrite.Body, sep func()) error { return writeDataSection(b, lm.DataSources, sep) }},
+		{FileMain, func(b *hclwrite.Body, sep func()) error { return writeResourcesSection(b, lm.Resources, nil, sep) }},
+		{FileOutputs, func(b *hclwrite.Body, sep func()) error { return writeOutputsSection(b, lm.Outputs, sep) }},
+	} {
+		content, err := section(s.w)
+		if err != nil {
+			return nil, err
+		}
+		if content != nil {
+			out[s.name] = content
+		}
+	}
+	// A module with nothing in it still emits an (empty) main.tf, unlike the
+	// root: the FOLDER has to exist, or `init` fails with "module not found" on
+	// the first call to a module the user has only just created. The root needs
+	// no such stub — its terraform.tf is always written.
+	if len(out) == 0 {
+		out[FileMain] = []byte{}
+	}
+	return out, nil
 }
 
 // GenerateImports renders the project's `import` blocks into their own file.
@@ -453,33 +611,18 @@ func GenerateMoved(p *model.Project) ([]byte, error) {
 // LAST so a bad path can never displace generated HCL — paths are validated on
 // the way in (model.ValidateFilePath), and this is the backstop.
 func GenerateFiles(p *model.Project) (map[string][]byte, error) {
-	root, err := Generate(p)
+	files, err := GenerateRootFiles(p)
 	if err != nil {
 		return nil, err
-	}
-	files := map[string][]byte{"main.tf": root}
-	// import blocks live in their own file — see GenerateImports.
-	imports, err := GenerateImports(p)
-	if err != nil {
-		return nil, err
-	}
-	if imports != nil {
-		files["imports.tf"] = imports
-	}
-	// moved blocks likewise — see GenerateMoved.
-	moved, err := GenerateMoved(p)
-	if err != nil {
-		return nil, err
-	}
-	if moved != nil {
-		files["moved.tf"] = moved
 	}
 	for _, lm := range p.LocalModules {
-		mf, err := GenerateModuleFile(lm)
+		mf, err := GenerateModuleFiles(lm)
 		if err != nil {
 			return nil, fmt.Errorf("module %q: %w", lm.Name, err)
 		}
-		files["modules/"+lm.Name+"/main.tf"] = mf
+		for name, content := range mf {
+			files["modules/"+lm.Name+"/"+name] = content
+		}
 	}
 	for _, f := range p.Files {
 		clean, err := model.ValidateFilePath(f.Path)

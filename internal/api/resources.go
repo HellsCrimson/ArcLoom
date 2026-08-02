@@ -570,18 +570,28 @@ func (s *Server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleProjectHCL returns the generated configuration for a scope as the map
+// of FILES it actually consists of — `{"terraform.tf": "...", "main.tf": ...}`
+// — which is what the preview pane renders as one tab per file.
+//
+// It used to return one `text/plain` document, which stopped being the truth
+// the moment generation grew a second file: imports.tf and moved.tf were on
+// disk and in Git but invisible in the pane. Returning the same map the store
+// writes means the preview cannot drift from the project again.
+//
+// `?module=<name>` returns that local module's own files instead of the root's.
 func (s *Server) handleProjectHCL(w http.ResponseWriter, r *http.Request) {
 	p, err := s.store.Get(chi.URLParam(r, "id"))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "project not found")
 		return
 	}
-	var out []byte
+	var files map[string][]byte
 	if m := r.URL.Query().Get("module"); m != "" {
 		found := false
 		for _, lm := range p.LocalModules {
 			if lm.Name == m {
-				out, err = hclgen.GenerateModuleFile(lm)
+				files, err = hclgen.GenerateModuleFiles(lm)
 				found = true
 				break
 			}
@@ -591,15 +601,19 @@ func (s *Server) handleProjectHCL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		out, err = hclgen.Generate(p)
+		// Root scope only: a local module's files are reached through ?module=,
+		// and companion files are user-authored, edited elsewhere, and not HCL.
+		files, err = hclgen.GenerateRootFiles(p)
 	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "generate: "+err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	w.Write(out)
+	out := make(map[string]string, len(files))
+	for name, content := range files {
+		out[name] = string(content)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"files": out})
 }
 
 // ensureProvider adds a ProviderInstance for the resource type's provider if it

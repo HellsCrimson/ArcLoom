@@ -21,7 +21,7 @@
 
 	let {
 		project,
-		hcl,
+		files,
 		accent = '#7aa2f7',
 		planChanges = [],
 		planning = false,
@@ -36,7 +36,8 @@
 		onClose
 	}: {
 		project: Project;
-		hcl: string;
+		/** Generated configuration, keyed by file name — rendered as tabs. */
+		files: Record<string, string>;
 		accent?: string;
 		planChanges?: PlanChange[];
 		planning?: boolean;
@@ -1195,7 +1196,7 @@
 	     the whole row and the canvas (flex-1) collapsed to zero width, so opening
 	     the editor showed the HCL pane and no graph at all. -->
 	<div class="w-[440px] max-w-[45%] flex-none" style="border-left:1px solid rgba(255,255,255,0.08);min-height:0;">
-		<HclView {hcl}>
+		<HclView {files}>
 			{#snippet right()}
 				{#if onPlan}
 					<button

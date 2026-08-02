@@ -99,7 +99,10 @@ func TestGenerateFilesIncludesCompanionFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	for _, want := range []string{"main.tf", "modules/team/main.tf", "templates/cloud-init.tftpl", "modules/team/user-data.yaml"} {
+	// terraform.tf, not main.tf: the generated config is split by theme, and this
+	// project declares no resources — an empty main.tf is deliberately not
+	// emitted. The module's stub main.tf IS, so its folder exists.
+	for _, want := range []string{"terraform.tf", "modules/team/main.tf", "templates/cloud-init.tftpl", "modules/team/user-data.yaml"} {
 		if _, ok := files[want]; !ok {
 			t.Errorf("missing %q; got %v", want, keysOf(files))
 		}

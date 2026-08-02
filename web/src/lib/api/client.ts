@@ -393,11 +393,17 @@ export const api = {
 			body: JSON.stringify(body)
 		}).then((r) => json<Resource>(r)),
 
+	// The generated configuration as the map of FILES it consists of — one tab
+	// per file in the preview. It returned a single document until generation
+	// grew a second file (imports.tf, then moved.tf), which the pane could not
+	// show at all.
 	projectHCL: (id: string, module?: string) =>
-		fetch(`/api/projects/${id}/hcl${module ? `?module=${encodeURIComponent(module)}` : ''}`).then((r) => {
-			if (!r.ok) throw new Error('failed to generate HCL');
-			return r.text();
-		}),
+		fetch(`/api/projects/${id}/hcl${module ? `?module=${encodeURIComponent(module)}` : ''}`).then(
+			async (r) => {
+				if (!r.ok) throw new Error('failed to generate HCL');
+				return (await r.json()).files as Record<string, string>;
+			}
+		),
 
 	importHCL: (id: string, files: Record<string, string>, module?: string) =>
 		fetch(`/api/projects/${id}/import/hcl`, {

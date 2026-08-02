@@ -61,7 +61,8 @@
 	let project = $state<Project | null>(null);
 	let engine = $state('');
 
-	let hcl = $state('');
+	// The generated configuration, keyed by file name (terraform.tf, main.tf, …).
+	let hclFiles = $state<Record<string, string>>({});
 	let showApplyConfirm = $state(false);
 	let showDestroyConfirm = $state(false);
 	let destroyName = $state('');
@@ -604,7 +605,7 @@
 
 	function resetEditor() {
 		form.resetAll();
-		hcl = '';
+		hclFiles = {};
 		runPane.reset();
 		activeModule = null;
 	}
@@ -612,9 +613,9 @@
 	async function refreshHcl() {
 		if (!project) return;
 		try {
-			hcl = await api.projectHCL(project.id, activeModule ?? undefined);
+			hclFiles = await api.projectHCL(project.id, activeModule ?? undefined);
 		} catch {
-			hcl = '';
+			hclFiles = {};
 		}
 	}
 
@@ -1826,7 +1827,7 @@
 		{#if showEditor && project}
 			<EditorView
 				{project}
-				{hcl}
+				files={hclFiles}
 				accent="#4c8dff"
 				planChanges={runPane.changes}
 				planning={busy === 'plan'}
@@ -1909,7 +1910,7 @@
 		>
 			<!-- Generated HCL — shares the graph editor's viewer for a consistent look -->
 			<div class="min-h-0 flex-1">
-				<HclView {hcl}>
+				<HclView files={hclFiles}>
 					{#snippet actions()}
 						<!-- approve is its own permission: a user who may sign a plan off but
 						     not run one still needs this row (it renders only the Approve button). -->
