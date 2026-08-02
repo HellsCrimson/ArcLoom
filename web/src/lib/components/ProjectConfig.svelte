@@ -5,6 +5,7 @@
 	import FieldRenderer from '$lib/form/FieldRenderer.svelte';
 	import { rawToDynamic, ensureLiteralShape, isContainer } from '$lib/form/defaults';
 	import { parseHclType } from '$lib/model/hcltype';
+	import { parseHclCollection } from '$lib/model/hcltext';
 	import { cleanAttr } from '$lib/form/attrs';
 	import { Plus, Trash2, Loader2, Braces, Code2 } from 'lucide-svelte';
 
@@ -56,6 +57,21 @@
 
 	const isObj = (x: unknown) => typeof x === 'object' && x !== null && !Array.isArray(x);
 
+	// An inline collection written as RAW HCL — `{ a = "x", b = var.y }` — is
+	// stored as mode:'expression', which is how a hand-written local is kept and
+	// how hclimport stores any collection whose members are not all literals (one
+	// `var.x` inside is enough). It IS a structure, so it belongs in the
+	// structural editor; it used to fall through every test below and stay a
+	// one-line text box, which is the bug this answers.
+	//
+	// parseHclCollection is the gate, and it refuses more than it accepts: a
+	// comprehension (`{ for k, v in … }`) is brace-shaped but structurally a
+	// scalar and returns null, so it keeps its text.
+	function exprCollection(av?: AttrValue): AttrValue | null {
+		if (!av || av.mode !== 'expression') return null;
+		return parseHclCollection(av.expr ?? '');
+	}
+
 	// A value opens in the structural editor when it IS a structure — an already
 	// structural AttrValue, a container literal (how hclimport stores an all-literal
 	// `{ alpha = { … } }`, which used to render as one line of JSON), a secret
@@ -68,6 +84,7 @@
 		if (!av) return false;
 		if (av.mode === 'secret') return true;
 		if (av.entries !== undefined || av.items !== undefined) return true;
+		if (exprCollection(av)) return true;
 		return av.mode === 'literal' && (Array.isArray(av.literal) || isObj(av.literal));
 	}
 
@@ -77,7 +94,11 @@
 		const typed = parseHclType(type);
 		const structured = wantsStructured(av, typed);
 		return {
-			text: structured ? '' : attrText(av),
+			// The raw text is kept even when the structural editor opens, so toggling
+			// back shows what was written instead of an empty box — which is what
+			// makes the per-row toggle lossless for the case above. A literal object
+			// has no authored text to keep, so that one still starts blank.
+			text: structured && av?.mode !== 'expression' ? '' : attrText(av),
 			struct: structFrom(av, typed),
 			structured
 		};
@@ -87,9 +108,15 @@
 	// attributes rather than only the keys that happen to be present). Without
 	// one, rawToDynamic infers it from the value.
 	function structFrom(av: AttrValue | undefined, typed?: Field | null): AttrValue {
-		const base: AttrValue = av
-			? JSON.parse(JSON.stringify(av))
-			: { mode: 'literal', ...(typed ? {} : { entries: [] }) };
+		// A parseable inline collection is seeded from the PARSE, not from the
+		// expression node — otherwise the structural editor opens on an opaque
+		// leaf holding the whole `{ … }` as text.
+		const parsed = exprCollection(av);
+		const base: AttrValue = parsed
+			? parsed
+			: av
+				? JSON.parse(JSON.stringify(av))
+				: { mode: 'literal', ...(typed ? {} : { entries: [] }) };
 		if (typed) {
 			ensureLiteralShape(typed, base);
 			return base;

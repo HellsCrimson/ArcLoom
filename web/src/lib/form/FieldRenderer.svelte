@@ -9,6 +9,7 @@
 	import { ensureLiteralShape, isContainer } from './defaults';
 	import SecretPicker from './SecretPicker.svelte';
 	import { referenceGroups } from '$lib/model/scope';
+	import { parseHclCollection } from '$lib/model/hcltext';
 	import { ChevronDown, ChevronRight } from 'lucide-svelte';
 
 	let {
@@ -69,9 +70,37 @@
 			: `${childCount} ${listLike ? (childCount === 1 ? 'item' : 'items') : childCount === 1 ? 'key' : 'keys'}`
 	);
 
+	// A container attribute can hold an inline collection written as RAW HCL —
+	// `tags = { Name = "x", Env = var.env }`, which is what hclimport stores
+	// whenever the members are not all literals. That is a structure, but it
+	// arrives in Expression mode and therefore renders as one text box.
+	//
+	// Unlike the Variables modal (where structured/text is a per-row VIEW over one
+	// stored value), the mode here IS the stored value: switching it on open would
+	// rewrite a hand-written expression — re-emitted with sorted keys — on the
+	// next save of a form the user only opened to read. So it is offered, not
+	// applied: one click, and the rows arrive filled in.
+	const asRows = $derived(
+		container && value.mode === 'expression' ? parseHclCollection(value.expr ?? '') : null
+	);
+
 	function setMode(m: ValueMode) {
+		if (m === 'literal' && value.mode === 'expression') seedFromExpr();
 		value.mode = m;
 		if (m === 'literal') ensureLiteralShape(field, value);
+	}
+
+	// Switching a parseable expression to Literal used to hand the user an EMPTY
+	// map: ensureLiteralShape seeds from `literal`, which an expression value does
+	// not have, so the whole collection had to be retyped. `value.expr` is left
+	// intact, so switching back restores the original text verbatim.
+	function seedFromExpr() {
+		if (!container || value.entries !== undefined || value.items !== undefined) return;
+		const parsed = parseHclCollection(value.expr ?? '');
+		if (!parsed) return;
+		value.entries = parsed.entries;
+		value.items = parsed.items;
+		value.literal = undefined;
 	}
 
 	const inputCls =
@@ -155,7 +184,17 @@
 			<input class="{inputCls} mono" placeholder="type.name.attr" bind:value={value.ref} />
 		{/if}
 	{:else if value.mode === 'expression'}
-		<input class="{inputCls} mono" placeholder="raw HCL expression" bind:value={value.expr} />
+		<div class="flex items-center gap-1.5">
+			<input class="{inputCls} mono" placeholder="raw HCL expression" bind:value={value.expr} />
+			{#if asRows}
+				<button
+					type="button"
+					class="flex-none rounded border border-[var(--al-border)] px-2 py-1 text-[11px] text-[var(--al-muted)] hover:text-[var(--al-text)]"
+					title="This is a collection — edit it as rows instead (the text is kept if you switch back)"
+					onclick={() => setMode('literal')}
+				>Edit as rows</button>
+			{/if}
+		</div>
 	{:else if value.mode === 'secret'}
 		<SecretPicker bind:secretRef={value.secretRef} {secrets} {onCreateSecret} />
 	{:else}
