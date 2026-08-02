@@ -50,6 +50,15 @@ type AttrDiff struct {
 	Unknown bool `json:"unknown,omitempty"`
 	// Sensitive marks a redacted attribute; Before/After carry no real value.
 	Sensitive bool `json:"sensitive,omitempty"`
+	// SensitivityOnly marks the one change that has no value in it: the value is
+	// identical on both sides and only its CLASSIFICATION moved — a literal
+	// replaced by a secret reference, or a secret turned back into a literal. The
+	// engine still plans an update ("this attribute value will be marked as
+	// sensitive … The value is unchanged"), so without this row the plan panel
+	// says "update" and lists nothing, and the only explanation is in the log.
+	// Before/After stay empty: the value here is precisely the one that just
+	// became a secret.
+	SensitivityOnly bool `json:"sensitivityOnly,omitempty"`
 	// ForcesReplace marks an attribute listed in the plan's replace_paths — the
 	// change that forces the resource to be recreated rather than updated.
 	ForcesReplace bool `json:"forcesReplace,omitempty"`
@@ -91,11 +100,25 @@ func (w *diffWalker) walk(path string, before, after, unknown, bsens, asens any,
 	// A sensitive value is never rendered, but the fact that it changes is
 	// still worth reporting — so the diff row exists with redacted sides.
 	if isTrue(bsens) || isTrue(asens) {
-		if !sameValue(before, after) || isTrue(unknown) {
+		switch {
+		case !sameValue(before, after) || isTrue(unknown):
 			w.emit(AttrDiff{
 				Path: path, Action: actionFor(before, after, isTrue(unknown)),
 				Before: redactedValue, After: redactedValue, Sensitive: true,
 				Unknown: isTrue(unknown),
+			})
+		case isTrue(bsens) != isTrue(asens):
+			// Same value, different classification: moving a literal to a secret
+			// (or back) makes the engine plan an update purely to re-record the
+			// marking in state. It is the one planned change with no value in it,
+			// and reporting nothing here is what left the panel blank.
+			w.emit(AttrDiff{
+				Path: path, Action: "update", SensitivityOnly: true,
+				// Sensitive reflects the AFTER state on this row, which is what lets
+				// the UI say "now marked sensitive" vs "no longer sensitive". Both
+				// sides are valueless either way, so the false case leaves nothing
+				// unredacted.
+				Sensitive: isTrue(asens),
 			})
 		}
 		return

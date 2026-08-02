@@ -807,6 +807,10 @@ export interface AttrDiff {
 	sensitive?: boolean;
 	/** This attribute is what forces the resource to be replaced. */
 	forcesReplace?: boolean;
+	/** The value did not change — only its classification did (a literal moved
+	 *  to a secret, or back). The engine still plans an update to re-record the
+	 *  marking, and `before`/`after` are empty on purpose. */
+	sensitivityOnly?: boolean;
 }
 
 // PlanChange is one resource's pending action from the structured plan.

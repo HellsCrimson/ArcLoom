@@ -59,7 +59,16 @@
 			</span>
 		{/if}
 		<span class="min-w-0 flex-1 basis-48 break-all" style="color:var(--al-muted);">
-			{#if d.action === 'add'}
+			{#if d.sensitivityOnly}
+				<!-- The only planned change with no value in it: the engine re-records
+				     the attribute's marking in state and says so in the log. Spelling
+				     it out here is the point of this panel — otherwise the row list is
+				     empty under an "update" badge. `sensitive` carries the AFTER state. -->
+				<span style="color:var(--al-accent);">
+					{d.sensitive ? 'now marked sensitive' : 'no longer sensitive'}
+				</span>
+				— value unchanged (moved {d.sensitive ? 'to' : 'out of'} a secret)
+			{:else if d.action === 'add'}
 				<span style="color:{COLOR.add};">{d.after}</span>
 			{:else if d.action === 'remove'}
 				<span class="line-through">{d.before}</span>

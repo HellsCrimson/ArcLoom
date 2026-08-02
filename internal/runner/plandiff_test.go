@@ -139,6 +139,67 @@ func TestAttributeDiffsSensitiveUnchangedIsSkipped(t *testing.T) {
 	}
 }
 
+// Moving a literal to a secret changes NO value — the engine plans an update
+// only to re-record the marking in state ("this attribute value will be marked
+// as sensitive … The value is unchanged"). This is the shape a real OpenTofu
+// plan produces for that case, taken verbatim from one; without a row for it
+// the plan panel showed "update" and listed nothing at all.
+func TestAttributeDiffsSensitivityOnlyChange(t *testing.T) {
+	ch := changeFromJSON(t, `{
+		"before": {"id": "432445379711157715", "triggers": {"token": "abc"}},
+		"after":  {"id": "432445379711157715", "triggers": {"token": "abc"}},
+		"before_sensitive": {"triggers": {}},
+		"after_sensitive":  {"triggers": {"token": true}}
+	}`)
+	diffs, _ := attributeDiffs(ch, maxAttrDiffs)
+	if len(diffs) != 1 {
+		t.Fatalf("want 1 row for the classification change, got %+v", diffs)
+	}
+	d := diffs[0]
+	if d.Path != "triggers.token" || d.Action != "update" {
+		t.Fatalf("wrong row: %+v", d)
+	}
+	if !d.SensitivityOnly || !d.Sensitive {
+		t.Fatalf("row not marked as becoming sensitive: %+v", d)
+	}
+	// The value on both sides is exactly the one that just became a secret, so
+	// neither side may carry it — this diff reaches the browser AND run history.
+	if d.Before != "" || d.After != "" {
+		t.Fatalf("a value leaked into a sensitivity-only row: %+v", d)
+	}
+}
+
+// The reverse — a secret turned back into a literal — is the same row.
+func TestAttributeDiffsSensitivityRemoved(t *testing.T) {
+	ch := changeFromJSON(t, `{
+		"before": {"token": "abc"},
+		"after":  {"token": "abc"},
+		"before_sensitive": {"token": true},
+		"after_sensitive":  {}
+	}`)
+	diffs, _ := attributeDiffs(ch, maxAttrDiffs)
+	if len(diffs) != 1 || !diffs[0].SensitivityOnly || diffs[0].Before != "" || diffs[0].After != "" {
+		t.Fatalf("want one value-free classification row, got %+v", diffs)
+	}
+	// Sensitive carries the AFTER state, so this direction reads "no longer".
+	if diffs[0].Sensitive {
+		t.Fatalf("a row for losing sensitivity must not claim the value is sensitive: %+v", diffs[0])
+	}
+}
+
+// Guard the neighbouring case: same value, same marking, still nothing.
+func TestAttributeDiffsSensitivityUnchangedStillSkipped(t *testing.T) {
+	ch := changeFromJSON(t, `{
+		"before": {"token": "abc"},
+		"after":  {"token": "abc"},
+		"before_sensitive": {"token": true},
+		"after_sensitive":  {"token": true}
+	}`)
+	if diffs, _ := attributeDiffs(ch, maxAttrDiffs); len(diffs) != 0 {
+		t.Fatalf("no marking change and no value change must produce no row: %+v", diffs)
+	}
+}
+
 func TestAttributeDiffsReplacePaths(t *testing.T) {
 	ch := changeFromJSON(t, `{
 		"before": {"ami": "ami-1", "tags": {"Name": "a"}, "root": {"size": 8}},
