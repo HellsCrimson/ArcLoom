@@ -187,8 +187,15 @@
 				<label for="resource-name" class="mb-1 block text-xs text-[var(--al-muted)]">resource name</label>
 				<input id="resource-name" class="mono rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" bind:value={form.name} />
 			</div>
+			<!-- Keyed by the block being edited: ForEachField derives its mode from
+			     the text ONCE per mount, and this branch is not re-created when the
+			     form switches from one resource to another (form.schema stays
+			     truthy across the fetch), so without the key the previous block's
+			     Build draft would survive — and be projected into this one. -->
 			<div class="min-w-[22rem] flex-1">
-				<ForEachField bind:count={form.count} bind:forEach={form.forEach} {scope} />
+				{#key form.editingId ?? `new:${form.selectedType}`}
+					<ForEachField bind:count={form.count} bind:forEach={form.forEach} {scope} />
+				{/key}
 			</div>
 			{#if formProviderInstances.length > 1}
 				<div>

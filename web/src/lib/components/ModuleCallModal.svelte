@@ -72,7 +72,12 @@
 				<input id="rm-version" class="mono w-full rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-2.5 py-1.5 text-sm outline-none focus:border-[var(--al-accent)]" placeholder="~> 5.0" bind:value={version} disabled={isLocal} title={isLocal ? 'A local module has no version — it is the code in this project' : ''} />
 			</div>
 		</div>
-		<ForEachField bind:count={count} bind:forEach={forEach} {scope} />
+		<!-- Keyed like the resource form's: the mode is derived from the text once
+		     per mount, and re-opening the modal over an already-open one (every
+		     opener is re-entrant) re-seeds the drafts without remounting. -->
+		{#key editing ?? ''}
+			<ForEachField bind:count={count} bind:forEach={forEach} {scope} />
+		{/key}
 		{#if count.trim() !== '' || forEach.trim() !== ''}
 			<p class="text-xs text-[var(--al-muted)]">
 				Inputs below can use <span class="mono">{count.trim() !== '' ? 'count.index' : 'each.key / each.value'}</span> —

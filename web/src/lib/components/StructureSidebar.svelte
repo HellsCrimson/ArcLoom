@@ -101,6 +101,13 @@
 	function callsFor(folder: string): Module[] {
 		return moduleCalls.filter((m) => localFolder(m) === folder);
 	}
+
+	// The declarations a block's for_each may name, per scope — what lets the
+	// badge say ×2 instead of ∀ for a collection that is literal enough to
+	// evaluate here. A root block sees the root's var/local, a module's interior
+	// sees that module's.
+	const rootScope = $derived({ variables: project?.variables ?? [], locals: project?.locals ?? [] });
+	const moduleScope = (m: LocalModule) => ({ variables: m.variables ?? [], locals: m.locals ?? [] });
 </script>
 
 <!--
@@ -224,14 +231,14 @@
 					{#each project.resources as r (r.id)}
 						<li class="group flex items-center">
 							<button class="mono min-w-0 flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px] {form.editingId === r.id ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}" onclick={() => onEditResource(r)} title="Edit {r.type}.{r.name}">{r.type}.{r.name}</button>
-							{@render multi(multiBadge(r))}
+							{@render multi(multiBadge(r, rootScope))}
 							<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteResource(r.id)} aria-label="Delete"><Trash2 size={11} /></button>
 						</li>
 					{/each}
 					{#each project.dataSources ?? [] as d (d.id)}
 						<li class="group flex items-center">
 							<button class="mono min-w-0 flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px]" style="color:{form.editingId === d.id ? 'var(--al-accent)' : '#56d4bc'};opacity:{form.editingId === d.id ? 1 : 0.85};" onclick={() => onEditResource(d, 'data')} title="Edit data.{d.type}.{d.name}">data.{d.type}.{d.name}</button>
-							{@render multi(multiBadge(d))}
+							{@render multi(multiBadge(d, rootScope))}
 							<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteResource(d.id, 'data')} aria-label="Delete"><Trash2 size={11} /></button>
 						</li>
 					{/each}
@@ -311,14 +318,14 @@
 						{#each m.resources ?? [] as r (r.id)}
 							<li class="group flex items-center">
 								<button class="mono min-w-0 flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px] {form.editingId === r.id ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}" onclick={() => onEditResource(r)} title="Edit {r.type}.{r.name}">{r.type}.{r.name}</button>
-								{@render multi(multiBadge(r))}
+								{@render multi(multiBadge(r, moduleScope(m)))}
 								<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteResource(r.id)} aria-label="Delete"><Trash2 size={11} /></button>
 							</li>
 						{/each}
 						{#each m.dataSources ?? [] as d (d.id)}
 							<li class="group flex items-center">
 								<button class="mono min-w-0 flex-1 truncate rounded px-1.5 py-0.5 text-left text-[11px]" style="color:{form.editingId === d.id ? 'var(--al-accent)' : '#56d4bc'};opacity:{form.editingId === d.id ? 1 : 0.85};" onclick={() => onEditResource(d, 'data')} title="Edit data.{d.type}.{d.name}">data.{d.type}.{d.name}</button>
-								{@render multi(multiBadge(d))}
+								{@render multi(multiBadge(d, moduleScope(m)))}
 								<button class="opacity-0 group-hover:opacity-100 text-[var(--al-muted)] hover:text-[var(--al-danger)]" onclick={() => onDeleteResource(d.id, 'data')} aria-label="Delete"><Trash2 size={11} /></button>
 							</li>
 						{/each}

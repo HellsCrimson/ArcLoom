@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Project, Resource, ResourceKind } from '$lib/types';
+	import type { LocalModule, Project, Resource, ResourceKind } from '$lib/types';
 	import type { PlanChange } from '$lib/api/client';
 	import {
 		deriveEdges, crossScopeEdges, interiorLayout, modId, rmodId, localFolder, typeColor, typeLetter, baseAddr,
@@ -118,6 +118,11 @@
 		return moduleCalls.filter((m) => localFolder(m) === folder).map((m) => m.name);
 	}
 	const rootDataSources = $derived(project.dataSources ?? []);
+	// Scope for the multiplicity badge: a for_each naming a var/local this scope
+	// declares can be counted here (×2), instead of the blanket ∀ that only the
+	// state could resolve.
+	const rootScope = $derived({ variables: project.variables ?? [], locals: project.locals ?? [] });
+	const moduleScope = (lm: LocalModule) => ({ variables: lm.variables ?? [], locals: lm.locals ?? [] });
 
 	// lookupNode resolves a node id to its resource and depends_on address in a
 	// scope: root when scope is undefined, otherwise inside that local module
@@ -1060,18 +1065,18 @@
 					<div role="presentation" style="position:absolute;right:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{node.color};border:2px solid #0a0e15;z-index:3;"></div>
 					<div role="presentation" style="position:absolute;left:-6px;top:{DOT_Y - 6}px;width:12px;height:12px;border-radius:50%;background:{node.color};border:2px solid #0a0e15;z-index:3;"></div>
 					{@render modBadge(callChangeCounts(node.name))}
-					{@render multiPill(multiBadge(node), node.color)}
+					{@render multiPill(multiBadge(node, rootScope), node.color)}
 				</div>
 			{/each}
 
 			<!-- root resource nodes -->
 			{#each rootNodes as node (node.id)}
-				{@render card(node.id, node.x, node.y, node.name, node.type, node.color, node.letter, node.selected, true, undefined, changeByAddr.get(`${node.type}.${node.name}`), multiBadge(node))}
+				{@render card(node.id, node.x, node.y, node.name, node.type, node.color, node.letter, node.selected, true, undefined, changeByAddr.get(`${node.type}.${node.name}`), multiBadge(node, rootScope))}
 			{/each}
 
 			<!-- root data-source nodes -->
 			{#each rootDataNodes as node (node.id)}
-				{@render card(node.id, node.x, node.y, node.name, node.type, node.color, node.letter, node.selected, true, undefined, changeByAddr.get(`data.${node.type}.${node.name}`), multiBadge(node), 'data')}
+				{@render card(node.id, node.x, node.y, node.name, node.type, node.color, node.letter, node.selected, true, undefined, changeByAddr.get(`data.${node.type}.${node.name}`), multiBadge(node, rootScope), 'data')}
 			{/each}
 
 			<!-- expanded modules' interior resource + data-source nodes -->
@@ -1079,11 +1084,11 @@
 				{#if mb.open}
 					{#each mb.lm.resources as r (r.id)}
 						{@const c = childAbs(mb, r.id)}
-						{@render card(r.id, c.x, c.y, r.name, r.type, typeColor(r.type), typeLetter(r.type), false, false, mb.name, changeForChild(mb.name, `${r.type}.${r.name}`), multiBadge(r))}
+						{@render card(r.id, c.x, c.y, r.name, r.type, typeColor(r.type), typeLetter(r.type), false, false, mb.name, changeForChild(mb.name, `${r.type}.${r.name}`), multiBadge(r, moduleScope(mb.lm)))}
 					{/each}
 					{#each mb.lm.dataSources ?? [] as d (d.id)}
 						{@const c = childAbs(mb, d.id)}
-						{@render card(d.id, c.x, c.y, d.name, d.type, DATA_COLOR, typeLetter(d.type), false, false, mb.name, changeForChild(mb.name, `data.${d.type}.${d.name}`), multiBadge(d), 'data')}
+						{@render card(d.id, c.x, c.y, d.name, d.type, DATA_COLOR, typeLetter(d.type), false, false, mb.name, changeForChild(mb.name, `data.${d.type}.${d.name}`), multiBadge(d, moduleScope(mb.lm)), 'data')}
 					{/each}
 				{/if}
 			{/each}

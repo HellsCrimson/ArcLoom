@@ -20,6 +20,7 @@ import {
   refParts,
   resolveRef,
   stripWrappers,
+  structural,
   type Expansion,
   type Scope,
 } from "$lib/model/expand";
@@ -133,10 +134,14 @@ export function describeForEach(
   // stored as an expression, not as items), so parse that too — otherwise the
   // most ordinary list of names looks shapeless and the toset() warning, the
   // member previews and each.value all go quiet on it.
-  const value =
+  // `structural` covers the other storage shape: an imported all-literal
+  // collection is one opaque literal object, which reads as shapeless until it
+  // is lifted into entries/items.
+  const value = structural(
     resolved?.mode === "expression"
       ? (parseHclCollection(resolved.expr ?? "") ?? resolved)
-      : resolved;
+      : resolved,
+  );
   const declared = ref
     ? ref.kind === "variable"
       ? (scope.variables ?? []).find((v) => v.name === ref.name)

@@ -1,4 +1,5 @@
 import type { AttrValue, Local, Project, Variable } from "$lib/types";
+import { rawToDynamic } from "$lib/form/defaults";
 
 // Expanding a count / for_each into the instances it produces.
 //
@@ -144,8 +145,25 @@ function rawExpr(v: AttrValue | undefined): string | null {
   return v?.mode === "expression" ? (v.expr ?? null) : null;
 }
 
+/**
+ * structural puts a literal value in the entries/items shape the key readers
+ * and the structural editors walk. It matters because a collection has TWO
+ * storage shapes: the Variables modal writes entries/items, while hclimport
+ * evaluates an all-literal collection into ONE opaque `literal` object/array
+ * (rawToDynamic is what lifts that for the form). Without the lift every
+ * IMPORTED variable default — the most common source of a for_each — reads as
+ * shapeless, so the badge fell back to ∀ and the member previews went quiet on
+ * exactly the configs the user did not write here.
+ */
+export function structural(v: AttrValue | undefined): AttrValue | undefined {
+  if (!v || v.mode !== "literal" || v.entries || v.items) return v;
+  if (typeof v.literal === "object" && v.literal !== null) return rawToDynamic(v.literal);
+  return v;
+}
+
 /** keysFromStructural reads keys off a value held structurally (entries/items). */
-function keysFromStructural(v: AttrValue | undefined): string[] | null {
+function keysFromStructural(raw: AttrValue | undefined): string[] | null {
+  const v = structural(raw);
   if (!v || v.mode !== "literal") return null;
   if (v.entries) return v.entries.map((e) => e.key).filter((k) => k !== "");
   // A for_each over a set of strings is keyed BY the string — `x["www"]`, not

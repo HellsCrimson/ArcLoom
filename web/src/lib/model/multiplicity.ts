@@ -8,9 +8,14 @@
 // surfaces read identically.
 //
 // The count is read from the CONFIG, so it is only a real number when the
-// expression is one; a for_each (or a computed count) can only be resolved by
-// the engine, hence the pointer to the State panel — the plan lists instances
-// too, but only those that change.
+// expression is one. Two cases produce one: a literal `count`, and a `for_each`
+// whose collection expand.ts can evaluate here (a literal collection, or one
+// hop through a `var.*` default / `local.*` value) — the same resolution the
+// structure tree already does for module-call instances. Everything else is
+// the engine's to work out, hence ×N / ∀ and the pointer to the State panel:
+// the plan lists instances too, but only those that change.
+
+import { expandInstances, type Scope } from './expand';
 
 export const EXPANSION_HINT = '\nOpen State to list the instances this expanded to.';
 
@@ -20,12 +25,35 @@ export type MultiBadge = { label: string; title: string };
  *  local-module call or a registry module call. */
 export type Multiplied = { count?: string; forEach?: string };
 
-export function multiBadge(r: Multiplied): MultiBadge | undefined {
+/** How many instance keys the tooltip names before collapsing the tail. */
+const KEYS_IN_TITLE = 12;
+
+/**
+ * multiBadge renders the ×N / ∀ pill for a block's meta-args. `scope` is the
+ * declarations a `var.*` / `local.*` in a for_each may refer to (the root's for
+ * a root-scope block, the module's inside one); omitting it just means every
+ * for_each stays ∀.
+ */
+export function multiBadge(r: Multiplied, scope?: Scope): MultiBadge | undefined {
 	if (r.count) {
 		const literal = /^\d+$/.test(r.count.trim());
 		const n = literal ? r.count.trim() : 'N';
 		return { label: `×${n}`, title: `count = ${r.count}` + (literal ? '' : EXPANSION_HINT) };
 	}
-	if (r.forEach) return { label: '∀', title: `for_each = ${r.forEach}` + EXPANSION_HINT };
-	return undefined;
+	if (!r.forEach) return undefined;
+	// Uncapped on purpose: MAX_INSTANCES exists to stop a huge collection from
+	// filling the structure tree with rows, but this is a single number.
+	const exp = scope ? expandInstances({ forEach: r.forEach }, scope, Infinity) : null;
+	if (!exp) return { label: '∀', title: `for_each = ${r.forEach}` + EXPANSION_HINT };
+	const shown = exp.keys.slice(0, KEYS_IN_TITLE);
+	const more = exp.keys.length - shown.length;
+	const keys = exp.keys.length
+		? `: ${shown.map((k) => `"${k}"`).join(', ')}${more ? ` +${more} more` : ''}`
+		: '';
+	return {
+		label: `×${exp.keys.length}`,
+		title:
+			`for_each = ${r.forEach}\n→ ${exp.keys.length} instance${exp.keys.length === 1 ? '' : 's'}` +
+			keys
+	};
 }
