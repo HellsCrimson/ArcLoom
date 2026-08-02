@@ -1,14 +1,6 @@
 services:
   arcloom:
-    build:
-      context: .
-      args:
-        # Override to pin exact engine versions.
-        TERRAFORM_VERSION: 1.15.8
-        OPENTOFU_VERSION: 1.12.4
-        # tflint powers the Lint feature (optional; the app degrades if absent).
-        TFLINT_VERSION: 0.64.0
-    image: arcloom:latest
+    image: ghcr.io/hellscrimson/arcloom:latest
     ports:
       - "8080:8080"
     environment:
