@@ -1,243 +1,269 @@
 <div align="center">
 
-# 🧵 ArcLoom
+# ArcLoom
 
-### Design your cloud infrastructure visually — without giving up your code.
+### The self-hosted Infrastructure IDE for OpenTofu & Terraform
 
-ArcLoom is a self-hosted **Infrastructure IDE**. Drag, connect and configure your
-resources on a canvas; ArcLoom writes clean, standard Terraform/OpenTofu for you.
-No lock-in, no magic — the code it generates is yours to keep.
+Design infrastructure on a canvas, review the HCL it writes, and plan, apply and
+operate it — from one place you run yourself.
+
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8.svg?logo=go&logoColor=white)](go.mod)
+[![Engines](https://img.shields.io/badge/engines-OpenTofu%20%7C%20Terraform-844FBA.svg)](#requirements)
+[![Self-hosted](https://img.shields.io/badge/deploy-single%20binary%20%7C%20Docker-2ea043.svg)](#quick-start)
 
 <br />
 
-![ArcLoom visual editor](docs/images/hero-canvas.png)
+![The ArcLoom canvas beside the generated HCL](docs/images/hero-canvas.png)
 
-<sub>*The visual canvas on the left, the live infrastructure code on the right — always in sync.*</sub>
+<sub>Your infrastructure as a graph on the left, the exact code that will run on the right.</sub>
 
 </div>
 
 ---
 
-## What is ArcLoom?
+## Why ArcLoom
 
-If you've ever managed cloud infrastructure, you know the two usual options:
+Infrastructure work usually forces a trade: a cloud console is easy to explore
+but leaves nothing behind, while HCL is reviewable and repeatable but demands
+that you keep hundreds of provider arguments in your head.
 
-- **Write code by hand** (Terraform / OpenTofu) — powerful, but you memorize
-  hundreds of settings, and one typo breaks a deploy.
-- **Click around a cloud console** — friendly, but nothing is saved, reviewable,
-  or repeatable.
+ArcLoom removes the trade. You work on a canvas and in generated forms; ArcLoom
+writes **standard, idiomatic HCL** split across the conventional files
+(`terraform.tf`, `variables.tf`, `main.tf`, `outputs.tf`, …). That code is the
+source of truth — commit it, review it, take it elsewhere, or stop using ArcLoom
+entirely and keep everything you built.
 
-**ArcLoom gives you both.** You build your infrastructure by pointing and
-clicking on a visual map, and behind the scenes ArcLoom continuously writes the
-real, industry-standard code. You can read it, review it, commit it to Git, and
-run it anywhere — with or without ArcLoom.
+|  | |
+|---|---|
+| **No lock-in** | Plain OpenTofu/Terraform on disk and in Git. ArcLoom reads it back too, so the round trip is real. |
+| **No hardcoded providers** | Forms are generated from each provider's own schema, so every provider in the registry works the day it ships. |
+| **No SaaS** | One Go binary with an embedded UI. Your state, secrets and credentials stay on your machine. |
+| **No paid tier** | Apache-2.0, every feature. No license key, nothing gated. |
 
-> Think of it as a **design studio for your cloud**, where the design *is*
-> working code.
+## Features
 
-## Who is it for?
-
-- **Newcomers** who want to learn infrastructure without drowning in syntax.
-- **Teams** who want a shared, visual picture of what they're running.
-- **Experienced engineers** who like the speed of a UI but refuse to give up
-  version control, reviews, and portable code.
-
-## Main features
+### Design
 
 | | |
 |---|---|
-| 🧩 **Works with any provider** | AWS, Google Cloud, Azure, Cloudflare, Kubernetes, and thousands more. ArcLoom learns each provider's options automatically — nothing is hardcoded, so you're never waiting for "support" to be added. |
-| 🎨 **A living map of your cloud** | Every resource is a node you can drag, connect and rearrange — including data sources, local modules (collapsible groups) and registry modules. Dependencies are drawn as lines, so you *see* how things fit together. |
-| 📝 **The code stays yours** | ArcLoom generates plain Terraform/OpenTofu. Open it, take it elsewhere, or hand it to a colleague — no proprietary format, no lock-in. |
-| 👀 **Preview, then deploy** | Run a "plan" and watch exactly what *would* change — as a colored overlay right on the map — then apply or destroy from the same screen, with confirmations where it matters. |
-| 📡 **Drift detection** | ArcLoom can periodically compare your real infrastructure against what's deployed and badge the project the moment something changed behind your back. |
-| 🕘 **Every run remembered** | Plans, applies, destroys, drift checks — each one is recorded with who ran it, the full log, the diff and the outputs. |
-| 🔐 **Secrets stay secret** | API keys and passwords are encrypted and never written into your code, saved files, or history. |
-| 🕓 **Built-in history** | Every project is version-controlled out of the box. Commit, browse history, compare changes, roll back — and push to GitHub/GitLab when you're ready. |
-| ⌨️ **Fast to drive** | A Ctrl+K command palette finds any resource or action instantly; undo/redo, multi-select, marquee, snap-to-grid and inline rename make the canvas feel like a real editor. |
-| 🏠 **Self-hosted & private** | Runs on your own machine or server, with local accounts, per-permission roles, and optional single sign-on. Your infrastructure details never leave your control. |
+| **Visual canvas** | Drag, connect and group resources; dependency edges are drawn from the model. Multi-select, marquee, snap-to-grid, inline rename, per-node notes, five auto-layout presets. |
+| **Schema-driven forms** | Every argument the provider declares, with its documentation, required/optional split and correct widget — including deeply nested blocks and dynamic attributes. |
+| **Four value modes** | Any field can be a literal, a **reference** to another resource, a raw **expression**, or a **secret** — including inside lists, maps and objects. |
+| **`count` / `for_each`** | A first-class Instances control with a collection browser: pick a `var.`/`local.`, build the collection in a structured editor, or write the expression. Instances expand into real rows. |
+| **Modules** | Local module definitions and calls are separate concepts, as in HCL: one definition can back several calls, or none. Registry modules too. |
+| **Variables, locals, outputs** | Edited as typed structures, not text — `object({...})` types drive the editor. |
+| **Companion files** | Cloud-init templates, scripts and policy documents live in the project and are written next to the HCL for `file()` / `templatefile()`. |
 
-## How it works
+### Deploy & operate
 
-A typical flow, start to finish:
+| | |
+|---|---|
+| **Plan / apply / destroy** | Streamed live, with a structured per-resource and per-attribute diff — not just a wall of log. |
+| **Plan overlay** | Pending changes painted onto the canvas: colour-coded nodes, badges, and dashed ghost cards for planned deletes. |
+| **Validate & lint** | `validate` plus **tflint**, both as first-class runs. |
+| **Run history** | Every plan, apply, destroy, drift check and state operation recorded — who, when, the full log, the diff, the outputs. |
+| **State management** | Browse state by module and instance; `mv`, `rm`, `taint`, `untaint`, force-unlock, bulk move, and refresh-only "accept drift". |
+| **Remote backends** | S3, GCS, azurerm, pg, kubernetes, consul, http, oss, cos, remote — configured in the UI, with backend values that can come from secrets. |
+| **Drift detection** | A scheduled plan that reports what an apply *would* change, and separates configuration edits from what changed outside ArcLoom. |
+| **Environments** | Promote one configuration to `staging`, `prod`, … Each gets its own workspace, state and variables. |
+| **Cost estimation** | Flat-price overrides per type or address, plus **Infracost** for real cloud pricing when installed. |
+| **Adopt what exists** | Import HCL files or folders, import a live state file, `terraform import` per instance, or generate `import` / `moved` blocks. |
 
-1. **Create a project** and pick a provider (say, AWS or Cloudflare).
-2. **Add resources** from a searchable menu — a server, a database, a DNS record…
-3. **Fill in the form.** ArcLoom shows only the fields that resource actually
-   has, and marks the read-only ones for you.
-4. **Connect the dots.** Drag from one node to another to say "this depends on that."
-5. **Watch the code write itself** in the live panel beside the canvas.
-6. **Preview the plan** — every pending change is listed *and* drawn on the map.
-7. **Apply it.** ArcLoom runs the deployment, streams the output, and records
-   the run (with its outputs) in the project's history.
-8. **Commit to history** and, when you're ready, push it to your Git host.
+### Collaborate & govern
+
+| | |
+|---|---|
+| **Built-in Git** | Every project is a repository: staged commits, branches, fast-forward merge, diffs, restore, undo commit, push/pull with stored credentials. |
+| **Approval gate** | Optional plan → approve → apply: the approved plan artifact is the one that runs, and it is single-use. |
+| **Policy as code** | Rego policies evaluated with **conftest** against the plan. Advisory, or enforced so a failing plan cannot be applied. |
+| **Accounts & roles** | Local accounts (argon2id) or **OIDC SSO** with group → role mapping. Permissions: resources, deploy, approve, git, admin. |
+| **Per-project access lists** | Restrict a project to named users; effective access is the intersection with their global permissions. |
+| **Audit log** | Every mutating action, with actor and target. |
+| **Notifications** | Apply outcomes and drift to Slack, Discord, Teams, Matrix, ntfy, Fluxer or a plain webhook. |
+| **Secrets** | AES-256-GCM on disk, `ARCLOOM_SECRET_*` environment secrets, or **Vault / OpenBao**. Injected as `TF_VAR_*` at run time — never written to HCL, state or Git. Master key rotatable. |
+
+## A closer look
 
 <div align="center">
 
-![Adding a resource](docs/images/add-resource.png)
-<sub>*Pick any resource — or data source — from the provider's full catalog.*</sub>
+<img src="docs/images/add-resource.png" alt="The resource type picker" width="49%" />
+<img src="docs/images/import.png" alt="Importing existing HCL" width="49%" />
+
+**Start empty, or adopt what you already run.** Every resource *and* data source
+a provider offers is one search away — and existing HCL, whole folders, or a live
+state file come in as a first-class import.
 
 <br />
 
-![Editing a resource](docs/images/resource-form.png)
-<sub>*A guided form built automatically from the provider — no docs-hunting.*</sub>
+![Guided resource form with the pending plan change](docs/images/resource-form.png)
 
-</div>
-
-## Organize your canvas your way
-
-Big projects can get busy. ArcLoom's **Arrange** presets instantly re-lay-out the
-whole map so you can read it at a glance:
-
-- **Layers →** / **Layers ↓** — line resources up by what depends on what.
-- **By type** — group all the servers, all the databases, etc.
-- **Grid** — a tidy, compact overview.
-- **Circle** — everything on a ring.
-
-<div align="center">
-
-![Layout presets](docs/images/layout-presets.png)
-<sub>*One click re-arranges the entire graph.*</sub>
-
-</div>
-
-## See every change before it happens
-
-Run a plan and ArcLoom paints the result straight onto the map: green for new
-resources, amber for updates, orange for replacements — and deleted resources
-appear as dashed "ghost" cards so nothing disappears silently. The same diff is
-listed in the run pane; click any line to jump straight to that resource.
-
-<div align="center">
-
-![Plan overlay on the canvas](docs/images/plan-overlay.png)
-<sub>*The plan, drawn on your infrastructure map — with a summary legend.*</sub>
+**Forms built from the provider's schema.** Documentation inline, the plan's
+verdict for this resource at the top, and a mode switch on every field.
 
 <br />
 
-![Live plan output](docs/images/plan-output.png)
-<sub>*The same changes as a list beside the streaming logs — click a row to open that resource.*</sub>
+![The for_each collection panel in light theme](docs/images/light-theme.png)
 
-</div>
-
-## Know when reality drifts
-
-Infrastructure has a way of changing behind your back — someone deletes a file,
-tweaks a server, removes a DNS record. Turn on **drift detection** and ArcLoom
-periodically compares your real infrastructure against what you deployed, badges
-the project the moment they disagree, and records what changed. The State view
-also lists everything currently deployed, lets you rename or forget entries, and
-can move the project's state to a remote backend (S3, GCS, Postgres, …).
-
-<div align="center">
-
-![State and drift detection](docs/images/state-drift.png)
-<sub>*Deployed resources at a glance — and a heads-up when something changed outside ArcLoom.*</sub>
+**`for_each` you can actually see.** ArcLoom resolves the collection, names the
+keys, previews each member and lists the attributes `each.value` carries.
+*(Light and dark themes throughout.)*
 
 <br />
 
-![Run history](docs/images/runs.png)
-<sub>*Every plan, apply and drift check is recorded — who, when, what changed.*</sub>
+![The plan drawn on the canvas](docs/images/plan-overlay.png)
 
-</div>
-
-## Fast to drive
-
-Press **Ctrl+K** anywhere to search every command and every resource across the
-whole project — including inside modules. The canvas supports multi-select and
-marquee selection, bulk move and delete, snap-to-grid, inline rename, and
-undo/redo for every edit.
-
-<div align="center">
-
-![Command palette](docs/images/command-palette.png)
-<sub>*One shortcut to run anything or find any resource.*</sub>
-
-</div>
-
-## More screenshots
-
-<div align="center">
-
-![Git history and diffs](docs/images/git-history.png)
-<sub>*Every project keeps its own history you can browse and roll back.*</sub>
+**The plan, on your map.** Green creates, amber updates, orange replacements,
+dashed ghosts for deletes — with a summary legend.
 
 <br />
 
-![Secrets management](docs/images/secrets.png)
-<sub>*Encrypted secrets that never end up in your code.*</sub>
+![The run pane with the structured diff and cost](docs/images/plan-output.png)
+
+**The same plan as data.** Per-resource actions, attribute-level diffs, cost, and
+the streaming log beside them. Click any row to jump to that resource.
+
+<br />
+
+![State browser and drift detection](docs/images/state-drift.png)
+
+**State and drift.** What is really deployed, grouped by module and expanded per
+instance — and a badge the moment reality disagrees with your configuration.
+
+<br />
+
+<img src="docs/images/runs.png" alt="Run history with a recorded plan" width="49%" />
+<img src="docs/images/secrets.png" alt="Secrets organised as a tree" width="49%" />
+
+**History and secrets.** Every run kept with its diff and log; secrets grouped
+into a tree, encrypted at rest, revealed only on request and only to users who
+could already change them.
+
+<br />
+
+<img src="docs/images/git-history.png" alt="Git panel with a commit diff" width="49%" />
+<img src="docs/images/rbac-users.png" alt="Per-permission user management" width="49%" />
+
+**Git and access control**, both built in.
+
+<br />
+
+![The Ctrl+K command palette](docs/images/command-palette.png)
+
+**Ctrl+K** finds any command or any resource in the project, modules included.
 
 </div>
 
-## Already have infrastructure?
+## How it fits together
 
-You don't have to start from scratch. ArcLoom can **import your existing setup**:
+Each layer is replaceable, and the UI never touches HCL directly.
 
-- Paste or upload your current Terraform/OpenTofu files — resources, data
-  sources, variables, outputs, even modules — and ArcLoom rebuilds the visual
-  map for you.
-- Import a live state file to bring what you're *already* running onto the canvas.
-- Adopt individual live resources by ID (`terraform import`), straight from the
-  resource's form.
+```mermaid
+flowchart LR
+    UI["SvelteKit SPA<br/>canvas · forms · panels"]
+    API["Go API<br/>REST + SSE · auth · RBAC"]
+    MODEL["Model<br/>pure data"]
+    GEN["HCL generator<br/>the only writer of HCL"]
+    RUN["Runner<br/>OpenTofu / Terraform CLI"]
+    STORE[("Projects · Git<br/>secrets · runs · state")]
 
-<div align="center">
+    UI <--> API
+    API <--> MODEL
+    MODEL --> GEN
+    GEN --> RUN
+    GEN --> STORE
+    API <--> STORE
+    RUN --> STORE
+```
 
-![Import existing infrastructure](docs/images/import.png)
-<sub>*Bring your existing code or live state into ArcLoom.*</sub>
+Optional tools are detected at startup and degrade gracefully when absent:
+`tflint` (lint), `conftest` (policy), `infracost` (cloud pricing), `git`.
 
-</div>
+## Quick start
 
-## Try it
-
-The quickest way to take ArcLoom for a spin (requires [Docker](https://www.docker.com/)):
+### Docker
 
 ```bash
 docker compose up -d
 ```
 
-Then open **http://localhost:8080** in your browser.
+Open **http://localhost:8080** and sign in as `admin` with the password from
+`ARCLOOM_ADMIN_PASSWORD` in `docker-compose.yml` (change it on first login).
+The image bundles OpenTofu, Terraform, tflint and conftest.
 
-### Sign in
+### Binary
 
-ArcLoom requires a login by default. On first run it seeds an admin account from
-`ARCLOOM_ADMIN_PASSWORD` (the bundled `docker-compose.yml` sets a dev value — log
-in as **admin** and change it from the account menu). Useful settings:
+```bash
+make build     # builds the SPA, embeds it, compiles ./arcloom
+./arcloom
+```
+
+### From source
+
+```bash
+make dev-api   # Go API on :8080
+make dev-web   # Vite dev server on :5173, proxying /api
+```
+
+### Requirements
+
+`tofu` or `terraform` on `PATH`. Everything else is optional.
+
+## Configuration
+
+All configuration is environment variables; sensible defaults apply throughout.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ARCLOOM_ADMIN_PASSWORD` | — | Seeds the first admin on first run (ignored once a user exists). Required to start unless auth is disabled. |
-| `ARCLOOM_ADMIN_USERNAME` | `admin` | Username for the seeded admin. |
-| `ARCLOOM_AUTH` | `true` | Set `false` to disable auth entirely on a trusted network. |
-| `ARCLOOM_SESSION_TTL` | `168h` | How long a login session stays valid. |
-| `ARCLOOM_COOKIE_SECURE` | `true` | Set `false` to allow login over plain HTTP (no TLS). |
+| `ARCLOOM_ADDR` | `:8080` | Listen address. |
+| `ARCLOOM_ENGINE` | `tofu` | Default engine (`tofu` or `terraform`); projects may override. |
+| `ARCLOOM_DATA` | platform config dir | Project folders (`arcloom.yaml` + generated HCL + workspace). |
+| `ARCLOOM_SECRET_KEY` | — | Master passphrase for the encrypted secret store. Without it, secrets can only come from the environment. |
+| `ARCLOOM_AUTH` | `true` | Set `false` only on a trusted single-user network. |
+| `ARCLOOM_ADMIN_PASSWORD` | — | Seeds the first admin on first run; ignored once a user exists. |
+| `ARCLOOM_COOKIE_SECURE` | `true` | Set `false` to allow login over plain HTTP. |
+| `ARCLOOM_SESSION_TTL` | `168h` | Session lifetime. |
+| `ARCLOOM_LOG_LEVEL` / `ARCLOOM_LOG_FORMAT` | `info` / `text` | Structured logging (`json` for shipping). |
 
-#### Single sign-on (OIDC)
+<details>
+<summary>Paths, caches and OIDC</summary>
 
-Set these to add a "Sign in with SSO" button alongside local login (local stays
-as a break-glass fallback). SSO users are provisioned on first login and linked
-by their provider subject.
+<br />
 
 | Variable | Purpose |
 |---|---|
-| `ARCLOOM_OIDC_ISSUER` | Identity provider issuer URL, e.g. `https://oidc.example.com`. Enables SSO with `ARCLOOM_OIDC_CLIENT_ID`. |
-| `ARCLOOM_OIDC_CLIENT_ID` / `ARCLOOM_OIDC_CLIENT_SECRET` | Registered app credentials. |
-| `ARCLOOM_OIDC_REDIRECT_URL` | Callback registered with the IdP, e.g. `https://arcloom.example.com/api/auth/sso/oidc/callback`. |
-| `ARCLOOM_OIDC_SCOPES` | Extra space-separated scopes (`openid` is always requested). |
+| `ARCLOOM_SECRETS_DIR`, `ARCLOOM_RUNS_DIR`, `ARCLOOM_AUDIT_DIR`, `ARCLOOM_APPROVALS_DIR`, `ARCLOOM_USERS_DIR`, `ARCLOOM_SESSIONS_DIR`, `ARCLOOM_SETTINGS_FILE` | Where each kind of data lives; all default beside `ARCLOOM_DATA`. |
+| `ARCLOOM_CACHE_DIR`, `TF_PLUGIN_CACHE_DIR` | Normalized provider schemas and shared provider plugins. |
+| `ARCLOOM_VAULT_TOKEN` | Token for an external secret store, so no credential is persisted. |
+| `ARCLOOM_OIDC_ISSUER`, `ARCLOOM_OIDC_CLIENT_ID`, `ARCLOOM_OIDC_CLIENT_SECRET`, `ARCLOOM_OIDC_REDIRECT_URL`, `ARCLOOM_OIDC_SCOPES` | Seed SSO on first run. After that it is editable in **Settings → Single sign-on**, including group → role mapping. |
 
-If discovery fails at startup, ArcLoom logs a warning and continues with local login only.
+SSO sits alongside local login rather than replacing it, so an IdP outage never
+locks you out. If discovery fails at startup ArcLoom logs a warning and
+continues with local login.
+
+</details>
+
+`GET /healthz` and `/livez` are public and dependency-free for probes.
+
+## Security posture
+
+Worth knowing before exposing ArcLoom beyond your LAN:
+
+- Sessions are **server-side opaque tokens** in an httpOnly, SameSite=Lax cookie — revocable, never JWTs in local storage.
+- The resource, deploy, Git and admin route groups are CSRF-guarded, body-capped and permission-gated; the password endpoints are rate-limited *before* the hash runs, per IP and per account.
+- Secrets are encrypted with an argon2id-derived key and injected only into the engine process. The master key can be rotated online or with the server stopped (`arcloom rekey`).
+- Anything that becomes a filesystem path — project ids, file names, session tokens — is validated at the boundary.
+
+## Status
+
+ArcLoom covers the full workflow end to end today: providers, modules and data
+sources; plan, apply and destroy with history; drift, state and remote backends;
+imports; secrets; environments; approvals; policy; cost; Git; and RBAC, SSO and
+auditing — each implemented and verified against a running engine.
+
+Issues and ideas are welcome.
 
 ## License
 
-ArcLoom is free and open source under the [Apache License 2.0](LICENSE) — the
-whole repository, every feature. There is no paid tier, no license key and
-nothing gated: SSO, per-project ACLs, scheduled drift detection, cost
-estimation, the external secret store and unlimited users are all part of the
-product.
-
-## Project status
-
-ArcLoom is **working today** and under active development. It already supports
-multiple providers, projects, modules and data sources, plan/apply/destroy with
-full run history, drift detection, state management with remote backends,
-imports, secrets, role-based access, SSO, and built-in Git — with more on the
-way. Feedback and ideas are very welcome.
+[Apache License 2.0](LICENSE) — the whole repository, every feature. There is no
+enterprise edition, no license key and nothing gated.
