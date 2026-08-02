@@ -8,10 +8,8 @@ import (
 
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/config"
-	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/session"
-	"github.com/HellsCrimson/ArcLoom/internal/settings"
 	"github.com/HellsCrimson/ArcLoom/internal/store"
 	"github.com/HellsCrimson/ArcLoom/internal/user"
 )
@@ -35,9 +33,7 @@ func newACLServer(t *testing.T) *Server {
 	_ = st.Create(&model.Project{ID: "p1", Name: "proj-one", Engine: model.EngineTofu})
 
 	cfg := config.Config{AuthEnabled: true, CookieName: "arcloom_session", SessionTTL: time.Hour, DefaultEngine: "tofu"}
-	srv := New(cfg, nil, st, nil, nil, nil, auth.New(auth.NewLocalProvider(users)), session.NewMemory(), users, testSettings(t), nil, nil, nil)
-	srv.license.Install(&license.License{Tier: license.TierEnterprise})
-	return srv
+	return New(cfg, nil, st, nil, nil, nil, auth.New(auth.NewLocalProvider(users)), session.NewMemory(), users, testSettings(t), nil, nil, nil)
 }
 
 func TestACL_RestrictsAccess(t *testing.T) {
@@ -84,22 +80,7 @@ func TestACL_RestrictsAccess(t *testing.T) {
 	}
 }
 
-func TestACL_IgnoredWithoutLicense(t *testing.T) {
-	srv := newACLServer(t)
-	// Restrict p1 to alice directly.
-	if err := srv.settings.SetProjectACL("p1", []settings.ACLEntry{{UserID: "alice", Perms: []string{"resources"}}}); err != nil {
-		t.Fatal(err)
-	}
-	// License without the rbac feature: ACL enforcement is disabled.
-	srv.license.Install(&license.License{Tier: license.TierEnterprise, Features: []string{"sso"}})
-	h := srv.Handler()
-	bob := login(t, h, "bob", "password1")
-	if rec := do(t, h, http.MethodGet, "/api/projects/p1", bob, ""); rec.Code != http.StatusOK {
-		t.Fatalf("bob read unlicensed: %d, want 200 (ACL must be ignored)", rec.Code)
-	}
-}
-
-func TestACL_SetRequiresAdminAndLicense(t *testing.T) {
+func TestACL_SetRequiresAdmin(t *testing.T) {
 	srv := newACLServer(t)
 	h := srv.Handler()
 	alice := login(t, h, "alice", "password1")
@@ -109,15 +90,16 @@ func TestACL_SetRequiresAdminAndLicense(t *testing.T) {
 		t.Fatalf("alice set acl: %d, want 403", rec.Code)
 	}
 
-	// Admin, but the license lacks rbac → setting a non-empty ACL is refused,
-	// while clearing (empty entries) is always allowed.
-	srv.license.Install(&license.License{Tier: license.TierEnterprise, Features: []string{"sso"}})
 	admin := login(t, h, "admin", "password1")
 	if rec := do(t, h, http.MethodPut, "/api/projects/p1/acl", admin,
-		`{"entries":[{"userId":"bob","perms":["resources"]}]}`); rec.Code != http.StatusForbidden {
-		t.Fatalf("admin set acl unlicensed: %d, want 403", rec.Code)
+		`{"entries":[{"userId":"bob","perms":["resources"]}]}`); rec.Code != http.StatusOK {
+		t.Fatalf("admin set acl: %d, want 200", rec.Code)
 	}
+	// Clearing (empty entries) removes the restriction.
 	if rec := do(t, h, http.MethodPut, "/api/projects/p1/acl", admin, `{"entries":[]}`); rec.Code != http.StatusOK {
-		t.Fatalf("admin clear acl unlicensed: %d, want 200", rec.Code)
+		t.Fatalf("admin clear acl: %d, want 200", rec.Code)
+	}
+	if _, ok := srv.settings.ProjectACL("p1"); ok {
+		t.Error("empty entries should clear the restriction")
 	}
 }

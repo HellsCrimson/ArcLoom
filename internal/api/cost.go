@@ -8,7 +8,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
 	"github.com/HellsCrimson/ArcLoom/internal/settings"
@@ -32,9 +31,7 @@ func (s *Server) handleGetCost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"config": cfg})
 }
 
-// handleSetCost saves a project's cost-estimation config. Enabling it (or
-// storing overrides) is an enterprise feature; disabling / clearing is always
-// allowed so an expired license can still turn it off.
+// handleSetCost saves a project's cost-estimation config.
 func (s *Server) handleSetCost(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if _, err := s.store.Get(id); err != nil {
@@ -48,10 +45,6 @@ func (s *Server) handleSetCost(w http.ResponseWriter, r *http.Request) {
 	var req settings.Cost
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
-		return
-	}
-	if (req.Enabled || len(req.Overrides) > 0) && !s.license.Has(license.FeatureCost) {
-		writeErr(w, http.StatusForbidden, "cost estimation requires an ArcLoom Enterprise license")
 		return
 	}
 	// Normalize: drop blank-target overrides so the UI's empty rows don't persist.
@@ -75,12 +68,12 @@ func (s *Server) handleSetCost(w http.ResponseWriter, r *http.Request) {
 }
 
 // attachCost computes the cost breakdown for a completed plan and attaches it to
-// res.Cost, when the cost feature is licensed and enabled for the project. It is
-// best-effort: an Infracost failure degrades to overrides-only and is reported
-// through the streamed log. Called while <dir>/tfplan still exists (right after
-// run.Plan), so Infracost can read the saved plan.
+// res.Cost when cost estimation is enabled for the project. It is best-effort:
+// an Infracost failure degrades to overrides-only and is reported through the
+// streamed log. Called while <dir>/tfplan still exists (right after run.Plan),
+// so Infracost can read the saved plan.
 func (s *Server) attachCost(ctx context.Context, run runner.Runner, dir string, p *model.Project, res *runner.PlanResult, logW *lineWriter) {
-	if s.settings == nil || !s.license.Has(license.FeatureCost) {
+	if s.settings == nil {
 		return
 	}
 	cfg := s.settings.Cost(p.ID)

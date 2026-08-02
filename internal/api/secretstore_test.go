@@ -9,7 +9,6 @@ import (
 
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/config"
-	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/secrets"
 	"github.com/HellsCrimson/ArcLoom/internal/session"
@@ -103,26 +102,14 @@ func TestSecretStoreDefaultsToLocal(t *testing.T) {
 	if dto.Kind != settings.SecretStoreLocal || dto.Active != "local" || !dto.LocalEnabled {
 		t.Fatalf("unexpected default: %+v", dto)
 	}
-	if dto.Licensed {
-		t.Error("a community install must not report the vault feature as licensed")
-	}
 }
 
-func TestSecretStoreVaultRequiresLicense(t *testing.T) {
-	srv, h, sec := secretStoreServer(t, "master")
+func TestSecretStoreSwitchToVaultAndBack(t *testing.T) {
+	_, h, sec := secretStoreServer(t, "master")
 	kv := fakeKV(t, "tok")
 
+	// Switching to the external store probes it, persists, and hot-swaps.
 	rec := putSecretStore(t, h, map[string]any{"kind": "vault", "address": kv.URL, "token": "tok"})
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body)
-	}
-	if sec.BackendName() != "local" {
-		t.Fatalf("a refused switch must leave the store alone, got %q", sec.BackendName())
-	}
-
-	// Licensed: the same request now succeeds and hot-swaps the live store.
-	srv.license.Install(&license.License{Tier: license.TierEnterprise, Features: []string{license.FeatureVault}})
-	rec = putSecretStore(t, h, map[string]any{"kind": "vault", "address": kv.URL, "token": "tok"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
 	}
@@ -134,9 +121,7 @@ func TestSecretStoreVaultRequiresLicense(t *testing.T) {
 		t.Fatalf("set after switch: %v", err)
 	}
 
-	// Switching back to local is never gated — an expired license must be
-	// walkable-back.
-	srv.license.Install(&license.License{Tier: license.TierCommunity})
+	// Switching back to local returns to the encrypted files on this host.
 	rec = putSecretStore(t, h, map[string]any{"kind": "local"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("switch back status = %d: %s", rec.Code, rec.Body)
@@ -147,8 +132,7 @@ func TestSecretStoreVaultRequiresLicense(t *testing.T) {
 }
 
 func TestSecretStoreRejectsUnreachableVault(t *testing.T) {
-	srv, h, sec := secretStoreServer(t, "master")
-	srv.license.Install(&license.License{Tier: license.TierEnterprise, Features: []string{license.FeatureVault}})
+	_, h, sec := secretStoreServer(t, "master")
 
 	// Wrong token → the probe fails and NOTHING is persisted, so the instance
 	// keeps reading the secrets it can actually reach.
@@ -174,7 +158,6 @@ func TestSecretStoreRejectsUnreachableVault(t *testing.T) {
 
 func TestSecretStoreMigratesOnSwitch(t *testing.T) {
 	srv, h, sec := secretStoreServer(t, "master")
-	srv.license.Install(&license.License{Tier: license.TierEnterprise, Features: []string{license.FeatureVault}})
 
 	p := &model.Project{ID: "proj-1", Name: "demo", Engine: model.EngineTofu}
 	if err := srv.store.Create(p); err != nil {
@@ -211,7 +194,6 @@ func TestSecretStoreMigratesOnSwitch(t *testing.T) {
 
 func TestSecretStoreTestEndpoint(t *testing.T) {
 	srv, h, _ := secretStoreServer(t, "master")
-	srv.license.Install(&license.License{Tier: license.TierEnterprise, Features: []string{license.FeatureVault}})
 	kv := fakeKV(t, "tok")
 
 	post := func(body map[string]any) *httptest.ResponseRecorder {
@@ -238,8 +220,7 @@ func TestSecretStoreTestEndpoint(t *testing.T) {
 }
 
 func TestSecretStoreTokenNeverReturned(t *testing.T) {
-	srv, h, _ := secretStoreServer(t, "master")
-	srv.license.Install(&license.License{Tier: license.TierEnterprise, Features: []string{license.FeatureVault}})
+	_, h, _ := secretStoreServer(t, "master")
 	kv := fakeKV(t, "super-secret-token")
 
 	if rec := putSecretStore(t, h, map[string]any{
@@ -273,8 +254,7 @@ func TestSecretStoreTokenFromEnvNeedsNoMasterKey(t *testing.T) {
 	kv := fakeKV(t, "env-token")
 	t.Setenv(vaultTokenEnv, "env-token")
 
-	srv, h, sec := secretStoreServer(t, "") // no master key anywhere
-	srv.license.Install(&license.License{Tier: license.TierEnterprise, Features: []string{license.FeatureVault}})
+	_, h, sec := secretStoreServer(t, "") // no master key anywhere
 
 	rec := putSecretStore(t, h, map[string]any{"kind": "vault", "address": kv.URL})
 	if rec.Code != http.StatusOK {
@@ -295,8 +275,7 @@ func TestSecretStoreTokenFromEnvNeedsNoMasterKey(t *testing.T) {
 
 func TestSecretStoreTokenNeedsMasterKeyToPersist(t *testing.T) {
 	kv := fakeKV(t, "tok")
-	srv, h, _ := secretStoreServer(t, "") // no master key
-	srv.license.Install(&license.License{Tier: license.TierEnterprise, Features: []string{license.FeatureVault}})
+	_, h, _ := secretStoreServer(t, "") // no master key
 
 	rec := putSecretStore(t, h, map[string]any{"kind": "vault", "address": kv.URL, "token": "tok"})
 	if rec.Code != http.StatusBadRequest {

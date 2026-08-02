@@ -4,7 +4,6 @@ package api
 
 import (
 	"io/fs"
-	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
@@ -20,7 +19,6 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/cache"
 	"github.com/HellsCrimson/ArcLoom/internal/config"
-	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 	"github.com/HellsCrimson/ArcLoom/internal/registry"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
@@ -44,7 +42,6 @@ type Server struct {
 	sessions  session.Store
 	users     user.Store
 	settings  *settings.Store
-	license   *license.Manager
 	runs      runs.Store      // may be nil (history disabled, e.g. in tests)
 	audit     audit.Store     // may be nil (audit disabled, e.g. in tests)
 	approvals approvals.Store // may be nil (approval gate disabled, e.g. in tests)
@@ -81,14 +78,6 @@ func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Sto
 		authLimiter: newRateLimiter(loginBurst, loginRefill),
 		driftStates: map[string]driftStatus{}, driftKick: make(chan struct{}, 1)}
 	s.auth.Store(authn)
-	// License gate: verify the persisted token (if any) against the embedded
-	// vendor key. A bad/expired token just leaves the install at community tier.
-	s.license = license.NewManager(license.VendorKey())
-	if tok := set.License(); tok != "" {
-		if err := s.license.Set(tok); err != nil {
-			slog.Warn("stored license rejected; running as community", "err", err)
-		}
-	}
 	return s
 }
 
@@ -161,7 +150,6 @@ func (s *Server) Handler() http.Handler {
 
 			// Read-only / self-service (any authenticated user, project-agnostic).
 			r.Post("/auth/password", s.handlePasswordChange)
-			r.Get("/license", s.handleGetLicense)
 			r.Get("/engines", s.handleEngines)
 			r.Get("/projects", s.handleListProjects) // filtered by per-project ACL
 
@@ -322,11 +310,9 @@ func (s *Server) Handler() http.Handler {
 				// encrypted secret files and the settings document together.
 				r.Get("/admin/settings/secret-key", s.handleGetSecretKey)
 				r.Post("/admin/settings/secret-key/rotate", s.handleRotateSecretKey)
-				r.Put("/admin/settings/license", s.handleSetLicense)
 				r.Get("/admin/audit", s.handleListAudit)
 				r.Get("/admin/instance", s.handleInstanceInfo)
-				// ACL editing is admin-only and enforced in the handler (also
-				// gated behind the rbac license feature there).
+				// ACL editing is admin-only and enforced in the handler.
 				r.Put("/projects/{id}/acl", s.handleSetACL)
 			})
 		})

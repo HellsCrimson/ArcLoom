@@ -226,6 +226,14 @@ by their provider subject.
 
 If discovery fails at startup, ArcLoom logs a warning and continues with local login only.
 
+## License
+
+ArcLoom is free and open source under the [Apache License 2.0](LICENSE) — the
+whole repository, every feature. There is no paid tier, no license key and
+nothing gated: SSO, per-project ACLs, scheduled drift detection, cost
+estimation, the external secret store and unlimited users are all part of the
+product.
+
 ## Project status
 
 ArcLoom is **working today** and under active development. It already supports

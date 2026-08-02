@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
-	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
 	"github.com/HellsCrimson/ArcLoom/internal/runs"
 	"github.com/HellsCrimson/ArcLoom/internal/settings"
@@ -114,12 +113,6 @@ func (s *Server) StartDriftScheduler(ctx context.Context) {
 
 func (s *Server) runDueDriftChecks(ctx context.Context) {
 	if s.settings == nil {
-		return
-	}
-	// Scheduled drift detection is enterprise-only: if the license no longer
-	// grants it (never had one, or it expired), skip all scheduled checks even
-	// though the per-project schedules remain stored.
-	if !s.license.Has(license.FeatureDrift) {
 		return
 	}
 	for id, cfg := range s.settings.DriftAll() {
@@ -276,12 +269,6 @@ func (s *Server) handleSetDrift(w http.ResponseWriter, r *http.Request) {
 	var req settings.Drift
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
-		return
-	}
-	// Scheduled drift detection is an enterprise feature; disabling stays free so
-	// an expired license can always turn it off.
-	if req.Enabled && !s.license.Has(license.FeatureDrift) {
-		writeErr(w, http.StatusForbidden, "scheduled drift detection requires an ArcLoom Enterprise license")
 		return
 	}
 	if req.IntervalMinutes == 0 {

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/secrets"
 	"github.com/HellsCrimson/ArcLoom/internal/settings"
 )
@@ -36,13 +35,6 @@ func (s *Server) ReloadSecretStore() error {
 	cfg := s.settings.SecretStore()
 	if cfg.Kind != settings.SecretStoreVault {
 		s.secrets.SetRemote(nil)
-		return nil
-	}
-	// Enterprise gate, enforced here as well as in the handler: an expired license
-	// must not keep an external store alive across a restart.
-	if !s.license.Has(license.FeatureVault) {
-		s.secrets.SetRemote(nil)
-		slog.Warn("external secret store configured but not licensed; using local secrets")
 		return nil
 	}
 	b, err := vaultFromSettings(cfg)
@@ -92,8 +84,6 @@ type secretStoreDTO struct {
 	// LocalEnabled reports whether ARCLOOM_SECRET_KEY is set, i.e. whether "local"
 	// is a usable choice (and whether a token can be encrypted at rest).
 	LocalEnabled bool `json:"localEnabled"`
-	// Licensed reports whether an external store may be enabled at all.
-	Licensed bool `json:"licensed"`
 }
 
 func (s *Server) secretStoreResponse() secretStoreDTO {
@@ -113,7 +103,6 @@ func (s *Server) secretStoreResponse() secretStoreDTO {
 		TokenFromEnv:       os.Getenv(vaultTokenEnv) != "",
 		Active:             s.secrets.BackendName(),
 		LocalEnabled:       s.secrets.LocalEnabled(),
-		Licensed:           s.license.Has(license.FeatureVault),
 	}
 }
 
@@ -136,9 +125,6 @@ type secretStoreRequest struct {
 
 // handleSetSecretStore validates the backend (by probing it), optionally migrates
 // the existing secrets into it, then persists and hot-swaps. Admin only.
-//
-// Selecting an external store is enterprise-gated; selecting local never is, so an
-// expired license can always be walked back.
 func (s *Server) handleSetSecretStore(w http.ResponseWriter, r *http.Request) {
 	if !s.csrfSafe(r) {
 		writeErr(w, http.StatusForbidden, "cross-origin request rejected")
@@ -171,10 +157,6 @@ func (s *Server) handleSetSecretStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.license.Has(license.FeatureVault) {
-		writeErr(w, http.StatusForbidden, "an external secret store requires an ArcLoom Enterprise license")
-		return
-	}
 	cfg := settings.SecretStore{
 		Kind: settings.SecretStoreVault, Address: req.Address, Mount: req.Mount,
 		Prefix: req.Prefix, Namespace: req.Namespace, Token: req.Token,

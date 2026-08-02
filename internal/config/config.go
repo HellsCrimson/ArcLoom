@@ -59,10 +59,6 @@ type Config struct {
 	SessionsDir string
 	// SettingsFile is the app-level settings document (runtime SSO config).
 	SettingsFile string
-	// License seeds the ArcLoom Enterprise license on first run (ARCLOOM_LICENSE:
-	// a token, or a path to a file containing one). After that the persisted
-	// settings license is the source of truth.
-	License string
 	// SessionTTL is how long a login session stays valid (ARCLOOM_SESSION_TTL).
 	SessionTTL time.Duration
 	// CookieName is the session cookie name (fixed).
@@ -122,7 +118,6 @@ func Load() Config {
 		UsersDir:      env("ARCLOOM_USERS_DIR", filepath.Join(filepath.Dir(dataDir), "users")),
 		SessionsDir:   env("ARCLOOM_SESSIONS_DIR", filepath.Join(filepath.Dir(dataDir), "sessions")),
 		SettingsFile:  env("ARCLOOM_SETTINGS_FILE", filepath.Join(filepath.Dir(dataDir), "settings.yaml")),
-		License:       os.Getenv("ARCLOOM_LICENSE"),
 		SessionTTL:    durEnv("ARCLOOM_SESSION_TTL", 7*24*time.Hour),
 		CookieName:    "arcloom_session",
 		CookieSecure:  boolEnv("ARCLOOM_COOKIE_SECURE", true),

@@ -6,6 +6,8 @@ services:
         # Override to pin exact engine versions.
         TERRAFORM_VERSION: 1.15.8
         OPENTOFU_VERSION: 1.12.4
+        # tflint powers the Lint feature (optional; the app degrades if absent).
+        TFLINT_VERSION: 0.64.0
     image: arcloom:latest
     ports:
       - "8080:8080"
@@ -16,7 +18,7 @@ services:
       # first run only (ignored once a user exists). Change it and log in as
       # "admin".
       # ARCLOOM_AUTH: false to disable auth entirely.
-      ARCLOOM_ADMIN_PASSWORD: change_me_admin_dev
+      ARCLOOM_ADMIN_PASSWORD: admin
       # Allow login over plain HTTP for local dev (no TLS in front).
       ARCLOOM_COOKIE_SECURE: "false"
       # ARCLOOM_OIDC_ISSUER: https://oidc.example.com
@@ -25,6 +27,13 @@ services:
       # ARCLOOM_OIDC_REDIRECT_URL: http://localhost:8080/api/auth/sso/oidc/callback
     volumes:
       - arcloom-cache:/var/lib/arcloom
+    healthcheck:
+      # Public, dependency-free liveness probe (curl ships in the runtime image).
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 
 volumes:
   arcloom-cache:

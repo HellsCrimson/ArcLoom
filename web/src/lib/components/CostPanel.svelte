@@ -12,7 +12,6 @@
 
 	let enabled = $state(false);
 	let rows = $state<Row[]>([]);
-	let costAvailable = $state(true);
 	let busy = $state(false);
 	let err = $state('');
 	let info = $state('');
@@ -25,8 +24,7 @@
 		err = '';
 		info = '';
 		try {
-			const [res, lic] = await Promise.all([api.getCost(projectId), api.getLicense()]);
-			costAvailable = lic.features.includes('cost');
+			const res = await api.getCost(projectId);
 			enabled = res.config.enabled;
 			rows = (res.config.overrides ?? []).map((o) => ({
 				target: o.target,
@@ -45,11 +43,6 @@
 	function removeRow(i: number) {
 		rows = rows.filter((_, idx) => idx !== i);
 	}
-
-	// A non-empty override or enabling requires the enterprise feature; disabling
-	// with no overrides is always allowed (so an expired license can turn it off).
-	const dirtyNeedsLicense = $derived(enabled || rows.some((r) => r.target.trim() !== ''));
-	const saveBlocked = $derived(busy || (!costAvailable && dirtyNeedsLicense));
 
 	async function save() {
 		busy = true;
@@ -98,12 +91,6 @@
 		on the server, with an API key) prices supported cloud resources automatically.
 	</p>
 
-	{#if !costAvailable}
-		<div class="mb-3 rounded-md border border-[var(--al-warn,#d29922)] bg-[var(--al-warn,#d29922)]/10 px-3 py-1.5 text-xs text-[var(--al-warn,#d29922)]">
-			Cost estimation requires ArcLoom Enterprise. You can still disable it and clear overrides below.
-		</div>
-	{/if}
-
 	<label class="mb-3 flex items-center gap-2 text-sm text-[var(--al-text)]">
 		<input type="checkbox" checked={enabled} onchange={() => (enabled = !enabled)} class="accent-[var(--al-accent)]" />
 		<DollarSign size={14} /> Estimate cost on every plan
@@ -131,7 +118,7 @@
 	<button class="{btnGhost} mt-2" onclick={addRow}><Plus size={13} /> Add override</button>
 
 	<div class="mt-4 flex justify-end">
-		<button class={btnPrimary} onclick={save} disabled={saveBlocked}>
+		<button class={btnPrimary} onclick={save} disabled={busy}>
 			{#if busy}<Loader2 size={14} class="animate-spin" />{/if} Save
 		</button>
 	</div>

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
-	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/settings"
 	"github.com/HellsCrimson/ArcLoom/internal/user"
 )
@@ -24,9 +23,7 @@ func (s *Server) ReloadAuth(ctx context.Context) error {
 	providers := []auth.Provider{auth.NewLocalProvider(s.users)}
 	sso := s.settings.SSO()
 	var oidcErr error
-	// SSO is an enterprise feature: only stand up the OIDC provider when the
-	// license grants it, so an unlicensed install never advertises or accepts it.
-	if sso.Enabled && sso.Issuer != "" && sso.ClientID != "" && s.license.Has(license.FeatureSSO) {
+	if sso.Enabled && sso.Issuer != "" && sso.ClientID != "" {
 		p, err := auth.NewOIDCProvider(ctx, sso.Issuer, sso.ClientID, sso.ClientSecret, sso.RedirectURL, ssoScopes(sso), sso.GroupsClaim)
 		if err != nil {
 			oidcErr = err
@@ -133,10 +130,6 @@ func (s *Server) handleSetSSO(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Enabled {
-		if !s.license.Has(license.FeatureSSO) {
-			writeErr(w, http.StatusForbidden, "SSO (OIDC) requires an ArcLoom Enterprise license")
-			return
-		}
 		if req.Issuer == "" || req.ClientID == "" {
 			writeErr(w, http.StatusBadRequest, "issuer and client ID are required to enable SSO")
 			return

@@ -20,7 +20,6 @@
 	let restricted = $state(false);
 	let members = $state<Set<string>>(new Set());
 	let perms = $state<Record<string, Set<string>>>({});
-	let rbacAvailable = $state(true);
 	let busy = $state(false);
 	let err = $state('');
 	let info = $state('');
@@ -33,14 +32,9 @@
 		err = '';
 		info = '';
 		try {
-			const [acl, list, lic] = await Promise.all([
-				api.getACL(projectId),
-				api.admin.listUsers(),
-				api.getLicense()
-			]);
+			const [acl, list] = await Promise.all([api.getACL(projectId), api.admin.listUsers()]);
 			// Admins have implicit full access and are never listed as members.
 			users = list.filter((u) => !u.admin);
-			rbacAvailable = lic.features.includes('rbac');
 			restricted = acl.restricted;
 			const m = new Set<string>();
 			const p: Record<string, Set<string>> = {};
@@ -111,13 +105,6 @@
 		permissions and what you grant here.
 	</p>
 
-	{#if !rbacAvailable}
-		<div class="mb-3 rounded-md border border-[var(--al-warn,#d29922)] bg-[var(--al-warn,#d29922)]/10 px-3 py-1.5 text-xs text-[var(--al-warn,#d29922)]">
-			Per-project access lists require ArcLoom Enterprise (rbac). You can still remove an existing
-			restriction below.
-		</div>
-	{/if}
-
 	<label class="mb-3 flex items-center gap-2 text-sm text-[var(--al-text)]">
 		<input type="checkbox" checked={restricted} onchange={() => (restricted = !restricted)} class="accent-[var(--al-accent)]" />
 		<ShieldCheck size={14} /> Restrict this project to specific users
@@ -163,7 +150,7 @@
 	{/if}
 
 	<div class="mt-4 flex justify-end">
-		<button class={btnPrimary} onclick={save} disabled={busy || (restricted && !rbacAvailable)}>
+		<button class={btnPrimary} onclick={save} disabled={busy}>
 			{#if busy}<Loader2 size={14} class="animate-spin" />{/if} Save
 		</button>
 	</div>

@@ -163,21 +163,6 @@ func main() {
 		}
 	}
 
-	// Seed the Enterprise license from ARCLOOM_LICENSE on first run (a token, or
-	// a path to a file holding one). After that the persisted settings license is
-	// authoritative; api.New loads and verifies it against the embedded key.
-	if cfg.License != "" && set.License() == "" {
-		token := cfg.License
-		if data, err := os.ReadFile(cfg.License); err == nil {
-			token = strings.TrimSpace(string(data))
-		}
-		if err := set.SetLicense(token); err != nil {
-			slog.Warn("could not seed license from ARCLOOM_LICENSE", "err", err)
-		} else {
-			slog.Info("seeded license from ARCLOOM_LICENSE")
-		}
-	}
-
 	// Initial Authenticator is local-only; ReloadAuth then adds OIDC from the
 	// persisted settings (bounded discovery; failure is non-fatal).
 	srv := api.New(cfg, runners, st, sc, sec, webui.FS(), auth.New(auth.NewLocalProvider(users)), sessions, users, set, runHist, auditLog, approvalStore)

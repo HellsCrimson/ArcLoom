@@ -290,9 +290,6 @@ type document struct {
 	// (default) or an external store. Instance-wide, not per project — it is an
 	// infrastructure choice, like the engine.
 	SecretStore SecretStore `yaml:"secret_store,omitempty"`
-	// License is the ArcLoom Enterprise license token (vendor-signed, verified
-	// offline). Stored in plaintext — it is signed, not secret.
-	License string `yaml:"license,omitempty"`
 	// KDF is the key-derivation record for the encrypted fields (SSO client
 	// secret + git credentials). Persisting the salt makes the argon2id key
 	// reproducible across restarts. Absent = pre-KDF document (sha256 key).
@@ -450,21 +447,6 @@ func (s *Store) SetSSO(in SSO) error {
 	in.ClientSecret = ""
 	in.ClientSecretEnc = enc
 	s.doc.SSO = in
-	return s.persist()
-}
-
-// License returns the stored license token ("" when none).
-func (s *Store) License() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.doc.License
-}
-
-// SetLicense persists the license token (empty clears it).
-func (s *Store) SetLicense(token string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.doc.License = token
 	return s.persist()
 }
 

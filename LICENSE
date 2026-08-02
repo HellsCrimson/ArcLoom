@@ -188,12 +188,3 @@
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
-
---------------------------------------------------------------------------
-
-   PORTIONS NOT COVERED BY THIS LICENSE
-
-   Files in the "ee/" directory, and the enterprise-only features they
-   govern, are NOT licensed under Apache-2.0. They are made available under
-   the ArcLoom Enterprise Edition License in ee/LICENSE. See LICENSING.md
-   for the full explanation of the open-core split.

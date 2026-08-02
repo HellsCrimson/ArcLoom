@@ -141,7 +141,7 @@ func TestPersist_IsAtomic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.yaml")
 	s, _ := NewStore(path, "master")
-	if err := s.SetLicense("tok"); err != nil {
+	if err := s.SetSSO(SSO{Issuer: "https://idp.example", ClientID: "arcloom"}); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ := os.ReadDir(dir)

@@ -7,24 +7,19 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/HellsCrimson/ArcLoom/internal/license"
 	"github.com/HellsCrimson/ArcLoom/internal/settings"
 	"github.com/HellsCrimson/ArcLoom/internal/user"
 )
 
 // projectAllows reports whether a user may perform a permission-gated action on
 // a project, assuming the global permission check already passed. Access-list
-// enforcement is a *restriction* on top of global RBAC and only applies when the
-// enterprise `rbac` feature is licensed:
+// enforcement is a *restriction* on top of global RBAC:
 //   - admins and the auth-disabled placeholder always pass;
-//   - unlicensed, or a project with no ACL, defers to global RBAC (passes);
+//   - a project with no ACL defers to global RBAC (passes);
 //   - a project with an ACL restricts to listed users, whose per-project perms
 //     must include the requested capability.
 func (s *Server) projectAllows(u *user.User, projectID, perm string) bool {
 	if u == nil || u.Admin {
-		return true
-	}
-	if s.license == nil || !s.license.Has(license.FeatureRBAC) {
 		return true
 	}
 	acl, ok := s.settings.ProjectACL(projectID)
@@ -44,9 +39,6 @@ func (s *Server) projectAllows(u *user.User, projectID, perm string) bool {
 // only by admins and listed users.
 func (s *Server) projectVisible(u *user.User, projectID string) bool {
 	if u == nil || u.Admin {
-		return true
-	}
-	if s.license == nil || !s.license.Has(license.FeatureRBAC) {
 		return true
 	}
 	acl, ok := s.settings.ProjectACL(projectID)
@@ -144,8 +136,8 @@ func (s *Server) handleGetACL(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleSetACL replaces a project's access list. Admin-only and gated behind the
-// enterprise `rbac` feature. An empty entry list clears the restriction.
+// handleSetACL replaces a project's access list. Admin-only. An empty entry list
+// clears the restriction.
 func (s *Server) handleSetACL(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	u, ok := userFromContext(r)
@@ -162,10 +154,6 @@ func (s *Server) handleSetACL(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
-		return
-	}
-	if len(req.Entries) > 0 && (s.license == nil || !s.license.Has(license.FeatureRBAC)) {
-		writeErr(w, http.StatusForbidden, "per-project access lists require ArcLoom Enterprise (rbac)")
 		return
 	}
 	valid := user.AllPermissions()

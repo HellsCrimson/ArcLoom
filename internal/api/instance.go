@@ -85,9 +85,6 @@ type instanceInfo struct {
 	LogLevel      string `json:"logLevel"`
 	LogFormat     string `json:"logFormat"`
 
-	LicenseTier     string   `json:"licenseTier"`
-	LicenseFeatures []string `json:"licenseFeatures,omitempty"`
-
 	Projects int `json:"projects"`
 	Users    int `json:"users"`
 }
@@ -132,13 +129,9 @@ func (s *Server) handleInstanceInfo(w http.ResponseWriter, r *http.Request) {
 		SecretBackend: secretBackendName(s.secrets),
 		LogLevel:      s.cfg.LogLevel,
 		LogFormat:     s.cfg.LogFormat,
-		LicenseTier:   s.license.Tier(),
 	}
 	if s.settings != nil {
 		info.SSOEnabled = s.settings.SSO().Enabled
-	}
-	if l := s.license.Current(); l != nil {
-		info.LicenseFeatures = l.Features
 	}
 	if projects, err := s.store.List(); err == nil {
 		info.Projects = len(projects)

@@ -517,13 +517,6 @@ export const api = {
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ currentKey, newKey })
 			}).then((r) => json<RotateKeyResult>(r)),
-		setLicense: (token: string) =>
-			fetch('/api/admin/settings/license', {
-				method: 'PUT',
-				credentials: 'same-origin',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ token })
-			}).then((r) => json<LicenseStatus>(r)),
 		listAudit: (params?: { project?: string; user?: string; limit?: number }) => {
 			const q = new URLSearchParams();
 			if (params?.project) q.set('project', params.project);
@@ -545,8 +538,6 @@ export const api = {
 
 	getACL: (projectId: string) =>
 		fetch(`/api/projects/${projectId}/acl`, { credentials: 'same-origin' }).then((r) => json<ProjectACL>(r)),
-
-	getLicense: () => fetch('/api/license', { credentials: 'same-origin' }).then((r) => json<LicenseStatus>(r)),
 
 	git: {
 		status: (id: string) => fetch(`/api/projects/${id}/git/status`).then((r) => json<GitStatus>(r)),
@@ -702,8 +693,6 @@ export interface SecretStoreSettings {
 	active: string;
 	/** Whether ARCLOOM_SECRET_KEY is set, i.e. whether "local" is usable. */
 	localEnabled: boolean;
-	/** Whether an external store may be enabled (enterprise feature). */
-	licensed: boolean;
 	/** Secrets copied by the last save, when migration was requested. */
 	migrated?: number;
 }
@@ -756,17 +745,6 @@ export interface RotateKeyResult {
 	complete: boolean;
 	warnings?: string[];
 	status: SecretKeyStatus;
-}
-
-export interface LicenseStatus {
-	tier: 'community' | 'enterprise';
-	licensee?: string;
-	features: string[];
-	seatLimit: number; // 0 = unlimited
-	seatsUsed: number;
-	expiresAt?: string;
-	expired: boolean;
-	keyConfigured: boolean;
 }
 
 export interface ImportResult {
@@ -934,8 +912,6 @@ export interface InstanceInfo {
 	secretStore: boolean;
 	logLevel: string;
 	logFormat: string;
-	licenseTier: string;
-	licenseFeatures?: string[];
 	projects: number;
 	users: number;
 }

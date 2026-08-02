@@ -7,14 +7,13 @@
 		type SSOSettings,
 		type SecretStoreSettings,
 		type SecretStoreUpdate,
-		type LicenseStatus,
 		type InstanceInfo,
 		type SecretKeyStatus,
 		type RotateKeyResult
 	} from '$lib/api/client';
 	import type { AuditEntry } from '$lib/types';
 	import { auth } from '$lib/stores/auth.svelte';
-	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck, Award, ScrollText, Server, Check, X, Users, Plus, TriangleAlert, RefreshCw } from 'lucide-svelte';
+	import { Loader2, Trash2, KeyRound, UserPlus, ShieldCheck, ScrollText, Server, Check, X, Users, Plus, TriangleAlert, RefreshCw } from 'lucide-svelte';
 
 	// --- SSO group mapping helpers ---
 	// These take the null check off the markup: `sso` is only non-null inside the
@@ -37,7 +36,7 @@
 
 	let { open = $bindable(false) }: { open: boolean } = $props();
 
-	type Tab = 'users' | 'sso' | 'secrets' | 'license' | 'audit' | 'instance' | 'danger';
+	type Tab = 'users' | 'sso' | 'secrets' | 'audit' | 'instance' | 'danger';
 	let tab = $state<Tab>('users');
 	let error = $state('');
 	let notice = $state('');
@@ -252,44 +251,6 @@
 		}
 	}
 
-	// --- License ---
-	const FEATURE_LABELS: Record<string, string> = {
-		sso: 'Single sign-on (OIDC)',
-		rbac: 'Per-project ACLs + audit',
-		drift: 'Scheduled drift detection',
-		multi_user: 'Unlimited users',
-		cost: 'Cost estimation (Infracost)',
-		vault: 'External secret store (Vault)'
-	};
-	let license = $state<LicenseStatus | null>(null);
-	let licenseToken = $state('');
-	let savingLicense = $state(false);
-
-	async function loadLicense() {
-		error = '';
-		try {
-			license = await api.getLicense();
-		} catch (e) {
-			error = (e as Error).message;
-		}
-	}
-
-	async function saveLicense(clear = false) {
-		error = '';
-		notice = '';
-		savingLicense = true;
-		try {
-			license = await api.admin.setLicense(clear ? '' : licenseToken.trim());
-			licenseToken = '';
-			notice = clear ? 'License removed — reverted to community.' : `License installed: ${license.tier}.`;
-			await auth.refresh();
-		} catch (e) {
-			error = (e as Error).message;
-		} finally {
-			savingLicense = false;
-		}
-	}
-
 	// --- Audit log ---
 	let auditEntries = $state<AuditEntry[]>([]);
 	let loadingAudit = $state(false);
@@ -396,7 +357,6 @@
 		if (tab === 'users' && users.length === 0) loadUsers();
 		if (tab === 'sso' && sso === null) loadSSO();
 		if (tab === 'secrets' && secretStore === null) loadSecretStore();
-		if (tab === 'license' && license === null) loadLicense();
 		if (tab === 'audit' && auditEntries.length === 0) loadAudit();
 		if (tab === 'instance' && instance === null) loadInstance();
 		if (tab === 'danger' && secretKey === null) loadSecretKey();
@@ -413,7 +373,6 @@
 		<button class={tabBtn(tab === 'users')} onclick={() => (tab = 'users')}>Users</button>
 		<button class={tabBtn(tab === 'sso')} onclick={() => (tab = 'sso')}>Single sign-on</button>
 		<button class={tabBtn(tab === 'secrets')} onclick={() => (tab = 'secrets')}>Secret store</button>
-		<button class={tabBtn(tab === 'license')} onclick={() => (tab = 'license')}>License</button>
 		<button class={tabBtn(tab === 'audit')} onclick={() => (tab = 'audit')}>Audit log</button>
 		<button class={tabBtn(tab === 'instance')} onclick={() => (tab = 'instance')}>Instance</button>
 		<button
@@ -676,12 +635,6 @@
 						{/if}
 					</p>
 				{:else}
-					{#if !secretStore.licensed}
-						<p class="rounded-md border border-[var(--al-border)] bg-[var(--al-panel-2)] px-3 py-2 text-xs text-[var(--al-muted)]">
-							An external secret store is an <span class="text-[var(--al-text)]">ArcLoom Enterprise</span>
-							feature. Switching back to local storage is always allowed.
-						</p>
-					{/if}
 					<div class="space-y-1">
 						<span class="block text-xs font-medium text-[var(--al-muted)]">Address</span>
 						<input class={field} bind:value={secretStore.address} placeholder="https://vault.lan:8200" />
@@ -757,73 +710,13 @@
 					{/if}
 					<button
 						class="inline-flex items-center gap-1.5 rounded-md bg-[var(--al-accent)] px-3 py-1.5 text-sm font-medium text-white hover:brightness-110 disabled:opacity-40"
-						disabled={secretBusy !== '' || (secretStore.kind === 'vault' && !secretStore.licensed)}
+						disabled={secretBusy !== ''}
 						onclick={saveSecretStore}
 					>
 						{#if secretBusy === 'save'}<Loader2 size={14} class="animate-spin" />{/if} Save
 					</button>
 				</div>
 			</div>
-		{/if}
-	{:else if tab === 'license'}
-		{#if license === null}
-			<div class="flex items-center gap-2 py-6 text-sm text-[var(--al-muted)]"><Loader2 size={14} class="animate-spin" /> Loading…</div>
-		{:else}
-			<!-- Status -->
-			<div class="mb-4 rounded-lg border border-[var(--al-border)] bg-[var(--al-panel-2)] p-3">
-				<div class="mb-2 flex items-center gap-2">
-					<Award size={15} class={license.tier === 'enterprise' && !license.expired ? 'text-[var(--al-accent)]' : 'text-[var(--al-muted)]'} />
-					<span class="text-sm font-semibold text-[var(--al-text)]">
-						{license.tier === 'enterprise' ? 'ArcLoom Enterprise' : 'ArcLoom Community'}
-					</span>
-					{#if license.expired}
-						<span class="rounded bg-[var(--al-danger)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--al-danger)]">expired</span>
-					{/if}
-				</div>
-				<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
-					{#if license.licensee}
-						<dt class="text-[var(--al-muted)]">Licensed to</dt><dd class="text-[var(--al-text)]">{license.licensee}</dd>
-					{/if}
-					<dt class="text-[var(--al-muted)]">Users</dt>
-					<dd class="text-[var(--al-text)]">{license.seatsUsed}{license.seatLimit === 0 ? ' (unlimited)' : ` / ${license.seatLimit}`}</dd>
-					{#if license.expiresAt}
-						<dt class="text-[var(--al-muted)]">Expires</dt><dd class="text-[var(--al-text)]">{new Date(license.expiresAt).toLocaleDateString()}</dd>
-					{/if}
-				</dl>
-				<div class="mt-3">
-					<div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--al-muted)]">Enterprise features</div>
-					<div class="flex flex-wrap gap-1.5">
-						{#each Object.entries(FEATURE_LABELS) as [key, label] (key)}
-							{@const on = license.features.includes(key)}
-							<span class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] {on ? 'border-[var(--al-accent)] text-[var(--al-accent)]' : 'border-[var(--al-border)] text-[var(--al-muted)]'}">
-								{on ? '✓' : '○'} {label}
-							</span>
-						{/each}
-					</div>
-				</div>
-			</div>
-
-			<!-- Install key -->
-			{#if !license.keyConfigured}
-				<p class="mb-2 text-xs text-[var(--al-muted)]">This build has no vendor public key embedded, so no license can be verified. It runs as Community.</p>
-			{/if}
-			<label class="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--al-muted)]" for="lic">License key</label>
-			<textarea id="lic" class="{field} mono min-h-20 text-xs" placeholder="paste your ArcLoom Enterprise license key" bind:value={licenseToken}></textarea>
-			<div class="mt-2 flex items-center gap-2">
-				<button
-					class="inline-flex items-center gap-1.5 rounded-md bg-[var(--al-accent)] px-3 py-1.5 text-sm font-medium text-white hover:brightness-110 disabled:opacity-40"
-					onclick={() => saveLicense(false)}
-					disabled={savingLicense || !licenseToken.trim()}
-				>
-					{#if savingLicense}<Loader2 size={14} class="animate-spin" />{/if} Install license
-				</button>
-				{#if license.tier === 'enterprise' || license.expired}
-					<button class="rounded-md border border-[var(--al-border)] px-3 py-1.5 text-sm text-[var(--al-muted)] hover:text-[var(--al-danger)] disabled:opacity-40" onclick={() => saveLicense(true)} disabled={savingLicense}>
-						Remove license
-					</button>
-				{/if}
-			</div>
-			<p class="mt-2 text-[11px] text-[var(--al-muted)]">Keys are verified offline against an embedded vendor key. The homelab core works fully without a license.</p>
 		{/if}
 	{:else if tab === 'audit'}
 		<div class="mb-3 flex items-center gap-2">
@@ -923,8 +816,6 @@
 						<span class="mono text-[var(--al-text)]">{i.authEnabled ? 'enabled' : 'DISABLED (open instance)'} · cookie {i.cookieSecure ? 'secure' : 'insecure (plain HTTP)'} · providers: {i.authProviders.join(', ') || 'local'}</span>
 						<span class="text-[var(--al-muted)]">secret store</span>
 						<span class="mono text-[var(--al-text)]">{i.secretStore ? 'local (encrypted)' : 'disabled — set ARCLOOM_SECRET_KEY'}</span>
-						<span class="text-[var(--al-muted)]">license</span>
-						<span class="mono text-[var(--al-text)]">{i.licenseTier}{i.licenseFeatures?.length ? ` · ${i.licenseFeatures.join(', ')}` : ''}</span>
 						<span class="text-[var(--al-muted)]">logging</span><span class="mono text-[var(--al-text)]">{i.logLevel} · {i.logFormat}</span>
 						<span class="text-[var(--al-muted)]">schema format</span>
 						<span class="mono text-[var(--al-text)]">v{i.schemaFormat} <span class="text-[var(--al-muted)]">(cached schemas from other versions are ignored)</span></span>
@@ -1013,8 +904,8 @@
 				<!-- Blast radius, stated so it does not read larger than it is. -->
 				<div class="rounded-md border border-[var(--al-border)] p-2.5 text-xs text-[var(--al-muted)]">
 					<div class="mb-1.5 text-[11px] font-semibold uppercase tracking-wide">Not affected</div>
-					User passwords (hashed, not sealed with this key), login sessions, Terraform state, the license
-					token (signed, not secret), <span class="mono">ARCLOOM_SECRET_&lt;name&gt;</span> environment secrets{#if sk.externalStore},
+					User passwords (hashed, not sealed with this key), login sessions, Terraform state,
+					<span class="mono">ARCLOOM_SECRET_&lt;name&gt;</span> environment secrets{#if sk.externalStore},
 					and the values held in <span class="mono">{sk.externalStore}</span> — only its access token is sealed here{/if}.
 					<div class="mt-1.5">
 						Back up the secrets directory and <span class="mono">settings.yaml</span> before rotating. With the

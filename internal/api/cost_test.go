@@ -11,8 +11,8 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/settings"
 )
 
-func TestCostConfigEndpointsGating(t *testing.T) {
-	srv, _ := driftTestServer(t, &fakeRunner{}) // enterprise-licensed
+func TestCostConfigEndpoints(t *testing.T) {
+	srv, _ := driftTestServer(t, &fakeRunner{})
 	h := srv.Handler()
 
 	put := func(body string) *httptest.ResponseRecorder {
@@ -21,7 +21,7 @@ func TestCostConfigEndpointsGating(t *testing.T) {
 		return rec
 	}
 
-	// Licensed: enabling with an override succeeds and persists (blank targets pruned).
+	// Enabling with an override succeeds and persists (blank targets pruned).
 	if rec := put(`{"enabled":true,"overrides":[{"target":"proxmox_vm","monthly":12},{"target":"  ","monthly":9}]}`); rec.Code != http.StatusOK {
 		t.Fatalf("licensed set cost = %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -35,15 +35,12 @@ func TestCostConfigEndpointsGating(t *testing.T) {
 		t.Fatalf("get cost = %d (%s)", rec.Code, rec.Body.String())
 	}
 
-	// Downgrade to community: enabling is forbidden, but disabling/clearing is allowed.
-	if err := srv.license.Set(""); err != nil {
-		t.Fatal(err)
-	}
-	if rec := put(`{"enabled":true,"overrides":[]}`); rec.Code != http.StatusForbidden {
-		t.Fatalf("community enable = %d, want 403", rec.Code)
-	}
+	// Disabling clears the flag and the overrides.
 	if rec := put(`{"enabled":false,"overrides":[]}`); rec.Code != http.StatusOK {
-		t.Fatalf("community disable = %d, want 200 (clearing always allowed)", rec.Code)
+		t.Fatalf("disable = %d, want 200", rec.Code)
+	}
+	if c := srv.settings.Cost("p1"); c.Enabled || len(c.Overrides) != 0 {
+		t.Fatalf("cost not cleared: %+v", c)
 	}
 
 	// Unknown project → 404.
