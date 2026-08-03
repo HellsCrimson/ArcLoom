@@ -138,3 +138,43 @@ func TestReplaceProject_KeepsNestedBlocks(t *testing.T) {
 		t.Errorf("undo dropped the content block: %+v", dyn[0].Blocks)
 	}
 }
+
+// A module call save must not wipe an imported `providers` mapping: the call
+// form has no field for it, so an absent "providers" keeps the stored one. Same
+// hazard as the nested blocks above — the upsert replaces the whole call.
+func TestSetModuleCall_KeepsProvidersWhenAbsent(t *testing.T) {
+	p := &model.Project{ID: "p1", Name: "x", Engine: model.EngineTofu,
+		Providers:    []model.ProviderInstance{{Key: "opennebula", Source: "OpenNebula/opennebula"}},
+		LocalModules: []model.LocalModule{{Name: "vms"}},
+		Modules: []model.Module{{
+			Name: "lab", Source: model.LocalSource("vms"),
+			Providers: "{\n  opennebula = opennebula.lab\n}",
+		}},
+	}
+	h, st := newImportTestServer(t, p)
+
+	body := `{"name":"lab","source":"./modules/vms","config":{}}`
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/p1/modules/call", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upsert status %d: %s", rec.Code, rec.Body.String())
+	}
+	got, _ := st.Get("p1")
+	if !strings.Contains(got.Modules[0].Providers, "opennebula.lab") {
+		t.Fatalf("providers mapping wiped by a save: %q", got.Modules[0].Providers)
+	}
+
+	// An explicit "" clears it, going back to the derived mapping.
+	body = `{"name":"lab","source":"./modules/vms","config":{},"providers":""}`
+	req = httptest.NewRequest(http.MethodPut, "/api/projects/p1/modules/call", strings.NewReader(body))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear status %d: %s", rec.Code, rec.Body.String())
+	}
+	got, _ = st.Get("p1")
+	if got.Modules[0].Providers != "" {
+		t.Errorf(`explicit "" must clear, got %q`, got.Modules[0].Providers)
+	}
+}

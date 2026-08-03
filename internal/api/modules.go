@@ -197,6 +197,12 @@ func (s *Server) handleSetModuleCall(w http.ResponseWriter, r *http.Request) {
 		Config  map[string]attrValueDTO `json:"config"`
 		Count   string                  `json:"count,omitempty"`
 		ForEach string                  `json:"forEach,omitempty"`
+		// Providers is the `providers = { … }` meta-arg as raw HCL. A POINTER so
+		// absent means "keep what is stored" while "" means "clear it and go
+		// back to the derived mapping" — the form does not model it, so with a
+		// plain string every save would wipe an imported mapping, the same way
+		// an imported for_each used to be deleted by the inputs form.
+		Providers *string `json:"providers,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
@@ -232,9 +238,18 @@ func (s *Server) handleSetModuleCall(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.Providers != nil && strings.TrimSpace(*req.Providers) != "" {
+		if err := hclgen.ValidateExpr(strings.TrimSpace(*req.Providers)); err != nil {
+			writeErr(w, http.StatusBadRequest, "providers: "+err.Error())
+			return
+		}
+	}
 
 	err = s.store.Update(id, func(p *model.Project) error {
 		m := model.Module{Name: req.Name, Source: source, Version: strings.TrimSpace(req.Version), Config: config, Count: count, ForEach: forEach}
+		if req.Providers != nil {
+			m.Providers = strings.TrimSpace(*req.Providers)
+		}
 		// A local source must name a definition this project actually has, or
 		// generation produces a call into a folder that is never written.
 		if folder := m.LocalFolder(); folder != "" {
@@ -260,6 +275,11 @@ func (s *Server) handleSetModuleCall(w http.ResponseWriter, r *http.Request) {
 		}
 		for i := range p.Modules {
 			if p.Modules[i].Name == prev {
+				// A request that says nothing about providers keeps the stored
+				// mapping: the call form has no field for it.
+				if req.Providers == nil {
+					m.Providers = p.Modules[i].Providers
+				}
 				p.Modules[i] = m
 				return nil
 			}

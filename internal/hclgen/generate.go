@@ -127,7 +127,10 @@ func writeDataSection(body *hclwrite.Body, data []model.Resource, sep func()) er
 // every call, local ("./modules/x") and registry alike. A local module's
 // *definition* generates its own folder (GenerateFiles) and emits nothing here:
 // a definition that is never called is simply never used, exactly as in HCL.
-func writeResourcesSection(body *hclwrite.Body, resources []model.Resource, modules []model.Module, sep func()) error {
+//
+// provArgs carries the derived `providers = { … }` text per call name (see
+// callProviderArgs); it is nil inside a local module, which has no calls.
+func writeResourcesSection(body *hclwrite.Body, resources []model.Resource, modules []model.Module, provArgs map[string]string, sep func()) error {
 	for _, r := range resources {
 		sep()
 		if err := writeBlockWithKeyword(body, "resource", r); err != nil {
@@ -136,7 +139,7 @@ func writeResourcesSection(body *hclwrite.Body, resources []model.Resource, modu
 	}
 	for _, m := range modules {
 		sep()
-		if err := writeModuleBlock(body, m); err != nil {
+		if err := writeModuleBlock(body, m, provArgs[m.Name]); err != nil {
 			return err
 		}
 	}
@@ -174,7 +177,7 @@ func Generate(p *model.Project) ([]byte, error) {
 	if err := writeDataSection(body, p.DataSources, sep); err != nil {
 		return nil, err
 	}
-	if err := writeResourcesSection(body, p.Resources, p.Modules, sep); err != nil {
+	if err := writeResourcesSection(body, p.Resources, p.Modules, callProviderArgs(p), sep); err != nil {
 		return nil, err
 	}
 	if err := writeOutputsSection(body, p.Outputs, sep); err != nil {
@@ -199,7 +202,7 @@ func GenerateRootFiles(p *model.Project) (map[string][]byte, error) {
 		{FileLocals, func(b *hclwrite.Body, sep func()) error { return writeLocalsSection(b, p.Locals, sep) }},
 		{FileData, func(b *hclwrite.Body, sep func()) error { return writeDataSection(b, p.DataSources, sep) }},
 		{FileMain, func(b *hclwrite.Body, sep func()) error {
-			return writeResourcesSection(b, p.Resources, p.Modules, sep)
+			return writeResourcesSection(b, p.Resources, p.Modules, callProviderArgs(p), sep)
 		}},
 		{FileOutputs, func(b *hclwrite.Body, sep func()) error { return writeOutputsSection(b, p.Outputs, sep) }},
 	} {
@@ -456,7 +459,11 @@ func writeModuleMeta(b *hclwrite.Body, name, count, forEach string) error {
 	return nil
 }
 
-func writeModuleBlock(body *hclwrite.Body, m model.Module) error {
+// writeModuleBlock writes one module call. derivedProviders is the identity
+// `providers = { … }` mapping computed for this call (empty when it needs
+// none); a mapping STORED on the call wins, because an imported one may be
+// deliberately non-identity and re-deriving it would repoint the module.
+func writeModuleBlock(body *hclwrite.Body, m model.Module, derivedProviders string) error {
 	blk := body.AppendNewBlock("module", []string{m.Name})
 	b := blk.Body()
 	if err := writeModuleMeta(b, m.Name, m.Count, m.ForEach); err != nil {
@@ -465,6 +472,17 @@ func writeModuleBlock(body *hclwrite.Body, m model.Module) error {
 	b.SetAttributeValue("source", cty.StringVal(m.Source))
 	if m.Version != "" {
 		b.SetAttributeValue("version", cty.StringVal(m.Version))
+	}
+	providers := strings.TrimSpace(m.Providers)
+	if providers == "" {
+		providers = derivedProviders
+	}
+	if providers != "" {
+		toks, err := tokensForExpr(providers)
+		if err != nil {
+			return fmt.Errorf("module %q providers: %w", m.Name, err)
+		}
+		b.SetAttributeRaw("providers", toks)
 	}
 	return writeAttrs(b, m.Config)
 }
@@ -485,7 +503,7 @@ func GenerateModuleFile(lm model.LocalModule) ([]byte, error) {
 	if err := writeDataSection(body, lm.DataSources, sep); err != nil {
 		return nil, err
 	}
-	if err := writeResourcesSection(body, lm.Resources, nil, sep); err != nil {
+	if err := writeResourcesSection(body, lm.Resources, nil, nil, sep); err != nil {
 		return nil, err
 	}
 	if err := writeOutputsSection(body, lm.Outputs, sep); err != nil {
@@ -502,8 +520,19 @@ func GenerateModuleFile(lm model.LocalModule) ([]byte, error) {
 //
 // A module with nothing but resources therefore still generates exactly
 // modules/<name>/main.tf, which is what it always did.
-func GenerateModuleFiles(lm model.LocalModule) (map[string][]byte, error) {
+func GenerateModuleFiles(lm model.LocalModule, providers []model.ProviderInstance) (map[string][]byte, error) {
 	out := map[string][]byte{}
+	// The module's OWN required_providers. Without it the engine resolves every
+	// local name here to `hashicorp/<name>` — a different provider from the one
+	// the root configured — and the resources bind to a configuration nobody
+	// wrote. See moduleproviders.go.
+	tf, err := moduleTerraformFile(lm, providers)
+	if err != nil {
+		return nil, err
+	}
+	if tf != nil {
+		out[FileTerraform] = hclwrite.Format(tf)
+	}
 	for _, s := range []struct {
 		name string
 		w    func(*hclwrite.Body, func()) error
@@ -513,7 +542,7 @@ func GenerateModuleFiles(lm model.LocalModule) (map[string][]byte, error) {
 		}},
 		{FileLocals, func(b *hclwrite.Body, sep func()) error { return writeLocalsSection(b, lm.Locals, sep) }},
 		{FileData, func(b *hclwrite.Body, sep func()) error { return writeDataSection(b, lm.DataSources, sep) }},
-		{FileMain, func(b *hclwrite.Body, sep func()) error { return writeResourcesSection(b, lm.Resources, nil, sep) }},
+		{FileMain, func(b *hclwrite.Body, sep func()) error { return writeResourcesSection(b, lm.Resources, nil, nil, sep) }},
 		{FileOutputs, func(b *hclwrite.Body, sep func()) error { return writeOutputsSection(b, lm.Outputs, sep) }},
 	} {
 		content, err := section(s.w)
@@ -639,7 +668,7 @@ func GenerateFiles(p *model.Project) (map[string][]byte, error) {
 		return nil, err
 	}
 	for _, lm := range p.LocalModules {
-		mf, err := GenerateModuleFiles(lm)
+		mf, err := GenerateModuleFiles(lm, p.Providers)
 		if err != nil {
 			return nil, fmt.Errorf("module %q: %w", lm.Name, err)
 		}

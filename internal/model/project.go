@@ -198,6 +198,16 @@ type Module struct {
 	// Config entry, which the inputs form then silently deletes.
 	Count   string `json:"count,omitempty" yaml:"count,omitempty"`
 	ForEach string `json:"forEach,omitempty" yaml:"forEach,omitempty"`
+	// Providers is the `providers = { … }` meta-argument as raw HCL, mapping the
+	// child module's provider names to the caller's instances. It is stored only
+	// when the config being imported HAD one, because a hand-written mapping may
+	// be non-identity (`aws = aws.euwest`) and re-deriving it would silently
+	// repoint the module at a different account/region. With nothing stored,
+	// hclgen DERIVES an identity mapping for the calls that need one — see
+	// hclgen/moduleproviders.go. Raw HCL for the same reason Count/ForEach are,
+	// plus one of its own: its keys are traversals (`aws.src = …`), which no
+	// ordinary attribute map can express.
+	Providers string `json:"providers,omitempty" yaml:"providers,omitempty"`
 }
 
 // LocalSourcePrefix is the source prefix of a call targeting a definition

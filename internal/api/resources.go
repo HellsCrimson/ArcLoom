@@ -602,7 +602,7 @@ func (s *Server) handleProjectHCL(w http.ResponseWriter, r *http.Request) {
 		found := false
 		for _, lm := range p.LocalModules {
 			if lm.Name == m {
-				files, err = hclgen.GenerateModuleFiles(lm)
+				files, err = hclgen.GenerateModuleFiles(lm, p.Providers)
 				found = true
 				break
 			}

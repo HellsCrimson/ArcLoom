@@ -211,10 +211,107 @@ func parseModuleBody(body *hclsyntax.Body, src []byte, name string, lm *model.Lo
 		case "locals":
 			lm.Locals = append(lm.Locals, importLocals(blk, src)...)
 
+		case "terraform":
+			// A real module folder carries its own required_providers (that is
+			// what makes it work at all), and it is the only place the module's
+			// provider SOURCES are written down. Read them into the root's
+			// instances — ArcLoom keeps every provider instance at the root and
+			// re-derives each module's block from there on generation — so an
+			// imported module upgrades a `hashicorp/<key>` placeholder to the
+			// real source instead of leaving the project pointing at a provider
+			// that does not exist.
+			//
+			// Only required_providers: a child module has no backend and its
+			// required_version is the root's business.
+			importModuleRequiredProviders(blk, res, provIndex)
+
 		case "module":
 			res.Warnings = append(res.Warnings, fmt.Sprintf("%s: nested module in local module %q is not supported and was skipped", name, lm.Name))
 		}
 	}
+}
+
+// importModuleRequiredProviders reads a LOCAL MODULE's required_providers into
+// the root's provider instances.
+//
+// It only ever REFINES: a source already known to the project wins, because the
+// root's own terraform block is authoritative and file order must not decide
+// which one lands. `configuration_aliases` entries register the aliased
+// instance, which is exactly the instance the caller has to pass.
+func importModuleRequiredProviders(tfBlock *hclsyntax.Block, res *Result, index map[string]int) {
+	for _, inner := range tfBlock.Body.Blocks {
+		if inner.Type != "required_providers" {
+			continue
+		}
+		for key, attr := range inner.Body.Attributes {
+			entry := requiredProviderEntry(attr.Expr)
+			i := ensureProviderKey(res, index, key)
+			if entry.source != "" && isPlaceholderSource(res.Providers[i].Source, key) {
+				res.Providers[i].Source = entry.source
+			}
+			for _, alias := range entry.aliases {
+				ensureProviderInstance(res, index, key, alias)
+			}
+		}
+	}
+}
+
+// isPlaceholderSource reports whether a stored source is the "we had to guess"
+// value ensureProviderInstance writes, rather than something the config stated.
+func isPlaceholderSource(source, key string) bool {
+	return source == "" || source == "hashicorp/"+key
+}
+
+// providerEntry is what one required_providers value declares.
+type providerEntry struct {
+	source  string
+	version string
+	aliases []string
+}
+
+// requiredProviderEntry reads a required_providers object WITHOUT evaluating
+// it. Evaluating is what the root importer used to do, and it drops the whole
+// entry — source and all — as soon as `configuration_aliases` is present,
+// because that holds provider TRAVERSALS (`aws.euwest`) which have no value.
+// Since configuration_aliases is exactly what a module using an aliased
+// provider must declare, the modules that needed importing most were the ones
+// whose source went missing.
+func requiredProviderEntry(expr hclsyntax.Expression) providerEntry {
+	var out providerEntry
+	obj, ok := expr.(*hclsyntax.ObjectConsExpr)
+	if !ok {
+		return out
+	}
+	for _, item := range obj.Items {
+		kv, diags := item.KeyExpr.Value(nil)
+		if diags.HasErrors() || kv.Type() != cty.String {
+			continue
+		}
+		switch kv.AsString() {
+		case "source":
+			out.source = literalString(item.ValueExpr)
+		case "version":
+			out.version = literalString(item.ValueExpr)
+		case "configuration_aliases":
+			tuple, ok := item.ValueExpr.(*hclsyntax.TupleConsExpr)
+			if !ok {
+				continue
+			}
+			for _, el := range tuple.Exprs {
+				trav, ok := el.(*hclsyntax.ScopeTraversalExpr)
+				if !ok {
+					continue
+				}
+				// `aws.euwest` — root name plus one attribute.
+				if ref := simpleTraversal(trav.Traversal); ref != "" {
+					if _, alias, found := strings.Cut(ref, "."); found && alias != "" {
+						out.aliases = append(out.aliases, alias)
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 // linkLocalModules makes sure every root `module` call with a local ("./...")
@@ -383,8 +480,11 @@ func importRequiredProviders(tfBlock *hclsyntax.Block, src []byte, res *Result, 
 			continue
 		}
 		for key, attr := range inner.Body.Attributes {
-			val, diags := attr.Expr.Value(nil)
-			if diags.HasErrors() || !val.Type().IsObjectType() {
+			// Read structurally rather than by evaluating: an entry carrying
+			// configuration_aliases holds traversals and has no value, and
+			// evaluating it dropped the source with it.
+			entry := requiredProviderEntry(attr.Expr)
+			if entry.source == "" && entry.version == "" && len(entry.aliases) == 0 {
 				continue
 			}
 			ensureProviderKey(res, index, key)
@@ -394,12 +494,15 @@ func importRequiredProviders(tfBlock *hclsyntax.Block, src []byte, res *Result, 
 				if res.Providers[i].Key != key {
 					continue
 				}
-				if val.Type().HasAttribute("source") {
-					res.Providers[i].Source = val.GetAttr("source").AsString()
+				if entry.source != "" {
+					res.Providers[i].Source = entry.source
 				}
-				if val.Type().HasAttribute("version") {
-					res.Providers[i].Version = val.GetAttr("version").AsString()
+				if entry.version != "" {
+					res.Providers[i].Version = entry.version
 				}
+			}
+			for _, alias := range entry.aliases {
+				ensureProviderInstance(res, index, key, alias)
 			}
 		}
 	}
@@ -530,6 +633,14 @@ func importModule(blk *hclsyntax.Block, src []byte) model.Module {
 			m.Count = rawSource(attr.Expr, src)
 		case "for_each":
 			m.ForEach = rawSource(attr.Expr, src)
+		// providers is a meta-argument too, and the one most costly to miss: as
+		// a Config entry it becomes a fake module input, which the inputs form
+		// (rebuilt from the module's DECLARED variables) deletes on the first
+		// save — silently unwiring the module's providers. Kept verbatim because
+		// a hand-written mapping may be non-identity, which no re-derivation can
+		// reproduce.
+		case "providers":
+			m.Providers = rawSource(attr.Expr, src)
 		default:
 			m.Config[name] = importExpr(attr.Expr, src)
 		}
