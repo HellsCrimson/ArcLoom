@@ -94,6 +94,50 @@ func attrsToModel(in map[string]attrValueDTO) (map[string]model.AttrValue, error
 	return out, nil
 }
 
+// resourceBlockDTO is the wire form of a NESTED block body: its labels, its
+// attributes and its own nested blocks, recursively. A top-level resource's
+// labels are its type/name, so this shape only ever appears under
+// resourceRequest.Blocks.
+type resourceBlockDTO struct {
+	Labels []string                      `json:"labels,omitempty"`
+	Attrs  map[string]attrValueDTO       `json:"attrs,omitempty"`
+	Blocks map[string][]resourceBlockDTO `json:"blocks,omitempty"`
+}
+
+func (d resourceBlockDTO) toModel() (model.Resource, error) {
+	res := model.Resource{Labels: d.Labels}
+	if len(d.Attrs) > 0 {
+		attrs, err := attrsToModel(d.Attrs)
+		if err != nil {
+			return res, err
+		}
+		res.Attrs = attrs
+	}
+	blocks, err := blocksToModel(d.Blocks)
+	if err != nil {
+		return res, err
+	}
+	res.Blocks = blocks
+	return res, nil
+}
+
+func blocksToModel(in map[string][]resourceBlockDTO) (map[string][]model.Resource, error) {
+	if in == nil {
+		return nil, nil
+	}
+	out := make(map[string][]model.Resource, len(in))
+	for name, list := range in {
+		for i, dto := range list {
+			res, err := dto.toModel()
+			if err != nil {
+				return nil, fmt.Errorf("block %q[%d]: %w", name, i, err)
+			}
+			out[name] = append(out[name], res)
+		}
+	}
+	return out, nil
+}
+
 // resourceRequest is the body for creating/updating a resource or data source.
 type resourceRequest struct {
 	ID             string                  `json:"id,omitempty"`
@@ -104,6 +148,16 @@ type resourceRequest struct {
 	Module         string                  `json:"module,omitempty"` // "" = root, else local module name
 	Attrs          map[string]attrValueDTO `json:"attrs"`
 	DependsOn      []string                `json:"dependsOn,omitempty"`
+	// Blocks are the resource's nested blocks (dynamic, provisioner, lifecycle,
+	// timeouts, ...). ABSENT (nil) KEEPS THE STORED ONES; a non-nil map replaces
+	// them, so `{}` clears. That asymmetry with dependsOn/count/forEach — which
+	// the form must always resend, since an upsert replaces the whole resource —
+	// is deliberate: the form does not model nested blocks at all, so requiring
+	// it to echo them back would mean threading opaque data through every save
+	// path just to avoid deleting an imported `dynamic` block. Which is exactly
+	// what used to happen: opening an imported resource and pressing Save
+	// silently dropped every nested block it had.
+	Blocks map[string][]resourceBlockDTO `json:"blocks,omitempty"`
 	// Count / ForEach are raw HCL expressions (mutually exclusive).
 	Count   string `json:"count,omitempty"`
 	ForEach string `json:"forEach,omitempty"`

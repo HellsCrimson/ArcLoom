@@ -432,15 +432,43 @@ func importResource(blk *hclsyntax.Block, src []byte, id string) model.Resource 
 	if len(r.Attrs) == 0 {
 		r.Attrs = nil
 	}
-	// Nested blocks -> r.Blocks[type] = [...]
-	for _, nested := range blk.Body.Blocks {
-		nb := model.Resource{Attrs: importAttrs(nested.Body, src)}
-		if r.Blocks == nil {
-			r.Blocks = map[string][]model.Resource{}
-		}
-		r.Blocks[nested.Type] = append(r.Blocks[nested.Type], nb)
-	}
+	r.Blocks = importBlocks(blk.Body, src)
 	return r
+}
+
+// importBlocks reads a body's nested blocks into the Blocks map, RECURSIVELY
+// and keeping each block's labels.
+//
+// Both halves matter for `dynamic`, which is the construct that needs them:
+//
+//	dynamic "ingress" {        <- one label, "ingress"
+//	  for_each = var.ports
+//	  content { ... }          <- a block nested two deep
+//	}
+//
+// Reading only the top level's attributes kept the for_each and dropped both,
+// so generation emitted a bare `dynamic {` with no content — rejected by the
+// engine ("Missing type for dynamic") and missing the body besides. The same
+// applied to every labelled block (`provisioner "local-exec"`) and everything
+// below depth one.
+//
+// count/for_each are NOT lifted out here the way importResource lifts a
+// resource's: inside a nested block they are ordinary arguments (a dynamic
+// block's for_each is the block's own), not meta-arguments of a resource.
+func importBlocks(body *hclsyntax.Body, src []byte) map[string][]model.Resource {
+	if len(body.Blocks) == 0 {
+		return nil
+	}
+	out := map[string][]model.Resource{}
+	for _, nested := range body.Blocks {
+		nb := model.Resource{
+			Labels: append([]string(nil), nested.Labels...),
+			Attrs:  importAttrs(nested.Body, src),
+			Blocks: importBlocks(nested.Body, src),
+		}
+		out[nested.Type] = append(out[nested.Type], nb)
+	}
+	return out
 }
 
 func importVariable(blk *hclsyntax.Block, src []byte) model.Variable {

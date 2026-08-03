@@ -83,6 +83,14 @@ export interface Resource {
 	type: string;
 	name: string;
 	attrs: Record<string, AttrValue>;
+	// Nested blocks (dynamic, provisioner, lifecycle, timeouts, ...) keyed by
+	// block type, with `labels` carrying a labelled block's labels — `dynamic
+	// "ingress"` has one. NOTHING IN THE UI EDITS THESE: they are declared so
+	// they survive the paths that carry a whole project (the undo/redo snapshot
+	// PUTs the model back), and `upsertResource` deliberately omits them, which
+	// the server reads as "keep the stored ones".
+	labels?: string[];
+	blocks?: Record<string, Resource[]>;
 	dependsOn?: string[];
 	// count / for_each meta-arguments as raw HCL expressions (mutually exclusive).
 	count?: string;

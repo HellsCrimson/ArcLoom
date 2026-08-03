@@ -337,10 +337,27 @@ func (pi ProviderInstance) Address() string {
 // nested-block body via the Blocks field so the generator recursion is ready
 // for providers that use nested blocks.
 type Resource struct {
-	ID     string                `json:"id" yaml:"id"`
-	Type   string                `json:"type" yaml:"type"`
-	Name   string                `json:"name" yaml:"name"`
-	Attrs  map[string]AttrValue  `json:"attrs" yaml:"attrs"`
+	// ID/Type/Name are omitted from stored YAML when empty, which they always
+	// are for a nested block (a block body has labels, not a type and name).
+	// Without it every level of a `dynamic` block writes three empty scalars
+	// into arcloom.yaml and therefore into every Git diff. Write-only: reading
+	// an absent field yields the same zero value, and the JSON tags are
+	// untouched so the wire shape the frontend sees does not move.
+	ID    string               `json:"id" yaml:"id,omitempty"`
+	Type  string               `json:"type" yaml:"type,omitempty"`
+	Name  string               `json:"name" yaml:"name,omitempty"`
+	Attrs map[string]AttrValue `json:"attrs" yaml:"attrs,omitempty"`
+	// Labels are a NESTED block's HCL labels, and are meaningful only when this
+	// Resource is a block body inside another's Blocks: `dynamic "ingress"` has
+	// one label, "ingress". A top-level resource carries its labels in
+	// Type/Name instead, and an unlabelled block (lifecycle, timeouts, content)
+	// has none. Dropping them is what turned an imported `dynamic "ingress"`
+	// into a bare `dynamic {` — which the engine rejects with "Missing type for
+	// dynamic; All dynamic blocks must have 1 labels (type)".
+	Labels []string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	// Blocks holds nested blocks by type, recursively: a `dynamic` block's own
+	// `content { ... }` lives here, which is what lets a dynamic block survive a
+	// generate/import cycle whole.
 	Blocks map[string][]Resource `json:"blocks,omitempty" yaml:"blocks,omitempty"`
 	// DependsOn holds explicit dependency addresses ("aws_vpc.main"), emitted as
 	// the depends_on meta-argument.

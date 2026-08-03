@@ -345,17 +345,40 @@ func writeBlockWithKeyword(body *hclwrite.Body, keyword string, r model.Resource
 		}
 		blk.Body().SetAttributeRaw("depends_on", toks)
 	}
-	// Nested blocks, sorted by name for determinism.
-	names := make([]string, 0, len(r.Blocks))
-	for n := range r.Blocks {
+	return writeNestedBlocks(blk.Body(), r.Blocks)
+}
+
+// writeNestedBlocks writes a body's nested blocks, sorted by type for
+// determinism (the order WITHIN a type is the model's, which is the order they
+// were imported in).
+//
+// Labels are emitted and the recursion goes all the way down, which is what
+// `dynamic` needs on both counts:
+//
+//	dynamic "ingress" {
+//	  for_each = var.ports
+//	  content { from_port = ingress.value }
+//	}
+//
+// Writing `AppendNewBlock(n, nil)` instead produced `dynamic {`, which the
+// engine rejects with "Missing type for dynamic; All dynamic blocks must have 1
+// labels (type)", and stopping at depth one dropped the content block entirely.
+// hclwrite renders each label with TokensForValue, so a label is quoted and
+// escaped rather than pasted in.
+func writeNestedBlocks(body *hclwrite.Body, blocks map[string][]model.Resource) error {
+	names := make([]string, 0, len(blocks))
+	for n := range blocks {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		for _, nested := range r.Blocks[n] {
-			nb := blk.Body().AppendNewBlock(n, nil)
+		for _, nested := range blocks[n] {
+			nb := body.AppendNewBlock(n, nested.Labels)
 			if err := writeAttrs(nb.Body(), nested.Attrs); err != nil {
-				return err
+				return fmt.Errorf("block %q: %w", n, err)
+			}
+			if err := writeNestedBlocks(nb.Body(), nested.Blocks); err != nil {
+				return fmt.Errorf("block %q: %w", n, err)
 			}
 		}
 	}

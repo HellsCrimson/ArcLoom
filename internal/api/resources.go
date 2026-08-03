@@ -494,6 +494,11 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "provider must be \"<key>\" or \"<key>.<alias>\"")
 		return
 	}
+	blocks, err := blocksToModel(req.Blocks)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	var saved model.Resource
 	err = s.store.Update(id, func(p *model.Project) error {
@@ -507,7 +512,7 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 		res := model.Resource{
 			ID: req.ID, Type: req.Type, Name: req.Name, Attrs: attrs, DependsOn: req.DependsOn,
 			Count: strings.TrimSpace(req.Count), ForEach: strings.TrimSpace(req.ForEach),
-			Provider: providerRef,
+			Provider: providerRef, Blocks: blocks,
 		}
 		if res.ID == "" {
 			res.ID = uuid.NewString()
@@ -519,6 +524,12 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 		replaced := false
 		for i := range *slice {
 			if (*slice)[i].ID == res.ID {
+				// Nested blocks the request did not mention are the stored ones:
+				// the form cannot edit a dynamic/provisioner block, so a save from
+				// it must not delete one.
+				if req.Blocks == nil {
+					res.Blocks = (*slice)[i].Blocks
+				}
 				(*slice)[i] = res
 				replaced = true
 				break
