@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-exec/tfexec"
 	tfjson "github.com/hashicorp/terraform-json"
 
+	"github.com/HellsCrimson/ArcLoom/internal/envvar"
 	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
 )
@@ -105,11 +107,11 @@ func (t *TfExec) ProvidersSchema(ctx context.Context, providers []model.Provider
 	return tf.ProvidersSchema(ctx)
 }
 
-// prepare syncs files into the persistent workspace at dir, injects tfVars as
-// TF_VAR_* into the process environment, and returns an initialized tfexec
-// handle. The returned cleanup releases the env and the per-dir lock and must
-// be called even on error (it is safe when tf is nil).
-func (t *TfExec) prepare(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (tf *tfexec.Terraform, cleanup func(), err error) {
+// prepare syncs files into the persistent workspace at dir, injects vars into
+// the process environment, and returns an initialized tfexec handle. The
+// returned cleanup releases the env and the per-dir lock and must be called
+// even on error (it is safe when tf is nil).
+func (t *TfExec) prepare(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) (tf *tfexec.Terraform, cleanup func(), err error) {
 	unlockDir := lockDir(dir)
 	cleanup = unlockDir
 
@@ -126,16 +128,33 @@ func (t *TfExec) prepare(ctx context.Context, dir string, files map[string][]byt
 		tf.SetStderr(out)
 	}
 
-	// Inject secret values as TF_VAR_* into the process environment (tfexec
-	// inherits os.Environ; its SetEnv rejects TF_VAR_*). Serialize because the
-	// environment is process-global; values are removed by cleanup.
-	if len(tfVars) > 0 {
+	// Inject the run's environment into the PROCESS environment (tfexec inherits
+	// os.Environ; its SetEnv rejects TF_VAR_* and would replace the whole
+	// environment). Serialize because the environment is process-global; every
+	// key is removed by cleanup.
+	//
+	// That process-global window is why vars.Env is re-vetted here rather than
+	// trusted from the API layer: while it is open the variables apply to this
+	// process, so a name like PATH or TF_CLI_ARGS would not just misconfigure
+	// one project's run — it would change what the server executes. The API
+	// rejects those on the way in; this is the backstop at the sink, in the
+	// spirit of ValidateFilePath's second check in GenerateFiles.
+	if !vars.empty() {
 		planEnvMu.Lock()
-		keys := make([]string, 0, len(tfVars))
-		for name, val := range tfVars {
-			key := "TF_VAR_" + name
+		keys := make([]string, 0, len(vars.TF)+len(vars.Env))
+		set := func(key, val string) {
 			os.Setenv(key, val)
 			keys = append(keys, key)
+		}
+		for name, val := range vars.TF {
+			set("TF_VAR_"+name, val)
+		}
+		for name, val := range vars.Env {
+			if err := envvar.Validate(name); err != nil {
+				slog.Warn("refusing environment variable for run", "name", name, "err", err)
+				continue
+			}
+			set(name, val)
 		}
 		cleanup = func() {
 			for _, k := range keys {
@@ -193,8 +212,8 @@ const driftPlanFileName = "tfplan.drift"
 // Plan runs plan in the project's persistent workspace, so the diff is against
 // the state left by the last apply (empty state on a fresh project). The plan
 // is saved to a file and re-read as JSON to extract per-resource changes.
-func (t *TfExec) Plan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error) {
-	return t.plan(ctx, dir, files, tfVars, out, planFileName)
+func (t *TfExec) Plan(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) (PlanResult, error) {
+	return t.plan(ctx, dir, files, vars, out, planFileName)
 }
 
 // DriftPlan is the scheduled drift check. It runs a NORMAL plan, so what it
@@ -205,14 +224,14 @@ func (t *TfExec) Plan(ctx context.Context, dir string, files map[string][]byte, 
 // whose infrastructure matches its config perfectly would report drift forever.
 // The plan's own resource_drift set is carried in PlanResult.Drift so the caller
 // can still tell an out-of-band change from an unapplied config edit.
-func (t *TfExec) DriftPlan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error) {
-	return t.plan(ctx, dir, files, tfVars, out, driftPlanFileName)
+func (t *TfExec) DriftPlan(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) (PlanResult, error) {
+	return t.plan(ctx, dir, files, vars, out, driftPlanFileName)
 }
 
 // plan runs a plan into outFile and reads it back. A plan saved anywhere other
 // than planFileName is a throwaway (the drift check) and is removed afterwards.
-func (t *TfExec) plan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer, outFile string) (PlanResult, error) {
-	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+func (t *TfExec) plan(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer, outFile string) (PlanResult, error) {
+	tf, cleanup, err := t.prepare(ctx, dir, files, vars, out)
 	defer cleanup()
 	if err != nil {
 		return PlanResult{}, err
@@ -305,8 +324,8 @@ func actionName(a tfjson.Actions) string {
 
 // Apply applies the configuration; state is persisted in dir for later plans,
 // applies and destroys.
-func (t *TfExec) Apply(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error {
-	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+func (t *TfExec) Apply(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, vars, out)
 	defer cleanup()
 	if err != nil {
 		return err
@@ -322,8 +341,8 @@ func (t *TfExec) Apply(ctx context.Context, dir string, files map[string][]byte,
 // the plan file and applied with no re-plan, so the applied changes are exactly
 // those reviewed. prepare's sync wipes any stale plan file, so it is written
 // after prepare returns.
-func (t *TfExec) ApplyPlan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, planBytes []byte, out io.Writer) error {
-	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+func (t *TfExec) ApplyPlan(ctx context.Context, dir string, files map[string][]byte, vars Vars, planBytes []byte, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, vars, out)
 	defer cleanup()
 	if err != nil {
 		return err
@@ -356,8 +375,8 @@ func (t *TfExec) Outputs(ctx context.Context, dir string) (map[string]tfexec.Out
 // Import adopts a live resource into the persisted state. It goes through the
 // same prepare path as plan/apply (workspace sync + init + secret TF_VAR_*
 // injection) because the provider must authenticate to read the resource.
-func (t *TfExec) Import(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address, id string, out io.Writer) error {
-	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+func (t *TfExec) Import(ctx context.Context, dir string, files map[string][]byte, vars Vars, address, id string, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, vars, out)
 	defer cleanup()
 	if err != nil {
 		return err
@@ -369,8 +388,8 @@ func (t *TfExec) Import(ctx context.Context, dir string, files map[string][]byte
 }
 
 // StateRm removes an address from the persisted state.
-func (t *TfExec) StateRm(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error {
-	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+func (t *TfExec) StateRm(ctx context.Context, dir string, files map[string][]byte, vars Vars, address string, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, vars, out)
 	defer cleanup()
 	if err != nil {
 		return err
@@ -383,8 +402,8 @@ func (t *TfExec) StateRm(ctx context.Context, dir string, files map[string][]byt
 
 // Taint marks an instance as damaged, so the next apply replaces it. The address
 // must name a single instance (`x.y`, or `x.y[0]` for a counted resource).
-func (t *TfExec) Taint(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error {
-	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+func (t *TfExec) Taint(ctx context.Context, dir string, files map[string][]byte, vars Vars, address string, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, vars, out)
 	defer cleanup()
 	if err != nil {
 		return err
@@ -398,8 +417,8 @@ func (t *TfExec) Taint(ctx context.Context, dir string, files map[string][]byte,
 // Untaint clears the tainted mark, so a resource the engine considers damaged is
 // kept as-is. This is the state op with no alternative: an instance left tainted
 // by a failed create-time provisioner is otherwise replaced on the next apply.
-func (t *TfExec) Untaint(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error {
-	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+func (t *TfExec) Untaint(ctx context.Context, dir string, files map[string][]byte, vars Vars, address string, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, vars, out)
 	defer cleanup()
 	if err != nil {
 		return err
@@ -413,8 +432,8 @@ func (t *TfExec) Untaint(ctx context.Context, dir string, files map[string][]byt
 // StateMv renames an address inside the persisted state. With dryRun the engine
 // only reports what it would move — the state is not written, which is how a
 // bulk move can be checked against reality before the first real one runs.
-func (t *TfExec) StateMv(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, from, to string, dryRun bool, out io.Writer) error {
-	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+func (t *TfExec) StateMv(ctx context.Context, dir string, files map[string][]byte, vars Vars, from, to string, dryRun bool, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, vars, out)
 	defer cleanup()
 	if err != nil {
 		return err
@@ -435,7 +454,7 @@ func (t *TfExec) StateMv(ctx context.Context, dir string, files map[string][]byt
 // The stuck-lock case it exists for is the opposite one: the run that took the
 // lock is long gone.
 func (t *TfExec) ForceUnlock(ctx context.Context, dir string, files map[string][]byte, lockID string, out io.Writer) error {
-	tf, cleanup, err := t.prepare(ctx, dir, files, nil, out)
+	tf, cleanup, err := t.prepare(ctx, dir, files, Vars{}, out)
 	defer cleanup()
 	if err != nil {
 		return err
@@ -502,8 +521,8 @@ func (t *TfExec) StatePull(ctx context.Context, dir string) (string, error) {
 // to clear a refresh-only drift report — a plan -refresh-only never writes the
 // refreshed values back, so the same drift is reported on every check. Nothing
 // is created, updated or destroyed.
-func (t *TfExec) AcceptDrift(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error {
-	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+func (t *TfExec) AcceptDrift(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, vars, out)
 	defer cleanup()
 	if err != nil {
 		return err
@@ -522,7 +541,7 @@ func (t *TfExec) AcceptDrift(ctx context.Context, dir string, files map[string][
 // would otherwise refuse. Guarding against overwriting a live state is the
 // caller's job.
 func (t *TfExec) StatePush(ctx context.Context, dir string, files map[string][]byte, stateJSON []byte, out io.Writer) error {
-	tf, cleanup, err := t.prepare(ctx, dir, files, nil, out)
+	tf, cleanup, err := t.prepare(ctx, dir, files, Vars{}, out)
 	defer cleanup()
 	if err != nil {
 		return err
@@ -552,8 +571,8 @@ func (t *TfExec) StatePush(ctx context.Context, dir string, files map[string][]b
 // path as plan: sync + init). The streaming writers are detached before the
 // validate call itself — tfexec merges its JSON capture buffer with the
 // configured stdout, which would dump the raw diagnostics JSON into the log.
-func (t *TfExec) Validate(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (*tfjson.ValidateOutput, error) {
-	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+func (t *TfExec) Validate(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) (*tfjson.ValidateOutput, error) {
+	tf, cleanup, err := t.prepare(ctx, dir, files, vars, out)
 	defer cleanup()
 	if err != nil {
 		return nil, err
@@ -568,8 +587,8 @@ func (t *TfExec) Validate(ctx context.Context, dir string, files map[string][]by
 }
 
 // Destroy destroys everything recorded in the persisted state.
-func (t *TfExec) Destroy(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error {
-	tf, cleanup, err := t.prepare(ctx, dir, files, tfVars, out)
+func (t *TfExec) Destroy(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) error {
+	tf, cleanup, err := t.prepare(ctx, dir, files, vars, out)
 	defer cleanup()
 	if err != nil {
 		return err

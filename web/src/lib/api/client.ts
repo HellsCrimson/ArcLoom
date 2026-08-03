@@ -167,6 +167,20 @@ export const api = {
 			method: 'POST'
 		}).then((r) => json<Approval>(r)),
 
+	// Environment variables set on the engine process for this project's runs —
+	// how a provider reads its own credentials (OPENNEBULA_PASSWORD, VAULT_TOKEN),
+	// which the TF_VAR_ path cannot express. `env` targets one environment's
+	// overrides instead of the project's own rows.
+	getEnvVars: (id: string) =>
+		fetch(`/api/projects/${id}/env-vars`).then((r) => json<EnvVarsResponse>(r)),
+
+	setEnvVars: (id: string, vars: EnvVarRow[], env = '') =>
+		fetch(`/api/projects/${id}/env-vars${env ? `?env=${encodeURIComponent(env)}` : ''}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ vars })
+		}).then((r) => json<EnvVarsResponse>(r)),
+
 	setEnvironments: (id: string, environments: Environment[]) =>
 		fetch(`/api/projects/${id}/environments`, {
 			method: 'PUT',
@@ -965,6 +979,27 @@ export interface Environment {
 	name: string;
 	backendConfig?: Record<string, string>;
 	vars?: Record<string, string>;
+	// Per-env overrides of the project's engine environment variables.
+	envVars?: EnvVarRow[];
+}
+
+// EnvVarRow is one environment variable set on the engine process for a
+// project's runs. The value is a literal OR a secret reference — a literal is
+// stored in the clear server-side, so anything sensitive belongs in the secret
+// store and is referenced by name.
+export interface EnvVarRow {
+	name: string;
+	value?: string;
+	secretRef?: string;
+}
+
+export interface EnvVarsResponse {
+	vars: EnvVarRow[];
+	// Per-environment overrides, keyed by environment name.
+	envVars?: Record<string, EnvVarRow[]>;
+	// Names this server refuses (they would change what the server runs), so the
+	// UI can warn before a save fails.
+	blocked?: string[];
 }
 
 // Approval records that a specific saved plan was signed off for a gated apply.

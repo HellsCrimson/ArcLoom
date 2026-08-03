@@ -46,6 +46,7 @@ var auditActions = map[string]string{
 	"PUT /projects/{id}/notify":                 "notify.set",
 	"POST /projects/{id}/notify/test":           "notify.test",
 	"PUT /projects/{id}/environments":           "environments.set",
+	"PUT /projects/{id}/env-vars":               "envvars.set",
 	"PUT /projects/{id}/approval":               "approval.policy",
 	"POST /projects/{id}/approve":               "approval.approve",
 	"POST /projects/{id}/git/commit":            "git.commit",

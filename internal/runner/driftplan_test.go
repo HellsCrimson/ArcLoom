@@ -55,12 +55,12 @@ func TestDriftPlan_ReportsOnlyActionableChanges(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "out.txt")
 	files := localFileConfig(target, "hello")
 
-	if err := r.Apply(ctx, dir, files, nil, io.Discard); err != nil {
+	if err := r.Apply(ctx, dir, files, Vars{}, io.Discard); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
 	// Clean world: nothing to do.
-	res, err := r.DriftPlan(ctx, dir, files, nil, io.Discard)
+	res, err := r.DriftPlan(ctx, dir, files, Vars{}, io.Discard)
 	if err != nil {
 		t.Fatalf("drift plan: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestDriftPlan_ReportsOnlyActionableChanges(t *testing.T) {
 	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if res, err = r.DriftPlan(ctx, dir, files, nil, io.Discard); err != nil {
+	if res, err = r.DriftPlan(ctx, dir, files, Vars{}, io.Discard); err != nil {
 		t.Fatalf("drift plan: %v", err)
 	}
 	if res.HasChanges || len(res.Changes) != 0 {
@@ -101,7 +101,7 @@ func TestDriftPlan_ReportsOnlyActionableChanges(t *testing.T) {
 	if err := os.WriteFile(target, []byte("changed-out-of-band"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if res, err = r.DriftPlan(ctx, dir, files, nil, io.Discard); err != nil {
+	if res, err = r.DriftPlan(ctx, dir, files, Vars{}, io.Discard); err != nil {
 		t.Fatalf("drift plan: %v", err)
 	}
 	if !res.HasChanges || len(res.Changes) == 0 {

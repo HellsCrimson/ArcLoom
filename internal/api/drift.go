@@ -161,12 +161,19 @@ func (s *Server) runDriftCheck(ctx context.Context, projectID string) {
 	} else {
 		var files map[string][]byte
 		if files, err = hclgen.GenerateFiles(p); err == nil {
-			var tfVars map[string]string
-			tfVars, err = s.resolveTFVars(p, func(ref string) {
+			var vars runner.Vars
+			vars.TF, err = s.resolveTFVars(p, func(ref string) {
 				fmt.Fprintf(logW, "warning: secret %s is not set\n", ref)
 			})
+			// Drift runs against the DEFAULT environment only, so it takes the
+			// project's environment variables with no env overlay.
 			if err == nil {
-				res, err = run.DriftPlan(ctx, s.runDir(p.ID, ""), files, tfVars, logW)
+				vars.Env, err = s.resolveEnvVars(p.ID, settings.Environment{}, func(name, ref string) {
+					fmt.Fprintf(logW, "warning: environment variable %s is unset (secret %s is not set)\n", name, ref)
+				})
+			}
+			if err == nil {
+				res, err = run.DriftPlan(ctx, s.runDir(p.ID, ""), files, vars, logW)
 			}
 		}
 	}

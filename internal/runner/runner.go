@@ -134,6 +134,32 @@ type LintResult struct {
 	WarningCount int         `json:"warningCount"`
 }
 
+// Vars is everything a run needs in its environment. Both maps are held in
+// memory only — never written to HCL, state or disk.
+//
+// The two halves are separate because they mean different things and one of
+// them is dangerous. TF carries INPUT VARIABLES: the runner prefixes each name
+// with TF_VAR_, and they can only ever feed a `variable` block. Env carries
+// literal environment variables for the engine process, which is how a provider
+// reads its own credentials (OPENNEBULA_PASSWORD, VAULT_TOKEN) — names the
+// TF_VAR_ path cannot express at all. A single map with pre-prefixed names would
+// have made "is this an input or an arbitrary env var" invisible at every call
+// site, and the answer decides whether a name needs vetting.
+type Vars struct {
+	// TF are input variables, injected as TF_VAR_<name>.
+	TF map[string]string
+	// Env are environment variables set verbatim. They are vetted before they
+	// get here (settings.ValidateEnvVarName), and vetted AGAIN on the way out —
+	// see prepare.
+	Env map[string]string
+}
+
+// TFVars is the common case: only input variables, no environment overrides.
+func TFVars(vars map[string]string) Vars { return Vars{TF: vars} }
+
+// empty reports whether there is nothing to set.
+func (v Vars) empty() bool { return len(v.TF) == 0 && len(v.Env) == 0 }
+
 // Runner executes engine operations for a project. Implementations must be safe
 // for concurrent use (each call operates in its own workspace).
 type Runner interface {
@@ -148,49 +174,49 @@ type Runner interface {
 	ProvidersSchema(ctx context.Context, providers []model.ProviderInstance) (*tfjson.ProviderSchemas, error)
 	// Plan syncs the generated files (main.tf plus any modules/<name>/main.tf)
 	// into the project's persistent workspace at dir, initializes it, and runs
-	// plan against the persisted state, streaming CLI output to out. tfVars are
-	// injected as TF_VAR_<name> (used for secret values) and never written to
-	// disk. It returns whether changes are pending.
-	Plan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error)
+	// plan against the persisted state, streaming CLI output to out. vars carry
+	// what the run needs in its environment and are never written to disk. It
+	// returns whether changes are pending.
+	Plan(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) (PlanResult, error)
 	// DriftPlan is the scheduled drift check: a normal plan saved to a throwaway
 	// artifact (never the workspace's own tfplan, which the approval/policy gates
 	// own). Its Changes are what an apply would do — the actionable signal —
 	// while Drift carries the refresh's resource_drift for context.
-	DriftPlan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (PlanResult, error)
+	DriftPlan(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) (PlanResult, error)
 	// Apply syncs the generated files into the persistent workspace at dir,
 	// initializes it, and applies the configuration. State is persisted in dir.
-	Apply(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error
+	Apply(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) error
 	// ApplyPlan applies a previously saved plan artifact VERBATIM (no re-plan):
 	// the workspace is synced + initialized like Apply, then planBytes is written
 	// as the plan file and applied. Used by the plan → approve → apply gate so the
 	// applied changes are exactly the ones that were reviewed. A stale plan (state
 	// changed since it was created) is rejected by the engine.
-	ApplyPlan(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, planBytes []byte, out io.Writer) error
+	ApplyPlan(ctx context.Context, dir string, files map[string][]byte, vars Vars, planBytes []byte, out io.Writer) error
 	// Destroy syncs the generated files into the persistent workspace at dir,
 	// initializes it, and destroys all managed resources recorded in state.
-	Destroy(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error
+	Destroy(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) error
 	// Outputs reads the root output values from the state persisted in dir
 	// (as left by the last apply).
 	Outputs(ctx context.Context, dir string) (map[string]tfexec.OutputMeta, error)
 	// Import adopts an existing real-world resource (identified by id) into the
 	// persisted state under the given address. The workspace is synced and
 	// initialized first, so the address must exist in the generated config.
-	Import(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address, id string, out io.Writer) error
+	Import(ctx context.Context, dir string, files map[string][]byte, vars Vars, address, id string, out io.Writer) error
 	// StateRm removes an address from the persisted state (the real resource is
 	// left untouched; a later plan will want to recreate it).
-	StateRm(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error
+	StateRm(ctx context.Context, dir string, files map[string][]byte, vars Vars, address string, out io.Writer) error
 	// Taint marks one instance as damaged so the next apply replaces it; the
 	// address must resolve to a single instance.
-	Taint(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error
+	Taint(ctx context.Context, dir string, files map[string][]byte, vars Vars, address string, out io.Writer) error
 	// Untaint clears that mark. It is the only remedy for an instance a failed
 	// create-time provisioner left tainted, which would otherwise be replaced on
 	// the next apply.
-	Untaint(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, address string, out io.Writer) error
+	Untaint(ctx context.Context, dir string, files map[string][]byte, vars Vars, address string, out io.Writer) error
 	// StateMv renames an address inside the persisted state, e.g. after a
 	// resource was renamed in the model. dryRun passes -dry-run: the engine
 	// reports what it WOULD move and writes nothing, which is what makes a bulk
 	// move checkable against the real state before any of it happens.
-	StateMv(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, from, to string, dryRun bool, out io.Writer) error
+	StateMv(ctx context.Context, dir string, files map[string][]byte, vars Vars, from, to string, dryRun bool, out io.Writer) error
 	// ForceUnlock releases a stuck state lock (`force-unlock`), the remedy for a
 	// run the engine never got to finish — killed process, crashed container,
 	// lost network mid-apply — which leaves the lock held with no owner. lockID
@@ -207,7 +233,7 @@ type Runner interface {
 	// refresh-only plan never writes back what it refreshed, so drift it reports
 	// (e.g. provider-side normalization after adopting a foreign state) would
 	// otherwise be reported forever.
-	AcceptDrift(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) error
+	AcceptDrift(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) error
 	// StatePull returns the raw state JSON as the configured backend sees it
 	// (works for both local and remote backends).
 	StatePull(ctx context.Context, dir string) (string, error)
@@ -220,7 +246,7 @@ type Runner interface {
 	// Validate syncs the generated files into the persistent workspace,
 	// initializes it, and runs the engine's config validation, returning the
 	// structured diagnostics.
-	Validate(ctx context.Context, dir string, files map[string][]byte, tfVars map[string]string, out io.Writer) (*tfjson.ValidateOutput, error)
+	Validate(ctx context.Context, dir string, files map[string][]byte, vars Vars, out io.Writer) (*tfjson.ValidateOutput, error)
 	// Graph writes the generated files into a fresh workspace, initializes it,
 	// and returns the dependency graph in Graphviz DOT format.
 	Graph(ctx context.Context, files map[string][]byte) (string, error)

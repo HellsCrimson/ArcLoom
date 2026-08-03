@@ -386,6 +386,7 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		_ = s.settings.DeleteProjectACL(id)
 		_ = s.settings.DeleteCost(id)
 		_ = s.settings.DeleteEnvironments(id)
+		_ = s.settings.DeleteEnvVars(id)
 		_ = s.settings.DeleteApprovalPolicy(id)
 		_ = s.settings.DeletePolicy(id)
 		_ = s.settings.DeleteNotify(id)

@@ -240,6 +240,18 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 			tfVars[k] = v
 		}
 	}
+	// Environment variables for the engine process itself — how a provider reads
+	// its own credentials (OPENNEBULA_PASSWORD, VAULT_TOKEN), which the TF_VAR_
+	// path above cannot express. Per project, so two projects targeting
+	// different clusters do not collide.
+	envVars, err := s.resolveEnvVars(p.ID, env, func(name, ref string) {
+		sse.event("log", map[string]string{"line": "warning: environment variable " + name + " is unset (secret " + ref + " is not set)"})
+	})
+	if err != nil {
+		sse.event("error", map[string]string{"error": err.Error()})
+		return
+	}
+	vars := runner.Vars{TF: tfVars, Env: envVars}
 
 	// Stream CLI output line-by-line as "log" events, and mirror it into a
 	// buffer for the run record. The child process is killed via r.Context()
@@ -260,7 +272,7 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 	switch op {
 	case "plan":
 		var res runner.PlanResult
-		res, err = run.Plan(r.Context(), dir, files, tfVars, logW)
+		res, err = run.Plan(r.Context(), dir, files, vars, logW)
 		logW.flush()
 		if err == nil {
 			// A new plan supersedes any pending approval for this environment, so a
@@ -293,7 +305,7 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		if err == nil && s.policyEnforced(p.ID) {
 			if planBytes == nil {
 				sse.event("log", map[string]string{"line": "policy gate: planning before apply"})
-				if _, err = run.Plan(r.Context(), dir, files, tfVars, logW); err == nil {
+				if _, err = run.Plan(r.Context(), dir, files, vars, logW); err == nil {
 					planBytes, err = os.ReadFile(filepath.Join(dir, planFileName))
 				}
 				logW.flush()
@@ -311,9 +323,9 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 				if approved != nil {
 					sse.event("log", map[string]string{"line": "applying plan approved by " + approved.ApprovedBy})
 				}
-				err = run.ApplyPlan(r.Context(), dir, files, tfVars, planBytes, logW)
+				err = run.ApplyPlan(r.Context(), dir, files, vars, planBytes, logW)
 			} else {
-				err = run.Apply(r.Context(), dir, files, tfVars, logW)
+				err = run.Apply(r.Context(), dir, files, vars, logW)
 			}
 		}
 		logW.flush()
@@ -325,10 +337,10 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 			sse.event("result", map[string]any{"outputs": rec.Outputs})
 		}
 	case "destroy":
-		err = run.Destroy(r.Context(), dir, files, tfVars, logW)
+		err = run.Destroy(r.Context(), dir, files, vars, logW)
 		logW.flush()
 	case "accept-drift":
-		err = run.AcceptDrift(r.Context(), dir, files, tfVars, logW)
+		err = run.AcceptDrift(r.Context(), dir, files, vars, logW)
 		logW.flush()
 		if err == nil {
 			// The stored drift status described the state we just refreshed away,
@@ -339,22 +351,22 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		}
 	case "import":
 		q := r.URL.Query()
-		err = run.Import(r.Context(), dir, files, tfVars, strings.TrimSpace(q.Get("address")), strings.TrimSpace(q.Get("id")), logW)
+		err = run.Import(r.Context(), dir, files, vars, strings.TrimSpace(q.Get("address")), strings.TrimSpace(q.Get("id")), logW)
 		logW.flush()
 	case "state-rm":
-		err = run.StateRm(r.Context(), dir, files, tfVars, strings.TrimSpace(r.URL.Query().Get("address")), logW)
+		err = run.StateRm(r.Context(), dir, files, vars, strings.TrimSpace(r.URL.Query().Get("address")), logW)
 		logW.flush()
 	case "taint":
-		err = run.Taint(r.Context(), dir, files, tfVars, strings.TrimSpace(r.URL.Query().Get("address")), logW)
+		err = run.Taint(r.Context(), dir, files, vars, strings.TrimSpace(r.URL.Query().Get("address")), logW)
 		logW.flush()
 	case "untaint":
-		err = run.Untaint(r.Context(), dir, files, tfVars, strings.TrimSpace(r.URL.Query().Get("address")), logW)
+		err = run.Untaint(r.Context(), dir, files, vars, strings.TrimSpace(r.URL.Query().Get("address")), logW)
 		logW.flush()
 	case "state-mv":
 		q := r.URL.Query()
 		// ?dryRun=true reports what the move WOULD do and writes nothing, so a
 		// bulk rename can be checked against the real state first.
-		err = run.StateMv(r.Context(), dir, files, tfVars, strings.TrimSpace(q.Get("from")), strings.TrimSpace(q.Get("to")), q.Get("dryRun") == "true", logW)
+		err = run.StateMv(r.Context(), dir, files, vars, strings.TrimSpace(q.Get("from")), strings.TrimSpace(q.Get("to")), q.Get("dryRun") == "true", logW)
 		logW.flush()
 	case "force-unlock":
 		err = run.ForceUnlock(r.Context(), dir, files, strings.TrimSpace(r.URL.Query().Get("lockId")), logW)
@@ -364,7 +376,7 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 		logW.flush()
 	case "validate":
 		var res *tfjson.ValidateOutput
-		res, err = run.Validate(r.Context(), dir, files, tfVars, logW)
+		res, err = run.Validate(r.Context(), dir, files, vars, logW)
 		logW.flush()
 		if err == nil && res != nil {
 			// Diagnostics go through logW so they land in both the stream and

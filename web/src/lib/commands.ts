@@ -2,7 +2,7 @@ import type { Module, Project } from '$lib/types';
 import type { PaletteItem } from '$lib/components/CommandPalette.svelte';
 import type { ToolItem } from '$lib/components/ToolbarMenu.svelte';
 import {
-	Boxes, Database, FileDown, GitBranch, History, KeyRound, Layers, LayoutDashboard, ShieldCheck, Variable as VariableIcon, DollarSign, Bell
+	Boxes, Database, FileDown, GitBranch, History, KeyRound, Layers, LayoutDashboard, ShieldCheck, Variable as VariableIcon, DollarSign, Bell, Terminal
 } from 'lucide-svelte';
 
 // The command surface: the Ctrl+K palette, the top-bar actions and the global
@@ -41,6 +41,7 @@ export interface CommandActions {
 	openCost(): void;
 	openPolicy(): void;
 	openNotify(): void;
+	openEnvVars(): void;
 	openTerraform(): void;
 	openNewFile(): void;
 	openEnvironments(): void;
@@ -91,6 +92,7 @@ export function buildPaletteItems(a: {
 			items.push({ id: 'cmd:cost', label: 'Cost estimation', group: 'commands', run: actions.openCost });
 			items.push({ id: 'cmd:policy', label: 'Policy as code', group: 'commands', run: actions.openPolicy });
 			items.push({ id: 'cmd:notify', label: 'Notifications', group: 'commands', run: actions.openNotify });
+			items.push({ id: 'cmd:envvars', label: 'Environment variables', group: 'commands', run: actions.openEnvVars });
 			items.push({ id: 'cmd:terraform', label: 'Terraform block (required_version, backend)', group: 'commands', run: actions.openTerraform });
 			items.push({ id: 'cmd:environments', label: 'Environments', group: 'commands', run: actions.openEnvironments });
 			items.push({ id: 'cmd:new-file', label: 'Add file (template / script)', group: 'commands', run: actions.openNewFile });
@@ -150,6 +152,7 @@ export function buildToolItems(a: {
 		items.push({ id: 'cost', label: 'Cost', icon: DollarSign, run: actions.openCost, title: 'Cost estimation settings', priority: 5 });
 		items.push({ id: 'policy', label: 'Policy', icon: ShieldCheck, run: actions.openPolicy, title: 'Policy as code (conftest/OPA)', priority: 5 });
 		items.push({ id: 'notify', label: 'Notify', icon: Bell, run: actions.openNotify, title: 'Webhook / Slack notifications for applies and drift', priority: 5 });
+		items.push({ id: 'envvars', label: 'Env vars', icon: Terminal, run: actions.openEnvVars, title: "Environment variables for this project's engine runs (provider credentials)", priority: 5 });
 	}
 	if (perms.admin) {
 		items.push({ id: 'acl', label: 'Access', icon: ShieldCheck, run: actions.openAcl, title: 'Manage who can access this project', priority: 6 });

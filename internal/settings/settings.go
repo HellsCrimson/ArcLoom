@@ -17,6 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/HellsCrimson/ArcLoom/internal/envvar"
 	"github.com/HellsCrimson/ArcLoom/internal/secrets"
 )
 
@@ -246,6 +247,10 @@ type Environment struct {
 	BackendConfig map[string]string `yaml:"backend_config,omitempty" json:"backendConfig,omitempty"`
 	// Vars are per-env input-variable value overrides, injected as TF_VAR_<name>.
 	Vars map[string]string `yaml:"vars,omitempty" json:"vars,omitempty"`
+	// EnvVars override the project's environment variables for this env — the
+	// same credential pointing at a different cluster per environment. Layered
+	// over the project's rows by name (envvar.Merge).
+	EnvVars []envvar.Var `yaml:"env_vars,omitempty" json:"envVars,omitempty"`
 }
 
 // ACLEntry grants one user a set of project-scoped permissions. An entry with
@@ -282,6 +287,12 @@ type document struct {
 	// (not on the model) so per-env backend config / var overrides stay out of
 	// HCL/Git/undo.
 	Environments map[string][]Environment `yaml:"environments,omitempty"`
+	// EnvVars maps project ID -> environment variables set on the engine
+	// process for that project's runs. Per project so two projects targeting
+	// different clusters cannot collide, which setting them on the ArcLoom
+	// process itself could not avoid. Out of HCL/Git/undo like the rest of this
+	// document.
+	EnvVars map[string][]envvar.Var `yaml:"env_vars,omitempty"`
 	// ApprovalRequired maps project ID -> whether an apply must run a plan a
 	// user with the approve permission has signed off on (the plan → approve →
 	// apply gate). Absent/false = apply re-plans and auto-approves (default).
@@ -634,8 +645,53 @@ func (s *Store) Environments(projectID string) []Environment {
 		if e.Vars != nil {
 			out[i].Vars = maps.Clone(e.Vars)
 		}
+		if e.EnvVars != nil {
+			out[i].EnvVars = append([]envvar.Var(nil), e.EnvVars...)
+		}
 	}
 	return out
+}
+
+// EnvVars returns the environment variables set for a project's runs. The slice
+// is copied so callers cannot mutate the store.
+func (s *Store) EnvVars(projectID string) []envvar.Var {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v := s.doc.EnvVars[projectID]
+	if v == nil {
+		return nil
+	}
+	return append([]envvar.Var(nil), v...)
+}
+
+// SetEnvVars persists a project's environment variables. An empty list removes
+// the entry.
+func (s *Store) SetEnvVars(projectID string, vars []envvar.Var) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(vars) == 0 {
+		if _, ok := s.doc.EnvVars[projectID]; !ok {
+			return nil
+		}
+		delete(s.doc.EnvVars, projectID)
+		return s.persist()
+	}
+	if s.doc.EnvVars == nil {
+		s.doc.EnvVars = map[string][]envvar.Var{}
+	}
+	s.doc.EnvVars[projectID] = append([]envvar.Var(nil), vars...)
+	return s.persist()
+}
+
+// DeleteEnvVars drops a project's environment variables (project deletion).
+func (s *Store) DeleteEnvVars(projectID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.doc.EnvVars[projectID]; !ok {
+		return nil
+	}
+	delete(s.doc.EnvVars, projectID)
+	return s.persist()
 }
 
 // Environment returns one named environment (ok=false when absent).

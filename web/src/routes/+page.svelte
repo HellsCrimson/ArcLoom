@@ -25,6 +25,7 @@
 	import CostPanel from '$lib/components/CostPanel.svelte';
 	import PolicyPanel from '$lib/components/PolicyPanel.svelte';
 	import NotifyPanel from '$lib/components/NotifyPanel.svelte';
+	import EnvVarsPanel from '$lib/components/EnvVarsPanel.svelte';
 	import EnvironmentsPanel from '$lib/components/EnvironmentsPanel.svelte';
 	import UserMenu from '$lib/components/UserMenu.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
@@ -149,6 +150,7 @@
 	let showCost = $state(false);
 	let showPolicy = $state(false);
 	let showNotify = $state(false);
+	let showEnvVars = $state(false);
 
 	// Secrets
 	let showSecrets = $state(false);
@@ -360,6 +362,7 @@
 		openCost: () => (showCost = true),
 		openPolicy: () => (showPolicy = true),
 		openNotify: () => (showNotify = true),
+		openEnvVars: () => (showEnvVars = true),
 		openTerraform: () => openBackend(),
 		openNewFile: () => openFile(),
 		openEnvironments: () => (showEnvironments = true),
@@ -2005,6 +2008,12 @@
 	<PolicyPanel bind:open={showPolicy} projectId={project.id} />
 
 	<NotifyPanel bind:open={showNotify} projectId={project.id} />
+	<EnvVarsPanel
+		bind:open={showEnvVars}
+		projectId={project.id}
+		secrets={secretNames}
+		canEdit={auth.can('resources')}
+	/>
 
 	<EnvironmentsPanel
 		bind:open={showEnvironments}

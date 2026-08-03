@@ -74,7 +74,7 @@ func (f *fakeRunner) ProvidersSchema(context.Context, []model.ProviderInstance) 
 	f.schemaCalls++
 	return f.providerSchemas, nil
 }
-func (f *fakeRunner) Plan(_ context.Context, dir string, _ map[string][]byte, _ map[string]string, _ io.Writer) (runner.PlanResult, error) {
+func (f *fakeRunner) Plan(_ context.Context, dir string, _ map[string][]byte, _ runner.Vars, _ io.Writer) (runner.PlanResult, error) {
 	f.planCalled = true
 	// Mimic the real runner leaving a saved plan behind, which the policy gate
 	// reads back to apply exactly what it checked.
@@ -85,38 +85,38 @@ func (f *fakeRunner) Plan(_ context.Context, dir string, _ map[string][]byte, _ 
 	}
 	return f.planRes, nil
 }
-func (f *fakeRunner) DriftPlan(context.Context, string, map[string][]byte, map[string]string, io.Writer) (runner.PlanResult, error) {
+func (f *fakeRunner) DriftPlan(context.Context, string, map[string][]byte, runner.Vars, io.Writer) (runner.PlanResult, error) {
 	return f.res, f.err
 }
-func (f *fakeRunner) Apply(context.Context, string, map[string][]byte, map[string]string, io.Writer) error {
+func (f *fakeRunner) Apply(context.Context, string, map[string][]byte, runner.Vars, io.Writer) error {
 	f.applyCalled = true
 	return f.applyErr
 }
-func (f *fakeRunner) ApplyPlan(_ context.Context, _ string, _ map[string][]byte, _ map[string]string, planBytes []byte, _ io.Writer) error {
+func (f *fakeRunner) ApplyPlan(_ context.Context, _ string, _ map[string][]byte, _ runner.Vars, planBytes []byte, _ io.Writer) error {
 	f.applyPlanCalled = true
 	f.applyPlanBytes = planBytes
 	return nil
 }
-func (f *fakeRunner) Destroy(context.Context, string, map[string][]byte, map[string]string, io.Writer) error {
+func (f *fakeRunner) Destroy(context.Context, string, map[string][]byte, runner.Vars, io.Writer) error {
 	return nil
 }
 func (f *fakeRunner) Outputs(context.Context, string) (map[string]tfexec.OutputMeta, error) {
 	return nil, nil
 }
-func (f *fakeRunner) Import(context.Context, string, map[string][]byte, map[string]string, string, string, io.Writer) error {
+func (f *fakeRunner) Import(context.Context, string, map[string][]byte, runner.Vars, string, string, io.Writer) error {
 	return nil
 }
-func (f *fakeRunner) StateRm(context.Context, string, map[string][]byte, map[string]string, string, io.Writer) error {
+func (f *fakeRunner) StateRm(context.Context, string, map[string][]byte, runner.Vars, string, io.Writer) error {
 	return nil
 }
-func (f *fakeRunner) StateMv(context.Context, string, map[string][]byte, map[string]string, string, string, bool, io.Writer) error {
+func (f *fakeRunner) StateMv(context.Context, string, map[string][]byte, runner.Vars, string, string, bool, io.Writer) error {
 	return nil
 }
-func (f *fakeRunner) Taint(_ context.Context, _ string, _ map[string][]byte, _ map[string]string, address string, _ io.Writer) error {
+func (f *fakeRunner) Taint(_ context.Context, _ string, _ map[string][]byte, _ runner.Vars, address string, _ io.Writer) error {
 	f.tainted = address
 	return nil
 }
-func (f *fakeRunner) Untaint(_ context.Context, _ string, _ map[string][]byte, _ map[string]string, address string, _ io.Writer) error {
+func (f *fakeRunner) Untaint(_ context.Context, _ string, _ map[string][]byte, _ runner.Vars, address string, _ io.Writer) error {
 	f.untainted = address
 	return nil
 }
@@ -127,7 +127,7 @@ func (f *fakeRunner) ForceUnlock(_ context.Context, _ string, _ map[string][]byt
 func (f *fakeRunner) InitBackend(context.Context, string, map[string][]byte, bool, io.Writer) error {
 	return nil
 }
-func (f *fakeRunner) AcceptDrift(context.Context, string, map[string][]byte, map[string]string, io.Writer) error {
+func (f *fakeRunner) AcceptDrift(context.Context, string, map[string][]byte, runner.Vars, io.Writer) error {
 	f.acceptDriftCalled = true
 	return nil
 }
@@ -136,7 +136,7 @@ func (f *fakeRunner) StatePush(_ context.Context, _ string, _ map[string][]byte,
 	f.statePushed = stateJSON
 	return f.statePushErr
 }
-func (f *fakeRunner) Validate(context.Context, string, map[string][]byte, map[string]string, io.Writer) (*tfjson.ValidateOutput, error) {
+func (f *fakeRunner) Validate(context.Context, string, map[string][]byte, runner.Vars, io.Writer) (*tfjson.ValidateOutput, error) {
 	return nil, nil
 }
 func (f *fakeRunner) Graph(context.Context, map[string][]byte) (string, error) { return "", nil }

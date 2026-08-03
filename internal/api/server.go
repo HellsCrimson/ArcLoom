@@ -174,6 +174,7 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/projects/{id}/provider-updates", s.handleProviderUpdates)
 				r.Get("/projects/{id}/acl", s.handleGetACL)
 				r.Get("/projects/{id}/environments", s.handleGetEnvironments)
+				r.Get("/projects/{id}/env-vars", s.handleGetEnvVars)
 				r.Get("/projects/{id}/approval", s.handleGetApproval)
 			})
 
@@ -225,6 +226,7 @@ func (s *Server) Handler() http.Handler {
 				// be verified without waiting for a real failure.
 				r.Post("/projects/{id}/notify/test", s.handleTestNotify)
 				r.Put("/projects/{id}/environments", s.handleSetEnvironments)
+				r.Put("/projects/{id}/env-vars", s.handleSetEnvVars)
 				r.Put("/projects/{id}/approval", s.handleSetApprovalPolicy)
 			})
 
