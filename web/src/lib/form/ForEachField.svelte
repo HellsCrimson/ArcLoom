@@ -34,7 +34,7 @@
 	import type { Scope } from '$lib/model/expand';
 	import DynamicEditor from '$lib/form/DynamicEditor.svelte';
 	import { parseHclCollection, toHclText } from '$lib/model/hcltext';
-	import { refParts, stripWrappers } from '$lib/model/expand';
+	import { hasComment, refParts, stripWrappers } from '$lib/model/expand';
 	import { describeForEach } from '$lib/model/foreach';
 	import { Braces, Code2, Copy, Hash, List, Square, Wand2 } from 'lucide-svelte';
 
@@ -132,13 +132,15 @@
 			const parsed = parseHclCollection(forEach);
 			if (!parsed && forEach.trim()) {
 				// Refuse rather than overwrite: the value in the box may be a
-				// reference or a comprehension the user wants to keep, and Build
-				// cannot represent either. Say how to get there instead —
-				// through the wrappers, so `toset(var.x)` is named for what it is
-				// rather than reported as "a function".
+				// reference, a comprehension or a comment the user wants to keep,
+				// and Build cannot represent any of them. Say how to get there
+				// instead — through the wrappers, so `toset(var.x)` is named for
+				// what it is rather than reported as "a function".
 				switchError = refParts(stripWrappers(forEach.trim()))
 					? `${forEach.trim()} is a reference — clear the field to build a collection here instead.`
-					: 'Not a plain collection (a function or comprehension) — clear the field to build one here.';
+					: hasComment(forEach)
+						? 'This collection has comments, which the row editor cannot store — remove them to build it here, or keep editing the expression.'
+						: 'Not a plain collection (a function or comprehension) — clear the field to build one here.';
 				return;
 			}
 			draft = parsed ?? { mode: 'literal', entries: [] };

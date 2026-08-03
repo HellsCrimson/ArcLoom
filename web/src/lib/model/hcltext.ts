@@ -18,7 +18,14 @@
 // mangling an expression it does not understand.
 
 import type { AttrValue } from "$lib/types";
-import { balanced, literalString, splitTop, topLevelAssign } from "$lib/model/expand";
+import {
+  balanced,
+  hasComment,
+  literalString,
+  splitTop,
+  stripComments,
+  topLevelAssign,
+} from "$lib/model/expand";
 
 /** toHclText renders a value as an HCL expression. */
 export function toHclText(v: AttrValue | undefined, indent = 0): string {
@@ -57,12 +64,31 @@ function quoteKey(key: string): string {
 }
 
 /**
- * parseHclCollection reads an HCL object/list literal into a structural value.
+ * parseHclCollection reads an HCL object/list literal into a structural value,
+ * for an EDITING round trip: the result goes into a structural editor and comes
+ * back out through toHclText.
+ *
  * Returns null when the text is not a collection (a reference, a function call,
- * a comprehension) — those stay raw text.
+ * a comprehension) — those stay raw text — and, for the same reason, when it
+ * carries a COMMENT. The structural form has nowhere to store one, so parsing
+ * `web = "10.0.1.0/24" # frontend` into rows would delete that note the next
+ * time the form saved. Refusing keeps the raw box, which keeps the comment.
+ *
+ * Use readHclCollection instead when nothing is written back.
  */
 export function parseHclCollection(text: string): AttrValue | null {
-  const s = (text ?? "").trim();
+  if (hasComment(text ?? "")) return null;
+  return readHclCollection(text);
+}
+
+/**
+ * readHclCollection is parseHclCollection for READ-ONLY analysis (member
+ * previews, shape detection): it strips comments and reads what is left, so a
+ * commented collection still explains itself in the for_each panel even though
+ * the Build editor refuses to open on it.
+ */
+export function readHclCollection(text: string): AttrValue | null {
+  const s = stripComments(text ?? "").trim();
   if (!s || !balanced(s)) return null;
   if (!(isObject(s) || isList(s))) return null;
   const parsed = parseValue(s);
@@ -141,15 +167,23 @@ export function renderHclAttrs(attrs: Record<string, AttrValue>): string {
  *
  * Returns null on the first line it cannot read, so a typo leaves the stored
  * config untouched rather than half-applied.
+ *
+ * Comments are stripped rather than refused, unlike parseHclCollection: this
+ * box is rendered FROM the model by renderHclAttrs, which never emits a
+ * comment, so there is no comment here to protect — one the user types is
+ * transient either way. Stripping is what makes a trailing comment behave: it
+ * used to end up inside the value (`tags = {} # note` stored the note as part
+ * of the expression), while a comment on its own line was already dropped.
  */
 export function parseHclAttrs(text: string): Record<string, AttrValue> | null {
   const out: Record<string, AttrValue> = {};
   // Split on newlines that are not inside a nested collection, so a multi-line
   // object value stays with its key.
-  const lines = splitTopLines(text);
+  const lines = splitTopLines(stripComments(text));
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//")) continue;
+    // A comment-only line is now whitespace, so the empty check covers it.
+    if (!trimmed) continue;
     const eq = topLevelAssign(trimmed);
     if (eq < 0) return null;
     const key = trimmed.slice(0, eq).trim().replace(/^"(.*)"$/, "$1");

@@ -49,8 +49,86 @@ export function stripWrappers(expr: string): string {
   return s;
 }
 
+// Comments. The scanners below track quotes and brackets and nothing else, so a
+// `#` was just an ordinary character to them: `# see [note]` unbalanced the
+// text, a comment on its own line became an unreadable "key = value" part, and
+// a TRAILING comment was swallowed into the value next to it — `web = "x" # a`
+// parsed as an opaque expression, and in a list `["a", # first` turned the
+// comment into an element of its own. So every reader strips first.
+//
+// Two ways to treat one, and the difference is whether anything is written
+// back. A READ-ONLY analysis (the ×N badge, instance rows, member previews)
+// strips and carries on — the comment stays in the model, and refusing would
+// cost the user the badge over a `# note`. An EDITING round trip
+// (parseHclCollection -> structured editor -> toHclText) REFUSES instead: the
+// structural form has nowhere to put a comment, so parsing one would delete it
+// on the next save. That is the same rule the rest of this file follows for a
+// comprehension or a function call.
+
+/**
+ * commentEnd returns the index just past a comment starting at i, or -1 when
+ * there is none there. `#` and `//` run to the end of the line and stop AT the
+ * newline, which the caller keeps — the collection readers turn newlines into
+ * separators. `/* *\/` may span lines. Division (`a / b`) is untouched: only
+ * `//` and `/*` open a comment.
+ */
+function commentEnd(s: string, i: number): number {
+  const two = s.slice(i, i + 2);
+  if (s[i] === "#" || two === "//") {
+    const nl = s.indexOf("\n", i);
+    return nl < 0 ? s.length : nl;
+  }
+  if (two === "/*") {
+    const end = s.indexOf("*/", i + 2);
+    return end < 0 ? s.length : end + 2;
+  }
+  return -1;
+}
+
+/** stripComments removes HCL comments that are not inside a string literal. */
+export function stripComments(s: string): string {
+  let out = "";
+  let quote = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quote) {
+      out += c;
+      if (c === "\\" && i + 1 < s.length) out += s[++i];
+      else if (c === quote) quote = "";
+      continue;
+    }
+    const end = commentEnd(s, i);
+    if (end >= 0) {
+      // A space, not nothing: `1 /* n */ 2` must not become `12`.
+      out += " ";
+      i = end - 1;
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    out += c;
+  }
+  return out;
+}
+
+/** hasComment reports whether s carries a comment outside a string literal. */
+export function hasComment(s: string): boolean {
+  let quote = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = "";
+      continue;
+    }
+    if (commentEnd(s, i) >= 0) return true;
+    if (c === '"' || c === "'") quote = c;
+  }
+  return false;
+}
+
 // balanced reports whether every bracket/quote in s closes, which is what makes
 // the regex peel above safe: `toset(a) + toset(b)` must not be read as one call.
+// Callers strip comments first; a `#` here is an ordinary character.
 export function balanced(s: string): boolean {
   let depth = 0;
   let quote = "";
@@ -197,14 +275,17 @@ function expandCount(count: string, limit: number): Expansion | null {
  * variable's default.
  */
 function expandForEach(forEach: string, scope: Scope, limit: number): Expansion | null {
-  let expr = stripWrappers(forEach);
+  // Read-only: strip comments rather than refuse. Nothing here is written back,
+  // so a `# note` beside a key must not cost the caller its badge or rows.
+  let expr = stripWrappers(stripComments(forEach));
 
   const resolved = resolveRef(expr, scope);
   const structural = keysFromStructural(resolved);
   if (structural) return capped(structural, limit);
 
+  // A declaration may hold its collection as raw HCL, comments and all.
   const viaRef = rawExpr(resolved);
-  if (viaRef !== null) expr = stripWrappers(viaRef);
+  if (viaRef !== null) expr = stripWrappers(stripComments(viaRef));
 
   if (!balanced(expr)) return null;
 

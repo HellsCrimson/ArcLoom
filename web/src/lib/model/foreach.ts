@@ -14,7 +14,7 @@
 import type { AttrValue, Field, Local, Variable } from "$lib/types";
 import { elemField } from "$lib/form/defaults";
 import { parseHclType } from "$lib/model/hcltype";
-import { parseHclCollection } from "$lib/model/hcltext";
+import { readHclCollection } from "$lib/model/hcltext";
 import {
   expandInstances,
   refParts,
@@ -127,9 +127,12 @@ export function describeForEach(
   // A ref resolves through the declaration; an INLINE collection is read
   // straight out of the expression, so a for_each written in the Build editor
   // gets the same member previews and each.value detail as a declared one.
+  // readHclCollection, not parseHclCollection: this panel only DESCRIBES the
+  // collection, so a comment in it should cost the user nothing here. (The
+  // Build editor refuses the same text, because that one writes back.)
   const resolved = ref
     ? resolveRef(srcExpr, scope)
-    : (parseHclCollection(srcExpr) ?? undefined);
+    : (readHclCollection(srcExpr) ?? undefined);
   // A declaration may hold its collection as RAW HCL (`local.x = ["a","b"]` is
   // stored as an expression, not as items), so parse that too — otherwise the
   // most ordinary list of names looks shapeless and the toset() warning, the
@@ -139,7 +142,7 @@ export function describeForEach(
   // is lifted into entries/items.
   const value = structural(
     resolved?.mode === "expression"
-      ? (parseHclCollection(resolved.expr ?? "") ?? resolved)
+      ? (readHclCollection(resolved.expr ?? "") ?? resolved)
       : resolved,
   );
   const declared = ref
