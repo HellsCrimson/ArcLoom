@@ -2,7 +2,7 @@
   Environment variables for this project's engine runs.
 
   They exist because a provider's own environment variables are frequently the
-  documented way to give it credentials (OPENNEBULA_PASSWORD, VAULT_TOKEN,
+  documented way to give it credentials (VAULT_TOKEN,
   AWS_PROFILE), and the only injection ArcLoom had was TF_VAR_<name> — which
   feeds `variable` blocks and nothing else. Setting them on the ArcLoom process
   worked but was instance-wide, so two projects could not each have their own.
@@ -173,7 +173,7 @@
 			<div class="flex flex-wrap items-start gap-2">
 				<input
 					class="{inp} w-56 font-mono"
-					placeholder="OPENNEBULA_PASSWORD"
+					placeholder="ENVIRONMENT_VARIABLE"
 					bind:value={row.name}
 					disabled={!canEdit}
 				/>
