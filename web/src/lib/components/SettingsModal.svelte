@@ -253,6 +253,15 @@
 
 	// --- Audit log ---
 	let auditEntries = $state<AuditEntry[]>([]);
+
+	// An agent write and a browser click are the same action by the same user;
+	// the origin is the only thing that tells them apart, so it gets a colour.
+	function viaClass(via?: string) {
+		if (via === 'mcp') return 'bg-purple-500/15 text-purple-300';
+		if (via === 'api') return 'bg-sky-500/15 text-sky-300';
+		if (via === 'ui') return 'bg-[var(--al-panel-2)] text-[var(--al-muted)]';
+		return 'bg-[var(--al-panel-2)] text-[var(--al-muted)]';
+	}
 	let loadingAudit = $state(false);
 	let auditUserFilter = $state('');
 
@@ -734,6 +743,7 @@
 					<tr>
 						<th class="px-2.5 py-1.5 text-left font-medium">When</th>
 						<th class="px-2.5 py-1.5 text-left font-medium">User</th>
+						<th class="px-2.5 py-1.5 text-left font-medium">Via</th>
 						<th class="px-2.5 py-1.5 text-left font-medium">Action</th>
 						<th class="px-2.5 py-1.5 text-left font-medium">Detail</th>
 					</tr>
@@ -743,12 +753,16 @@
 						<tr class="border-t border-[var(--al-border)]">
 							<td class="whitespace-nowrap px-2.5 py-1 text-[var(--al-muted)]">{new Date(e.time).toLocaleString()}</td>
 							<td class="px-2.5 py-1 text-[var(--al-text)]">{e.user || '—'}</td>
+							<td class="whitespace-nowrap px-2.5 py-1">
+								<span class="{viaClass(e.via)} rounded px-1.5 py-0.5 text-[10px]">{e.via || 'unknown'}</span>
+								{#if e.keyLabel}<span class="mono ml-1 text-[10px] text-[var(--al-muted)]" title="API key">{e.keyLabel}</span>{/if}
+							</td>
 							<td class="px-2.5 py-1"><span class="mono rounded bg-[var(--al-accent-weak)] px-1.5 py-0.5 text-[10px] text-[var(--al-accent)]">{e.action}</span></td>
 							<td class="mono truncate px-2.5 py-1 text-[10px] text-[var(--al-muted)]" style="max-width:0;">{e.detail ?? ''}</td>
 						</tr>
 					{/each}
 					{#if auditEntries.length === 0 && !loadingAudit}
-						<tr><td colspan="4" class="px-2.5 py-4 text-center text-[var(--al-muted)]">No audit entries yet.</td></tr>
+						<tr><td colspan="5" class="px-2.5 py-4 text-center text-[var(--al-muted)]">No audit entries yet.</td></tr>
 					{/if}
 				</tbody>
 			</table>

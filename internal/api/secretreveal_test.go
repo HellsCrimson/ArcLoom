@@ -46,7 +46,7 @@ func revealEnv(t *testing.T) (http.Handler, audit.Store) {
 	}
 	cfg := config.Config{AuthEnabled: true, CookieName: "arcloom_session", SessionTTL: time.Hour, DataDir: t.TempDir()}
 	authn := auth.New(auth.NewLocalProvider(users))
-	h := New(cfg, nil, st, nil, sec, nil, authn, session.NewMemory(), users, testSettings(t), nil, auditLog, nil, nil).Handler()
+	h := New(cfg, nil, st, nil, sec, nil, authn, session.NewMemory(), users, testSettings(t), nil, auditLog, nil, nil, nil).Handler()
 	return h, auditLog
 }
 

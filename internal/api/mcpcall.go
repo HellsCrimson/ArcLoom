@@ -81,6 +81,23 @@ func (b *bufWriter) finished() bool {
 	return b.done
 }
 
+// mcpOriginCtxKey marks a request as having been made by an MCP tool call, so
+// the audit trail can tell an agent's write apart from the same user doing the
+// same thing in the browser.
+//
+// It is deliberately a **context value set here, in-process**, not a header.
+// A header (`X-ArcLoom-Via: mcp`) would be settable by any external client,
+// which would let anyone write a false origin into the audit log — the one
+// place that must not be forgeable. Nothing outside this package can reach this
+// key, so the marker is only ever true for a request this file constructed.
+type mcpOriginCtxKey struct{}
+
+// viaMCP reports whether the request originated from an MCP tool call.
+func viaMCP(r *http.Request) bool {
+	v, _ := r.Context().Value(mcpOriginCtxKey{}).(bool)
+	return v
+}
+
 // apiResult is the outcome of a re-entrant call.
 type apiResult struct {
 	Status int
@@ -129,6 +146,8 @@ func (s *Server) syntheticRequest(ctx context.Context, orig *http.Request, metho
 	// sends it down the fresh-context path; cancellation still propagates,
 	// which a context.Background() would have thrown away.
 	ctx = context.WithValue(ctx, chi.RouteCtxKey, nil)
+	// Mark the origin for the audit trail (see mcpOriginCtxKey).
+	ctx = context.WithValue(ctx, mcpOriginCtxKey{}, true)
 
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), rdr)
 	if err != nil {

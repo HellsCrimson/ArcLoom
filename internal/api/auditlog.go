@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,6 +22,12 @@ var auditActions = map[string]string{
 	"POST /keys":               "apikey.create",
 	"DELETE /keys/{kid}":       "apikey.delete",
 	"DELETE /admin/keys/{kid}": "apikey.delete",
+
+	// OAuth: approving a client is a credential grant, so it is recorded like
+	// one. The consent handler supplies a richer detail (which client, which
+	// scopes) via auditDetail.
+	"POST /oauth/authorize":      "oauth.grant",
+	"DELETE /oauth/grants/{gid}": "oauth.revoke",
 
 	"POST /providers":                            "provider.add",
 	"POST /projects":                             "project.create",
@@ -79,6 +86,26 @@ var auditActions = map[string]string{
 	"POST /admin/settings/secret-key/rotate":    "settings.secret_key.rotate",
 }
 
+// auditDetailCtxKey lets a handler supply a richer audit detail than the
+// request path the middleware defaults to. It is a context value, so it is set
+// in-process by the handler and can never be influenced by the client.
+type auditDetailCtxKey struct{}
+
+// withAuditDetail returns a request whose audit entry will carry detail. Use it
+// when the path alone does not say what happened — an OAuth consent records
+// which client got which scopes, which the URL does not contain.
+func withAuditDetail(r *http.Request, detail string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), auditDetailCtxKey{}, detail))
+}
+
+// auditDetail returns the handler-supplied detail, or the request path.
+func auditDetail(r *http.Request) string {
+	if d, ok := r.Context().Value(auditDetailCtxKey{}).(string); ok && d != "" {
+		return d
+	}
+	return r.URL.Path
+}
+
 // statusRecorder captures the response status so the audit middleware records
 // only successful mutations.
 type statusRecorder struct {
@@ -122,7 +149,7 @@ func (s *Server) auditMiddleware(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 		if rec.status >= 200 && rec.status < 300 {
-			s.recordAudit(r, auditActionFor(r), chi.URLParam(r, "id"), r.URL.Path)
+			s.recordAudit(r, auditActionFor(r), chi.URLParam(r, "id"), auditDetail(r))
 		}
 	})
 }
@@ -157,14 +184,27 @@ func (s *Server) recordAudit(r *http.Request, action, projectID, detail string) 
 	if u, ok := userFromContext(r); ok {
 		username = u.Username
 	}
-	_ = s.audit.Append(&audit.Entry{
+	e := &audit.Entry{
 		ID:        uuid.NewString(),
 		Time:      time.Now(),
 		User:      username,
 		Action:    action,
 		ProjectID: projectID,
 		Detail:    detail,
-	})
+		Via:       audit.OriginUI,
+	}
+	// A key-backed request records which credential was used and whether it came
+	// through an MCP tool call, so "matthias changed a resource" can be read as
+	// "matthias, via the agent, using the key labelled claude-code".
+	if cred, ok := credentialFromContext(r); ok {
+		e.Via = audit.OriginAPI
+		if viaMCP(r) {
+			e.Via = audit.OriginMCP
+		}
+		e.KeyLabel = cred.Label
+		e.KeyID = cred.ID
+	}
+	_ = s.audit.Append(e)
 }
 
 // recordAuditAs appends an audit entry attributed to a username instead of the

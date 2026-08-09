@@ -3,7 +3,7 @@
 	// clients. Any authenticated user manages their own, and a key can only ever
 	// be narrower than its owner — so the scope checkboxes are filtered to what
 	// this user actually holds, and the server refuses anything wider anyway.
-	import { api, type ApiKey } from '$lib/api/client';
+	import { api, type ApiKey, type OAuthGrant } from '$lib/api/client';
 	import { auth } from '$lib/stores/auth.svelte';
 	import Modal from './Modal.svelte';
 	import { Copy, Plus, Trash2, TriangleAlert } from 'lucide-svelte';
@@ -12,6 +12,9 @@
 		$props();
 
 	let keys = $state<ApiKey[]>([]);
+	// Connected apps: MCP clients the user authorized through the OAuth consent
+	// screen. Same credential model as a key — revoking kills its tokens at once.
+	let grants = $state<OAuthGrant[]>([]);
 	let loading = $state(false);
 	let error = $state('');
 
@@ -41,6 +44,13 @@
 		error = '';
 		try {
 			keys = await api.keys.list();
+			// Best-effort: OAuth can be switched off, and that must not break the
+			// keys panel it shares a modal with.
+			try {
+				grants = await api.grants.list();
+			} catch {
+				grants = [];
+			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -96,6 +106,16 @@
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
 			creating = false;
+		}
+	}
+
+	async function revokeGrant(g: OAuthGrant) {
+		if (!confirm(`Revoke ${g.clientName}? It will have to be authorized again.`)) return;
+		try {
+			await api.grants.revoke(g.id);
+			await load();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
 		}
 	}
 
@@ -276,6 +296,45 @@
 					{/each}
 				</tbody>
 			</table>
+		{/if}
+
+		<!-- Connected apps (OAuth grants) -->
+		{#if grants.length > 0}
+			<div>
+				<div class="mb-1 text-xs font-medium text-[var(--al-text)]">Connected apps</div>
+				<p class="mb-2 text-[11px] text-[var(--al-muted)]">
+					MCP clients you authorized in the browser. Revoking takes effect immediately.
+				</p>
+				<table class="w-full text-left text-xs">
+					<thead class="text-[var(--al-muted)]">
+						<tr>
+							<th class="py-1">App</th>
+							<th class="py-1">Scopes</th>
+							<th class="py-1">Last used</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each grants as g (g.id)}
+							<tr class="border-t border-[var(--al-border)]">
+								<td class="py-1.5">{g.clientName}</td>
+								<td class="mono py-1.5">{g.scopes.length ? g.scopes.join(', ') : 'read-only'}</td>
+								<td class="py-1.5 text-[var(--al-muted)]">{fmt(g.lastUsedAt)}</td>
+								<td class="py-1.5 text-right">
+									<button
+										class="rounded p-1 text-red-400 hover:bg-[var(--al-panel-2)]"
+										title="Revoke"
+										aria-label="Revoke {g.clientName}"
+										onclick={() => revokeGrant(g)}
+									>
+										<Trash2 size={13} />
+									</button>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
 		{/if}
 	</div>
 </Modal>

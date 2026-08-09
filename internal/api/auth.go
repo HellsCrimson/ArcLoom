@@ -16,7 +16,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/HellsCrimson/ArcLoom/internal/apikey"
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/settings"
 	"github.com/HellsCrimson/ArcLoom/internal/user"
@@ -73,31 +72,40 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		u, key, ok := s.currentUser(r)
+		u, cred, ok := s.currentUser(r)
 		if !ok {
-			writeErr(w, http.StatusUnauthorized, "authentication required")
+			s.unauthorized(w, r)
 			return
 		}
 		ctx := context.WithValue(r.Context(), userCtxKey{}, u)
-		if key != nil {
-			ctx = context.WithValue(ctx, apiKeyCtxKey{}, key)
+		if cred != nil {
+			ctx = context.WithValue(ctx, credCtxKey{}, cred)
 		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// currentUser resolves the request's credential to a live, enabled user. Two
-// credentials are accepted, and the returned *apikey.Key says which: an
-// `Authorization: Bearer` API key (non-nil key) or the session cookie (nil).
+// currentUser resolves the request's credential to a live, enabled user. The
+// returned *credential says which kind authenticated it: an `Authorization:
+// Bearer` API key or OAuth access token (non-nil), or the session cookie (nil).
 //
 // Bearer is tried first and is *terminal*: a request that presents a malformed
-// or revoked key is rejected outright rather than silently falling back to any
-// cookie that happens to ride along, so a stale key can never be masked by a
-// browser session and appear to work.
-func (s *Server) currentUser(r *http.Request) (*user.User, *apikey.Key, bool) {
+// or revoked token is rejected outright rather than silently falling back to any
+// cookie that happens to ride along, so a stale credential can never be masked
+// by a browser session and appear to work.
+//
+// Within bearer, an API key is tried before an OAuth token purely because its
+// `arcl_` prefix makes it cheap to recognise; neither can be mistaken for the
+// other, so the order carries no meaning beyond that.
+func (s *Server) currentUser(r *http.Request) (*user.User, *credential, bool) {
 	if token, ok := bearerToken(r); ok {
-		u, key, ok := s.userForKey(token)
-		return u, key, ok
+		if u, key, ok := s.userForKey(token); ok {
+			return u, credFromKey(key), true
+		}
+		if u, grant, ok := s.userForGrant(token); ok {
+			return u, credFromGrant(grant), true
+		}
+		return nil, nil, false
 	}
 	c, err := r.Cookie(s.cfg.CookieName)
 	if err != nil {
@@ -112,6 +120,18 @@ func (s *Server) currentUser(r *http.Request) (*user.User, *apikey.Key, bool) {
 		return nil, nil, false
 	}
 	return u, nil, true
+}
+
+// unauthorized writes the 401. For the MCP endpoint it also carries the
+// WWW-Authenticate header pointing at the protected-resource metadata, which is
+// the entire trigger for the OAuth flow: a client with no credential gets told
+// where to go and authorizes itself, instead of just failing.
+func (s *Server) unauthorized(w http.ResponseWriter, r *http.Request) {
+	if s.oauthEnabled() && strings.HasPrefix(r.URL.Path, "/api/mcp") {
+		w.Header().Set("WWW-Authenticate",
+			`Bearer resource_metadata="`+issuer(r)+`/.well-known/oauth-protected-resource"`)
+	}
+	writeErr(w, http.StatusUnauthorized, "authentication required")
 }
 
 // userFromContext returns the user injected by requireAuth.
@@ -139,7 +159,7 @@ func (s *Server) requirePerm(perm string) func(http.Handler) http.Handler {
 				writeErr(w, http.StatusForbidden, "you do not have permission to do that")
 				return
 			}
-			if msg := keyDenies(r, perm, ""); msg != "" {
+			if msg := credDenies(r, perm, ""); msg != "" {
 				writeErr(w, http.StatusForbidden, msg)
 				return
 			}
@@ -164,7 +184,7 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 		// that keeps a leaked key away from user management, the SSO config, the
 		// secret store settings and master-key rotation — the actions that could
 		// be used to escalate out of the key's own scopes.
-		if _, viaKey := keyFromContext(r); viaKey {
+		if _, viaCred := credentialFromContext(r); viaCred {
 			writeErr(w, http.StatusForbidden, "api keys cannot be used for admin actions")
 			return
 		}
@@ -251,14 +271,14 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	if u, key, ok := s.currentUser(r); ok {
+	if u, cred, ok := s.currentUser(r); ok {
 		// For a key-authenticated request report what the *credential* can do,
 		// not what its owner could do in a browser: the intersection of the
 		// user's permissions with the key's scopes, and never admin. That makes
 		// /auth/me a usable "what is this key allowed to do" probe for a
 		// non-browser client, and stops the SPA-facing DTO from overstating a
 		// restricted credential.
-		resp.User = meUserDTO(effectiveUser(u, key))
+		resp.User = meUserDTO(effectiveUser(u, cred))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -370,7 +390,7 @@ func (s *Server) csrfSafe(r *http.Request) bool {
 	// context by the time csrfGuard calls this.) Without this, every non-browser
 	// client — CI, scripts, MCP — would be rejected by the Origin fallback the
 	// moment it sent an Origin header.
-	if _, viaKey := keyFromContext(r); viaKey {
+	if _, viaCred := credentialFromContext(r); viaCred {
 		return true
 	}
 	switch r.Header.Get("Sec-Fetch-Site") {

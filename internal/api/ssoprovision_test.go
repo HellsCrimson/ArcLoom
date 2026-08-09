@@ -33,7 +33,7 @@ func ssoGroupServer(t *testing.T, fake *fakeRedirect, sso settings.SSO) (http.Ha
 	}
 	cfg := config.Config{AuthEnabled: true, CookieName: "arcloom_session", SessionTTL: time.Hour}
 	authn := auth.New(auth.NewLocalProvider(users), fake)
-	h := New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, session.NewMemory(), users, set, nil, auditLog, nil, nil).Handler()
+	h := New(cfg, nil, store.NewMemory(), nil, nil, nil, authn, session.NewMemory(), users, set, nil, auditLog, nil, nil, nil).Handler()
 	return h, users, auditLog
 }
 

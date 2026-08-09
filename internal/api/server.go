@@ -21,6 +21,7 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/cache"
 	"github.com/HellsCrimson/ArcLoom/internal/config"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
+	"github.com/HellsCrimson/ArcLoom/internal/oauth"
 	"github.com/HellsCrimson/ArcLoom/internal/registry"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
 	"github.com/HellsCrimson/ArcLoom/internal/runs"
@@ -47,6 +48,7 @@ type Server struct {
 	audit     audit.Store     // may be nil (audit disabled, e.g. in tests)
 	approvals approvals.Store // may be nil (approval gate disabled, e.g. in tests)
 	apikeys   apikey.Store    // may be nil (bearer auth unavailable, e.g. in tests)
+	oauth     oauth.Store     // may be nil (OAuth disabled, e.g. in tests)
 	registry  *registry.Client
 
 	// authLimiter throttles the argon2-backed password endpoints (login +
@@ -85,8 +87,8 @@ type Server struct {
 }
 
 // New builds a Server. runners maps each available engine to its runner.
-func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store, auditLog audit.Store, approvalStore approvals.Store, keys apikey.Store) *Server {
-	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist, audit: auditLog, approvals: approvalStore, apikeys: keys,
+func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store, auditLog audit.Store, approvalStore approvals.Store, keys apikey.Store, oauthStore oauth.Store) *Server {
+	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist, audit: auditLog, approvals: approvalStore, apikeys: keys, oauth: oauthStore,
 		registry:    registry.NewClient(),
 		startedAt:   time.Now(),
 		build:       BuildInfo{Version: "dev"},
@@ -141,6 +143,19 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/healthz", s.handleHealth)
 	r.Get("/livez", s.handleHealth)
 
+	// OAuth discovery lives at the ROOT, not under /api: RFC 9728 and RFC 8414
+	// both define well-known paths relative to the host, and that is what a
+	// client actually fetches (verified against Claude Code). Declared before the
+	// SPA catch-all so the shell does not swallow them.
+	if s.oauthEnabled() {
+		r.Get("/.well-known/oauth-protected-resource", s.handleProtectedResourceMetadata)
+		// Clients also probe the path-suffixed form when the resource is not at
+		// the host root, which ours is not (/api/mcp).
+		r.Get("/.well-known/oauth-protected-resource/*", s.handleProtectedResourceMetadata)
+		r.Get("/.well-known/oauth-authorization-server", s.handleAuthServerMetadata)
+		r.Get("/.well-known/oauth-authorization-server/*", s.handleAuthServerMetadata)
+	}
+
 	r.Route("/api", func(r chi.Router) {
 		// Public: reachable without a session so the user can log in. /auth/me
 		// returns the current user or 401, which the SPA uses to decide whether
@@ -152,6 +167,16 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/auth/me", s.handleMe)
 			r.Get("/auth/sso/{provider}/login", s.handleSSOLogin)
 			r.Get("/auth/sso/{provider}/callback", s.handleSSOCallback)
+
+			// OAuth for MCP clients. Registration, discovery and the token
+			// endpoint are necessarily unauthenticated — a client reaches them
+			// precisely because it has no credential yet. What they hand out is
+			// gated by the consent screen (authenticated, below), not here.
+			if s.oauthEnabled() {
+				r.Get("/oauth/authorization-server", s.handleAuthServerMetadata)
+				r.Post("/oauth/register", s.handleRegisterClient)
+				r.Post("/oauth/token", s.handleToken)
+			}
 		})
 
 		// Protected: everything else requires a valid session. requireAuth runs
@@ -184,6 +209,12 @@ func (s *Server) Handler() http.Handler {
 				r.Get("/keys", s.handleListAPIKeys)
 				r.Post("/keys", s.handleCreateAPIKey)
 				r.Delete("/keys/{kid}", s.handleDeleteAPIKey)
+				// The consent step: the user is already signed in here, which is
+				// what makes approving an MCP client one click.
+				r.Get("/oauth/authorize/info", s.handleAuthorizeInfo)
+				r.Post("/oauth/authorize", s.handleAuthorizeApprove)
+				r.Get("/oauth/grants", s.handleListGrants)
+				r.Delete("/oauth/grants/{gid}", s.handleRevokeGrant)
 			})
 
 			// MCP (Model Context Protocol): one endpoint, all methods. It sits

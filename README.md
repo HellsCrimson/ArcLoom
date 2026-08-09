@@ -82,7 +82,7 @@ entirely and keep everything you built.
 | **Audit log** | Every mutating action, with actor and target. |
 | **Notifications** | Apply outcomes and drift to Slack, Discord, Teams, Matrix, ntfy, Fluxer or a plain webhook. |
 | **Secrets** | AES-256-GCM on disk, `ARCLOOM_SECRET_*` environment secrets, or **Vault / OpenBao**. Injected as `TF_VAR_*` at run time — never written to HCL, state or Git. Master key rotatable. |
-| **API keys** | Scoped, revocable credentials for CI, scripts and AI agents. A key is always *narrower* than its owner — effective access is their permissions **and** its scopes — and can never perform admin actions. |
+| **API keys & OAuth** | Scoped, revocable credentials for CI, scripts and AI agents — a pasted key, or an OAuth 2.1 grant the user approves in the browser. A key is always *narrower* than its owner — effective access is their permissions **and** its scopes — and can never perform admin actions. |
 | **MCP server** | Drive ArcLoom from an AI agent over the Model Context Protocol. Tools are filtered by the key's scopes, so a read-only key is never even shown a write tool. See [Connecting an AI agent](#connecting-an-ai-agent). |
 
 ## A closer look
@@ -227,6 +227,7 @@ All configuration is environment variables; sensible defaults apply throughout.
 | `ARCLOOM_SESSION_TTL` | `168h` | Session lifetime. |
 | `ARCLOOM_LOG_LEVEL` / `ARCLOOM_LOG_FORMAT` | `info` / `text` | Structured logging (`json` for shipping). |
 | `ARCLOOM_MCP` | `true` | Mounts the MCP endpoint at `/api/mcp`. It is inert without an API key, so the default is on. |
+| `ARCLOOM_MCP_OAUTH` | `true` | Mounts the OAuth 2.1 authorization server so MCP clients can authorize without a pasted key. |
 
 <details>
 <summary>Paths, caches and OIDC</summary>
@@ -235,7 +236,7 @@ All configuration is environment variables; sensible defaults apply throughout.
 
 | Variable | Purpose |
 |---|---|
-| `ARCLOOM_SECRETS_DIR`, `ARCLOOM_RUNS_DIR`, `ARCLOOM_AUDIT_DIR`, `ARCLOOM_APPROVALS_DIR`, `ARCLOOM_USERS_DIR`, `ARCLOOM_SESSIONS_DIR`, `ARCLOOM_APIKEYS_DIR`, `ARCLOOM_SETTINGS_FILE` | Where each kind of data lives; all default beside `ARCLOOM_DATA`. |
+| `ARCLOOM_SECRETS_DIR`, `ARCLOOM_RUNS_DIR`, `ARCLOOM_AUDIT_DIR`, `ARCLOOM_APPROVALS_DIR`, `ARCLOOM_USERS_DIR`, `ARCLOOM_SESSIONS_DIR`, `ARCLOOM_APIKEYS_DIR`, `ARCLOOM_OAUTH_DIR`, `ARCLOOM_SETTINGS_FILE` | Where each kind of data lives; all default beside `ARCLOOM_DATA`. |
 | `ARCLOOM_CACHE_DIR`, `TF_PLUGIN_CACHE_DIR` | Normalized provider schemas and shared provider plugins. |
 | `ARCLOOM_VAULT_TOKEN` | Token for an external secret store, so no credential is persisted. |
 | `ARCLOOM_OIDC_ISSUER`, `ARCLOOM_OIDC_CLIENT_ID`, `ARCLOOM_OIDC_CLIENT_SECRET`, `ARCLOOM_OIDC_REDIRECT_URL`, `ARCLOOM_OIDC_SCOPES` | Seed SSO on first run. After that it is editable in **Settings → Single sign-on**, including group → role mapping. |
@@ -258,6 +259,21 @@ server is already running, and a client only needs a URL and a credential.
 needs. Leave every scope unchecked for a read-only key; tick `resources` for a key that
 can edit but not deploy. Optionally limit it to specific projects and give it an expiry.
 The token is shown once.
+
+**Or skip the key entirely.** ArcLoom is also an OAuth 2.1 authorization server, so a
+client can authorize itself:
+
+```sh
+claude mcp add --transport http arcloom http://your-host:8080/api/mcp   # no --header
+```
+
+The client discovers ArcLoom, registers itself, and opens a browser. You are already
+signed in, so you just tick the scopes to grant and hit Authorize. The client then holds a
+short-lived access token and a rotating refresh token instead of a permanent secret, and
+the grant shows up under **Connected apps** in the API keys panel where you can revoke it.
+Use this when several people share one connector — each authenticates as themselves, so
+the audit log names the right human. Keys remain the answer for CI and anything headless,
+which cannot run a browser flow.
 
 **2. Register it.** With Claude Code:
 

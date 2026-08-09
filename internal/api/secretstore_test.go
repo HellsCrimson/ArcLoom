@@ -73,7 +73,7 @@ func secretStoreServer(t *testing.T, masterKey string) (*Server, http.Handler, *
 	sec := secrets.NewStore(t.TempDir(), masterKey)
 	cfg := config.Config{AuthEnabled: false, CookieName: "arcloom_session", DataDir: t.TempDir()}
 	authn := auth.New(auth.NewLocalProvider(user.NewMemory()))
-	srv := New(cfg, nil, store.NewMemory(), nil, sec, nil, authn, session.NewMemory(), user.NewMemory(), set, nil, nil, nil, nil)
+	srv := New(cfg, nil, store.NewMemory(), nil, sec, nil, authn, session.NewMemory(), user.NewMemory(), set, nil, nil, nil, nil, nil)
 	return srv, srv.Handler(), sec
 }
 

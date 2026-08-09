@@ -101,8 +101,8 @@ func (s *Server) mcpServerFor(r *http.Request) *mcp.Server {
 	// effectiveUser). This is the *same* intersection the middleware enforces,
 	// so the advertised tool set and the enforced one cannot drift.
 	u, _ := userFromContext(r)
-	key, _ := keyFromContext(r)
-	eff := effectiveUser(u, key)
+	cred, _ := credentialFromContext(r)
+	eff := effectiveUser(u, cred)
 	can := func(perm string) bool {
 		if !s.cfg.AuthEnabled || eff == nil {
 			return true // auth off: the app is open

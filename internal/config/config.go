@@ -60,6 +60,14 @@ type Config struct {
 	// APIKeysDir holds scoped API keys — the non-browser credential used by CI,
 	// scripts and MCP clients (never in Git; stores hashes, not secrets).
 	APIKeysDir string
+	// OAuthDir holds the MCP authorization server's state: registered clients,
+	// user grants, pending codes and live access tokens (never in Git; stores
+	// hashes, not tokens).
+	OAuthDir string
+	// OAuthEnabled mounts the OAuth 2.1 authorization server that lets an MCP
+	// client authenticate without a pasted API key (ARCLOOM_MCP_OAUTH, default
+	// true). Inert unless the MCP endpoint is mounted.
+	OAuthEnabled bool
 	// MCPEnabled mounts the Model Context Protocol endpoint at /api/mcp
 	// (ARCLOOM_MCP, default true). It is inert without an API key — there is no
 	// other way for a non-browser client to authenticate — so the default is on
@@ -127,6 +135,8 @@ func Load() Config {
 		SessionsDir:   env("ARCLOOM_SESSIONS_DIR", filepath.Join(filepath.Dir(dataDir), "sessions")),
 		APIKeysDir:    env("ARCLOOM_APIKEYS_DIR", filepath.Join(filepath.Dir(dataDir), "apikeys")),
 		MCPEnabled:    boolEnv("ARCLOOM_MCP", true),
+		OAuthDir:      env("ARCLOOM_OAUTH_DIR", filepath.Join(filepath.Dir(dataDir), "oauth")),
+		OAuthEnabled:  boolEnv("ARCLOOM_MCP_OAUTH", true),
 		SettingsFile:  env("ARCLOOM_SETTINGS_FILE", filepath.Join(filepath.Dir(dataDir), "settings.yaml")),
 		SessionTTL:    durEnv("ARCLOOM_SESSION_TTL", 7*24*time.Hour),
 		CookieName:    "arcloom_session",

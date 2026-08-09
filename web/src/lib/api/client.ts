@@ -574,6 +574,24 @@ export const api = {
       }),
   },
 
+  // OAuth grants ("connected apps") the user approved for MCP clients.
+  grants: {
+    list: () =>
+      fetch("/api/oauth/grants", { credentials: "same-origin" }).then((r) =>
+        json<OAuthGrant[]>(r),
+      ),
+    revoke: (id: string) =>
+      fetch(`/api/oauth/grants/${id}`, {
+        method: "DELETE",
+        credentials: "same-origin",
+      }).then((r) => {
+        if (!r.ok && r.status !== 204)
+          return r.json().then((b) => {
+            throw new Error(b.error || "failed");
+          });
+      }),
+  },
+
   admin: {
     listAllKeys: () =>
       fetch("/api/admin/keys", { credentials: "same-origin" }).then((r) =>
@@ -857,6 +875,18 @@ export interface ApiKey {
   disabled?: boolean;
   /** Only set in the admin listing, where several owners' keys are shown together. */
   username?: string;
+}
+
+// OAuthGrant is a standing authorization a user approved for an MCP client. It
+// carries no token — revoking it here kills every token derived from it.
+export interface OAuthGrant {
+  id: string;
+  clientName: string;
+  scopes: string[];
+  projects: string[];
+  createdAt: string;
+  lastUsedAt?: string;
+  expiresAt?: string;
 }
 
 // GroupRole maps an IdP group to ArcLoom access for provisioned SSO users.

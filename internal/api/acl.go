@@ -81,7 +81,7 @@ func (s *Server) requireProjectPerm(perm string) func(http.Handler) http.Handler
 			// An API key restricts on top of all of the above: its scopes must
 			// include this capability and, if it is project-restricted, this
 			// project. Routes with no {id} pass "" and are checked on scope only.
-			if msg := keyDenies(r, perm, id); msg != "" {
+			if msg := credDenies(r, perm, id); msg != "" {
 				writeErr(w, http.StatusForbidden, msg)
 				return
 			}
@@ -111,8 +111,8 @@ func (s *Server) requireProjectRead(next http.Handler) http.Handler {
 		}
 		// Reads need no scope — any authenticated caller may read — but a
 		// project-restricted key must not read outside its projects either,
-		// so pass an empty perm and let keyDenies check only the restriction.
-		if msg := keyDenies(r, "", id); msg != "" {
+		// so pass an empty perm and let credDenies check only the restriction.
+		if msg := credDenies(r, "", id); msg != "" {
 			writeErr(w, http.StatusForbidden, msg)
 			return
 		}

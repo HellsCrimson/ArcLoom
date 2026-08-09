@@ -26,7 +26,7 @@ func TestModuleCallCRUD(t *testing.T) {
 	}
 	cfg := config.Config{AuthEnabled: false, CookieName: "arcloom_session", DataDir: t.TempDir()}
 	authn := auth.New(auth.NewLocalProvider(user.NewMemory()))
-	h := New(cfg, nil, st, nil, nil, nil, authn, session.NewMemory(), user.NewMemory(), testSettings(t), nil, nil, nil, nil).Handler()
+	h := New(cfg, nil, st, nil, nil, nil, authn, session.NewMemory(), user.NewMemory(), testSettings(t), nil, nil, nil, nil, nil).Handler()
 
 	put := func(body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -148,7 +148,7 @@ func TestCreateLocalModuleAddsCall(t *testing.T) {
 	}
 	cfg := config.Config{AuthEnabled: false, CookieName: "arcloom_session", DataDir: t.TempDir()}
 	authn := auth.New(auth.NewLocalProvider(user.NewMemory()))
-	h := New(cfg, nil, st, nil, nil, nil, authn, session.NewMemory(), user.NewMemory(), testSettings(t), nil, nil, nil, nil).Handler()
+	h := New(cfg, nil, st, nil, nil, nil, authn, session.NewMemory(), user.NewMemory(), testSettings(t), nil, nil, nil, nil, nil).Handler()
 
 	post := func(body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()

@@ -23,6 +23,7 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/config"
 	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
+	"github.com/HellsCrimson/ArcLoom/internal/oauth"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
 	"github.com/HellsCrimson/ArcLoom/internal/runs"
 	"github.com/HellsCrimson/ArcLoom/internal/secrets"
@@ -115,6 +116,25 @@ func main() {
 	if err != nil {
 		fatal("init api keys", "err", err)
 	}
+	// OAuth authorization server for MCP clients that authenticate by consent
+	// rather than a pasted key.
+	var oauthStore oauth.Store
+	if cfg.OAuthEnabled {
+		od, err := oauth.NewDisk(cfg.OAuthDir)
+		if err != nil {
+			fatal("init oauth store", "err", err)
+		}
+		oauthStore = od
+		// Expired codes and access tokens accumulate otherwise; grants are kept
+		// until revoked or expired on use.
+		go func() {
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for range t.C {
+				_ = od.GC()
+			}
+		}()
+	}
 	if sec.LocalEnabled() {
 		slog.Info("local secret store enabled", "dir", cfg.SecretsDir)
 	} else {
@@ -171,7 +191,7 @@ func main() {
 
 	// Initial Authenticator is local-only; ReloadAuth then adds OIDC from the
 	// persisted settings (bounded discovery; failure is non-fatal).
-	srv := api.New(cfg, runners, st, sc, sec, webui.FS(), auth.New(auth.NewLocalProvider(users)), sessions, users, set, runHist, auditLog, approvalStore, apiKeys)
+	srv := api.New(cfg, runners, st, sc, sec, webui.FS(), auth.New(auth.NewLocalProvider(users)), sessions, users, set, runHist, auditLog, approvalStore, apiKeys, oauthStore)
 	srv.SetBuildInfo(api.BuildInfo{Version: version, Commit: commit, Date: date})
 	rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
 	if err := srv.ReloadAuth(rctx); err != nil {

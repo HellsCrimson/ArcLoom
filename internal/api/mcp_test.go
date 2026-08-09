@@ -51,7 +51,7 @@ func mcpTestServer(t *testing.T) (*httptest.Server, *apikey.Memory, user.Store, 
 		DefaultEngine: "tofu", MCPEnabled: true,
 	}
 	srv := New(cfg, nil, st, nil, nil, nil, auth.New(auth.NewLocalProvider(users)),
-		session.NewMemory(), users, testSettings(t), nil, nil, nil, keys)
+		session.NewMemory(), users, testSettings(t), nil, nil, nil, keys, nil)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, keys, users, st
@@ -279,7 +279,7 @@ func TestMCPDisabled(t *testing.T) {
 	users := user.NewMemory()
 	cfg := config.Config{AuthEnabled: true, CookieName: "arcloom_session", DefaultEngine: "tofu", MCPEnabled: false}
 	srv := New(cfg, nil, store.NewMemory(), nil, nil, nil, auth.New(auth.NewLocalProvider(users)),
-		session.NewMemory(), users, testSettings(t), nil, nil, nil, apikey.NewMemory())
+		session.NewMemory(), users, testSettings(t), nil, nil, nil, apikey.NewMemory(), nil)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

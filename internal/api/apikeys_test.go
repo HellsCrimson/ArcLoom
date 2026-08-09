@@ -30,7 +30,7 @@ func keyTestServer(t *testing.T) (http.Handler, *apikey.Memory, user.Store, *sto
 	keys := apikey.NewMemory()
 	cfg := config.Config{AuthEnabled: true, CookieName: "arcloom_session", DefaultEngine: "tofu"}
 	srv := New(cfg, nil, st, nil, nil, nil, auth.New(auth.NewLocalProvider(users)),
-		session.NewMemory(), users, testSettings(t), nil, nil, nil, keys)
+		session.NewMemory(), users, testSettings(t), nil, nil, nil, keys, nil)
 	return srv.Handler(), keys, users, st
 }
 
@@ -268,7 +268,7 @@ func TestCreateKeyCannotExceedOwner(t *testing.T) {
 // agree with what the middleware enforces.
 func TestEffectiveUser(t *testing.T) {
 	admin := &user.User{ID: "a", Admin: true}
-	key := &apikey.Key{Scopes: []string{user.PermResources, user.PermDeploy}}
+	key := &credential{Kind: credKindAPIKey, Scopes: []string{user.PermResources, user.PermDeploy}}
 	eff := effectiveUser(admin, key)
 	if eff.Admin {
 		t.Error("effectiveUser must clear Admin for a key")

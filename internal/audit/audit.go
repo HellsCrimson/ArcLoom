@@ -10,6 +10,16 @@ package audit
 
 import "time"
 
+// Origin says which surface an action came through. "Who did it" is not the
+// whole story once non-browser credentials exist: the same account can act from
+// the UI, from a script holding an API key, and from an AI agent over MCP, and
+// those are worth telling apart when reading the trail back.
+const (
+	OriginUI  = "ui"  // browser session cookie
+	OriginAPI = "api" // API key presented directly (CI, script, curl)
+	OriginMCP = "mcp" // API key, but via an MCP tool call
+)
+
 // Entry is one recorded action.
 type Entry struct {
 	ID        string    `json:"id"`
@@ -18,6 +28,15 @@ type Entry struct {
 	Action    string    `json:"action"` // friendly verb, e.g. "resource.upsert"
 	ProjectID string    `json:"projectId,omitempty"`
 	Detail    string    `json:"detail,omitempty"` // concrete path / params (never secret values)
+	// Via is the Origin* the action arrived through. Empty on entries written
+	// before this field existed, which is why it is omitempty and the UI treats
+	// an empty value as "unknown" rather than assuming the UI.
+	Via string `json:"via,omitempty"`
+	// KeyLabel names the API key used, for the two key-backed origins. The id is
+	// kept alongside it because labels are user-chosen and need not be unique —
+	// the label is what a human reads, the id is what they revoke.
+	KeyLabel string `json:"keyLabel,omitempty"`
+	KeyID    string `json:"keyId,omitempty"`
 }
 
 // Filter narrows a List query. Zero-value fields are ignored; Limit<=0 returns

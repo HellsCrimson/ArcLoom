@@ -14,16 +14,6 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/user"
 )
 
-// apiKeyCtxKey keys the *apikey.Key that authenticated a request. Absent for a
-// cookie session — which is what every "is this a key?" check keys off.
-type apiKeyCtxKey struct{}
-
-// keyFromContext returns the API key that authenticated the request, if any.
-func keyFromContext(r *http.Request) (*apikey.Key, bool) {
-	k, ok := r.Context().Value(apiKeyCtxKey{}).(*apikey.Key)
-	return k, ok
-}
-
 // bearerToken extracts an `Authorization: Bearer <token>` value.
 func bearerToken(r *http.Request) (string, bool) {
 	h := r.Header.Get("Authorization")
@@ -52,54 +42,6 @@ func (s *Server) userForKey(token string) (*user.User, *apikey.Key, bool) {
 	// Best-effort last-used stamp; never fail the request over it.
 	go func(id string) { _ = s.apikeys.Touch(id, time.Now()) }(key.ID)
 	return u, key, true
-}
-
-// keyDenies returns a human-readable refusal when the request's API key does
-// not permit an action, or "" when it does (including when the request is not
-// key-authenticated at all).
-//
-// perm may be "" for a read, which needs no scope but still honours a key's
-// project restriction. projectID may be "" for a route with no {id}.
-//
-// This is the whole of the "a key restricts, never escalates" rule: it runs
-// *after* the user's own permission and the project ACL have already passed, so
-// it can only ever subtract.
-func keyDenies(r *http.Request, perm, projectID string) string {
-	key, ok := keyFromContext(r)
-	if !ok {
-		return ""
-	}
-	if perm != "" && !key.HasScope(perm) {
-		return "this API key does not have the \"" + perm + "\" scope"
-	}
-	if projectID != "" && !key.AllowsProject(projectID) {
-		return "this API key is not scoped to this project"
-	}
-	return ""
-}
-
-// effectiveUser returns what a credential can actually do: for a cookie session
-// the user unchanged, for a key the intersection of the user's permissions with
-// the key's scopes, with Admin cleared.
-//
-// It is a *view* for reporting (/auth/me, and the MCP tool filter), not the
-// enforcement path — enforcement stays in the middleware, where a mistake fails
-// closed. Both must agree, which is why they share this one definition of the
-// intersection.
-func effectiveUser(u *user.User, key *apikey.Key) *user.User {
-	if u == nil || key == nil {
-		return u
-	}
-	cp := *u
-	cp.Admin = false
-	perms := []string{}
-	for _, p := range user.AllPermissions() {
-		if u.Can(p) && key.HasScope(p) {
-			perms = append(perms, p)
-		}
-	}
-	cp.Permissions = perms
-	return &cp
 }
 
 // --- HTTP surface ---

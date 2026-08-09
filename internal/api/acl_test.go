@@ -33,7 +33,7 @@ func newACLServer(t *testing.T) *Server {
 	_ = st.Create(&model.Project{ID: "p1", Name: "proj-one", Engine: model.EngineTofu})
 
 	cfg := config.Config{AuthEnabled: true, CookieName: "arcloom_session", SessionTTL: time.Hour, DefaultEngine: "tofu"}
-	return New(cfg, nil, st, nil, nil, nil, auth.New(auth.NewLocalProvider(users)), session.NewMemory(), users, testSettings(t), nil, nil, nil, nil)
+	return New(cfg, nil, st, nil, nil, nil, auth.New(auth.NewLocalProvider(users)), session.NewMemory(), users, testSettings(t), nil, nil, nil, nil, nil)
 }
 
 func TestACL_RestrictsAccess(t *testing.T) {

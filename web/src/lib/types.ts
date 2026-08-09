@@ -297,6 +297,13 @@ export interface AuditEntry {
 	action: string;
 	projectId?: string;
 	detail?: string;
+	/** Which surface the action came through: 'ui' | 'api' | 'mcp'. Absent on
+	 *  entries recorded before attribution existed — render those as unknown
+	 *  rather than assuming the UI. */
+	via?: string;
+	/** The API key used, for the two key-backed origins. */
+	keyLabel?: string;
+	keyId?: string;
 }
 
 // ACLEntry grants one user a set of project-scoped permissions.
