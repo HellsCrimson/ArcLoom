@@ -5,13 +5,19 @@ services:
       - "8080:8080"
     environment:
       ARCLOOM_ENGINE: tofu
-      ARCLOOM_SECRET_KEY: test_arcloom_secret_dev
+      # The master key. It seals every project's secrets, the SSO client secret,
+      # per-project git tokens, the Vault token and notification URLs — so it is
+      # required here rather than defaulted: compose refuses to start without it,
+      # and the server refuses to boot on a short or publicly-known value.
+      # Put it in a .env file next to this one (see .env.example).
+      ARCLOOM_SECRET_KEY: ${ARCLOOM_SECRET_KEY:?generate one with `openssl rand -base64 32` and put it in .env}
       # Auth is on by default and fails closed. This seeds the first admin on the
-      # first run only (ignored once a user exists). Change it and log in as
-      # "admin".
+      # first run only (ignored once a user exists), then log in as "admin".
       # ARCLOOM_AUTH: false to disable auth entirely.
-      ARCLOOM_ADMIN_PASSWORD: admin
-      # Allow login over plain HTTP for local dev (no TLS in front).
+      ARCLOOM_ADMIN_PASSWORD: ${ARCLOOM_ADMIN_PASSWORD:?choose a first-admin password and put it in .env}
+      # Allow login over plain HTTP for local dev (no TLS in front). Set this to
+      # "true" — the default — as soon as there is TLS in front, or the session
+      # cookie travels in the clear.
       ARCLOOM_COOKIE_SECURE: "false"
       # ARCLOOM_OIDC_ISSUER: https://oidc.example.com
       # ARCLOOM_OIDC_CLIENT_ID: your-client-id

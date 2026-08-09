@@ -137,6 +137,9 @@ func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Use(requestLogger)
 	r.Use(middleware.Recoverer)
+	// Browser-enforced hardening on every response, including the SPA shell and
+	// the OAuth consent route it serves (see headers.go).
+	r.Use(s.securityHeaders)
 
 	// Liveness/health probes: public, unauthenticated, dependency-free. Declared
 	// before the SPA catch-all so they aren't shadowed by the index fallback.
@@ -203,7 +206,16 @@ func (s *Server) Handler() http.Handler {
 			// own, and a key can only ever be narrower than its owner (see
 			// normalizeScopes), so this needs no capability of its own.
 			// csrfGuard because these mint and revoke credentials.
+			//
+			// requireBrowserSession is what keeps that "narrower than its owner"
+			// rule true: normalizeScopes measures the request against the OWNER's
+			// permissions, so without it a scopeless key could mint one holding
+			// everything its owner holds and escape its own restriction. Minting
+			// and revoking are browser actions — the token is shown once, in the
+			// UI — so a blanket refusal costs nothing and cannot be got subtly
+			// wrong later.
 			r.Group(func(r chi.Router) {
+				r.Use(s.requireBrowserSession)
 				r.Use(s.csrfGuard)
 				r.Use(s.auditMiddleware)
 				r.Get("/keys", s.handleListAPIKeys)

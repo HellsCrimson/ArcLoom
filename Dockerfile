@@ -24,7 +24,12 @@ ARG TARGETARCH=amd64
 
 RUN set -eux; \
 	apt-get update; \
-	apt-get install -y --no-install-recommends ca-certificates curl unzip; \
+	# bubblewrap contains the engine child process: a `local-exec` provisioner or
+	# a provider plugin runs as this process, so the sandbox is what keeps it away
+	# from /var/lib/arcloom (secrets, users, sessions, keys, other projects).
+	# ArcLoom probes it at start-up and degrades to the environment scrub alone if
+	# the runtime forbids unprivileged user namespaces — see internal/runner/sandbox.go.
+	apt-get install -y --no-install-recommends ca-certificates curl unzip bubblewrap; \
 	# conftest release archives use uname-style arch names
 	case "${TARGETARCH}" in amd64) CONFTEST_ARCH=x86_64 ;; *) CONFTEST_ARCH="${TARGETARCH}" ;; esac; \
 	# Terraform
@@ -43,7 +48,7 @@ RUN set -eux; \
 	chmod +x /usr/local/bin/terraform /usr/local/bin/tofu /usr/local/bin/tflint /usr/local/bin/conftest; \
 	rm -f /tmp/tf.zip /tmp/tofu.zip /tmp/tflint.zip /tmp/conftest.tgz; \
 	apt-get purge -y unzip; apt-get autoremove -y; rm -rf /var/lib/apt/lists/*; \
-	terraform version; tofu version; tflint --version; conftest --version
+	terraform version; tofu version; tflint --version; conftest --version; bwrap --version
 
 COPY --from=gobuild /out/arcloom /usr/local/bin/arcloom
 

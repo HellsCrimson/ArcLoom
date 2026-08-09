@@ -40,9 +40,18 @@ func lockDir(dir string) (unlock func()) {
 // TfExec is a Runner backed by terraform-exec. The same code path drives both
 // OpenTofu and Terraform; only execPath differs.
 type TfExec struct {
-	engine   model.Engine
-	execPath string
-	workBase string
+	engine model.Engine
+	// execPath is what child processes are actually launched as. Once
+	// UseSandbox has run it is the generated shim, not the engine — which is the
+	// whole mechanism: tfexec owns the exec.Cmd and lets us choose only the
+	// binary, so containment has to live behind that path. enginePath keeps the
+	// real binary for reporting and for the shim to exec.
+	execPath   string
+	enginePath string
+	workBase   string
+	// shimDir is the temp dir holding the generated shim, removed by Close.
+	shimDir   string
+	sandboxed bool
 }
 
 // New resolves the CLI binary for the given engine and returns a runner. If
@@ -61,11 +70,32 @@ func New(engine model.Engine, execPath, workBase, pluginCacheDir string) (*TfExe
 			os.Setenv("TF_PLUGIN_CACHE_DIR", pluginCacheDir)
 		}
 	}
-	return &TfExec{engine: engine, execPath: execPath, workBase: workBase}, nil
+	return &TfExec{engine: engine, execPath: execPath, enginePath: execPath, workBase: workBase}, nil
 }
 
 func (t *TfExec) Engine() model.Engine { return t.engine }
-func (t *TfExec) ExecPath() string     { return t.execPath }
+
+// ExecPath reports the real engine binary, not the shim it is launched through
+// — that is what the instance panel and "which tofu is this?" mean.
+func (t *TfExec) ExecPath() string { return t.enginePath }
+
+// realExecPath is the binary the shim must exec.
+func (t *TfExec) realExecPath() string { return t.enginePath }
+
+// Sandboxed reports whether engine child processes run inside a namespace
+// sandbox (as opposed to the environment scrub alone).
+func (t *TfExec) Sandboxed() bool { return t.sandboxed }
+
+// Close removes the generated shim. Safe to call on a runner that never had
+// one.
+func (t *TfExec) Close() error {
+	if t.shimDir == "" {
+		return nil
+	}
+	err := os.RemoveAll(t.shimDir)
+	t.shimDir = ""
+	return err
+}
 
 func (t *TfExec) Version(ctx context.Context) (string, error) {
 	ws, err := newWorkspace(t.workBase, t.execPath, nil)

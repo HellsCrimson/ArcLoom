@@ -27,3 +27,5 @@
 .vscode/
 
 /keys
+# Local secrets for docker-compose (see .env.example)
+.env

@@ -54,6 +54,14 @@ func rekeyCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "rekey: the new key must differ from the current one")
 		return 2
 	}
+	// Refuse a target the server would reject at boot — otherwise the rotation
+	// succeeds and the next start fails with everything already sealed under it.
+	// The CURRENT key is deliberately not validated: rekey exists precisely to
+	// get off a bad one (the public placeholder included).
+	if err := secrets.ValidateMasterKey(*newKey); err != nil {
+		fmt.Fprintf(os.Stderr, "rekey: -new is not usable: %v\n", err)
+		return 2
+	}
 
 	fmt.Printf("secrets dir:   %s\nsettings file: %s\n\n", cfg.SecretsDir, cfg.SettingsFile)
 

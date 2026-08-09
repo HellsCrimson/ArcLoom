@@ -19,6 +19,16 @@ import (
 // keyTestServer builds a server with auth on, one project, and a key store.
 func keyTestServer(t *testing.T) (http.Handler, *apikey.Memory, user.Store, *store.Memory) {
 	t.Helper()
+	h, keys, users, st, _ := keyTestServerWithSessions(t)
+	return h, keys, users, st
+}
+
+// keyTestServerWithSessions additionally hands back the session store, for the
+// tests that must act as a signed-in browser: credential management is refused
+// to API keys and OAuth grants (requireBrowserSession), so a cookie is the only
+// way to reach those handlers' own validation.
+func keyTestServerWithSessions(t *testing.T) (http.Handler, *apikey.Memory, user.Store, *store.Memory, session.Store) {
+	t.Helper()
 	st := store.NewMemory()
 	if err := st.Create(&model.Project{ID: "p1", Name: "one", Engine: model.EngineTofu}); err != nil {
 		t.Fatalf("seed project p1: %v", err)
@@ -28,10 +38,26 @@ func keyTestServer(t *testing.T) (http.Handler, *apikey.Memory, user.Store, *sto
 	}
 	users := user.NewMemory()
 	keys := apikey.NewMemory()
+	sessions := session.NewMemory()
 	cfg := config.Config{AuthEnabled: true, CookieName: "arcloom_session", DefaultEngine: "tofu"}
 	srv := New(cfg, nil, st, nil, nil, nil, auth.New(auth.NewLocalProvider(users)),
-		session.NewMemory(), users, testSettings(t), nil, nil, nil, keys, nil)
-	return srv.Handler(), keys, users, st
+		sessions, users, testSettings(t), nil, nil, nil, keys, nil)
+	return srv.Handler(), keys, users, st, sessions
+}
+
+// doSession issues a request as a signed-in browser would.
+func doSession(h http.Handler, method, path string, cookie *http.Cookie, body string) *httptest.ResponseRecorder {
+	var r *http.Request
+	if body != "" {
+		r = httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+	} else {
+		r = httptest.NewRequest(method, path, nil)
+	}
+	r.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
 }
 
 // mkUser creates an account with the given capabilities.
@@ -226,26 +252,30 @@ func TestDisabledOwnerDisablesKey(t *testing.T) {
 
 // TestCreateKeyCannotExceedOwner: the 400 at creation is what stops a key that
 // looks like it grants deploy but 403s on every call.
+//
+// Driven through a session cookie, not a key: minting is refused to credentials
+// outright (requireBrowserSession), so the browser is the only caller that
+// reaches this validation at all.
 func TestCreateKeyCannotExceedOwner(t *testing.T) {
-	h, keys, users, _ := keyTestServer(t)
+	h, _, users, _, sessions := keyTestServerWithSessions(t)
 	mkUser(t, users, "u1", false, user.PermResources)
-	token := mkKey(t, keys, "u1", []string{user.PermResources}, nil)
+	cookie := loginCookie(t, sessions, "u1")
 
-	w := doKey(h, "POST", "/api/keys", token, `{"label":"x","scopes":["deploy"]}`)
+	w := doSession(h, "POST", "/api/keys", cookie, `{"label":"x","scopes":["deploy"]}`)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("granting an unheld scope: got %d, want 400 (%s)", w.Code, w.Body.String())
 	}
-	w = doKey(h, "POST", "/api/keys", token, `{"label":"x","scopes":["bogus"]}`)
+	w = doSession(h, "POST", "/api/keys", cookie, `{"label":"x","scopes":["bogus"]}`)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("unknown scope: got %d, want 400", w.Code)
 	}
-	w = doKey(h, "POST", "/api/keys", token, `{"label":"","scopes":[]}`)
+	w = doSession(h, "POST", "/api/keys", cookie, `{"label":"","scopes":[]}`)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("missing label: got %d, want 400", w.Code)
 	}
 
 	// A valid creation returns the token exactly once.
-	w = doKey(h, "POST", "/api/keys", token, `{"label":"ci","scopes":["resources"]}`)
+	w = doSession(h, "POST", "/api/keys", cookie, `{"label":"ci","scopes":["resources"]}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("create: got %d (%s)", w.Code, w.Body.String())
 	}
@@ -257,11 +287,10 @@ func TestCreateKeyCannotExceedOwner(t *testing.T) {
 		t.Fatal("no token returned")
 	}
 	// ...and never again.
-	w = doKey(h, "GET", "/api/keys", token, "")
+	w = doSession(h, "GET", "/api/keys", cookie, "")
 	if strings.Contains(w.Body.String(), resp.Token) {
 		t.Error("listing leaked the token")
 	}
-	_ = keys
 }
 
 // TestEffectiveUser is the reporting view the MCP tool filter also uses; it must
@@ -292,5 +321,45 @@ func TestEffectiveUser(t *testing.T) {
 	// No key: unchanged.
 	if got := effectiveUser(limited, nil); got != limited {
 		t.Error("a cookie session must pass through unchanged")
+	}
+}
+
+// TestCredentialCannotMintCredential locks down the escalation that
+// requireBrowserSession exists to stop: normalizeScopes measures a requested
+// scope against the OWNER's permissions, so a scopeless, project-pinned key
+// asking for everything its owner holds would otherwise be granted it — and the
+// resulting token would carry capabilities and projects the original never had.
+//
+// The whole credential-management group is covered, because revoking someone
+// else's credential from a leaked one is the same class of problem as minting.
+func TestCredentialCannotMintCredential(t *testing.T) {
+	h, keys, users, _ := keyTestServer(t)
+	// The owner is powerful; the leaked credential is not.
+	mkUser(t, users, "u1", false, user.PermResources, user.PermDeploy, user.PermGit)
+	weak := mkKey(t, keys, "u1", nil, []string{"p1"}) // read-only, pinned to p1
+
+	for _, c := range []struct {
+		name, method, path, body string
+	}{
+		{"mint", "POST", "/api/keys", `{"label":"escalated","scopes":["resources","deploy","git"]}`},
+		{"list", "GET", "/api/keys", ""},
+		{"revoke", "DELETE", "/api/keys/whatever", ""},
+		{"approve grant", "POST", "/api/oauth/authorize", `{"query":"","scopes":["deploy"]}`},
+		{"revoke grant", "DELETE", "/api/oauth/grants/whatever", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if w := doKey(h, c.method, c.path, weak, c.body); w.Code != http.StatusForbidden {
+				t.Fatalf("%s %s with a bearer credential: got %d, want 403 (body %s)",
+					c.method, c.path, w.Code, w.Body.String())
+			}
+		})
+	}
+
+	// The refusal must be keyed on the credential, not on the route being dead:
+	// with no bearer token these are ordinary authenticated routes again. Auth
+	// is on here, so an anonymous call is a 401 — anything else (404, 405) would
+	// mean the group stopped being routed at all.
+	if w := doKey(h, "POST", "/api/keys", "", `{"label":"x"}`); w.Code != http.StatusUnauthorized {
+		t.Fatalf("no credential: got %d, want 401 (the route must still exist)", w.Code)
 	}
 }

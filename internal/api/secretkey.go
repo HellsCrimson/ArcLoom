@@ -9,12 +9,6 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/settings"
 )
 
-// minMasterKeyLen is the shortest new master passphrase accepted. It is not a
-// login credential (there is no online guessing surface), but it is stretched
-// with argon2id and protects every stored secret, so a two-character key is
-// worth refusing outright.
-const minMasterKeyLen = 12
-
 // secretKeyDTO is what the Danger-zone panel needs to describe the blast radius
 // BEFORE anything is touched: what the key seals, and what it currently opens.
 //
@@ -124,8 +118,11 @@ func (s *Server) handleRotateSecretKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "the current key is wrong")
 		return
 	}
-	if len(req.NewKey) < minMasterKeyLen {
-		writeErr(w, http.StatusBadRequest, "the new key must be at least 12 characters")
+	// Same rule the server applies to ARCLOOM_SECRET_KEY at boot, from the same
+	// definition: rotating TO a key the next start would refuse would leave the
+	// instance unbootable with everything sealed under it.
+	if err := secrets.ValidateMasterKey(req.NewKey); err != nil {
+		writeErr(w, http.StatusBadRequest, "the new key is not usable: "+err.Error())
 		return
 	}
 	if req.NewKey == req.CurrentKey {

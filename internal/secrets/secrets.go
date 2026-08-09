@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -335,6 +336,45 @@ type kdfMeta struct {
 	// Rotating marks a rotation that has not finished verifying. Salt is then
 	// the NEW generation's salt and PrevSalt the one blobs may still be under.
 	Rotating bool `json:"rotating,omitempty"`
+}
+
+// MinMasterKeyLen is the shortest master passphrase accepted. It is not a login
+// credential (there is no online guessing surface) and it is stretched with
+// argon2id, but it protects every stored secret, so a two-character key is
+// worth refusing outright.
+const MinMasterKeyLen = 12
+
+// DevMasterKey is the placeholder that shipped in the example docker-compose.yml.
+// It is refused BY NAME rather than merely being changed in that file, because
+// it sat in a public repository: an install already running on it has its secret
+// store, SSO client secret, git tokens, Vault token and notification URLs sealed
+// under a key anyone can read, and refusing to boot is the only way that install
+// ever finds out.
+const DevMasterKey = "test_arcloom_secret_dev"
+
+// ValidateMasterKey reports whether a master passphrase is fit to seal data.
+//
+// An empty key is valid and untouched: it means "no local secret store", which
+// is a supported configuration (an external store, or a project with no
+// secrets). The checks apply only once a key is actually supplied.
+//
+// This lives here, next to DeriveKey, because all three entry points that take a
+// master key must agree: the server at boot, `arcloom rekey`, and the rotation
+// endpoint. The length rule previously existed only on the rotation path, so a
+// key too weak to rotate *to* could still be booted *with*.
+func ValidateMasterKey(key string) error {
+	if key == "" {
+		return nil
+	}
+	if key == DevMasterKey {
+		return errors.New("this is the placeholder from the example docker-compose.yml and is public; " +
+			"generate one with `openssl rand -base64 32`, then re-seal existing data with `arcloom rekey`")
+	}
+	if len(key) < MinMasterKeyLen {
+		return fmt.Errorf("key is %d characters; at least %d are required "+
+			"(generate one with `openssl rand -base64 32`)", len(key), MinMasterKeyLen)
+	}
+	return nil
 }
 
 // DeriveKey stretches a master passphrase into a 32-byte AES key with argon2id

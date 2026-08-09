@@ -15,18 +15,15 @@
 		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 		<link rel="manifest" href="/site.webmanifest" />
 		<meta name="theme-color" content="#0d1117" />
-		<script>
-			// Resolve + apply the theme before first paint (no flash of the wrong
-			// theme). "system"/unset resolves to the OS preference; the concrete
-			// light|dark is stamped on <html> so the CSS needs only one light block.
-			try {
-				var t = localStorage.getItem('arcloom.theme');
-				if (t !== 'light' && t !== 'dark') {
-					t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-				}
-				document.documentElement.setAttribute('data-theme', t);
-			} catch (e) {}
-		</script>
+		<!--
+		  The theme FOUC guard. Render-blocking and in <head>, so it still runs
+		  before the first paint — but in static/theme.js rather than inline, so
+		  the page can carry a script-src CSP without 'unsafe-inline'. SvelteKit
+		  hashes the bootstrap it generates itself; a script written by hand here
+		  it cannot see, and one un-hashed inline script would force the whole
+		  policy open.
+		-->
+		<script src="/theme.js"></script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

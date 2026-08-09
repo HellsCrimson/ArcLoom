@@ -69,14 +69,21 @@ func main() {
 	// Build a runner per engine that resolves on PATH. Engines that are not
 	// installed are skipped rather than fatal.
 	runners := map[model.Engine]runner.Runner{}
+	sandbox := engineSandbox(cfg)
 	for _, eng := range []model.Engine{model.EngineTofu, model.EngineTerraform} {
 		r, err := runner.New(eng, "", cfg.WorkDir, cfg.PluginCacheDir)
 		if err != nil {
 			slog.Warn("engine unavailable", "engine", eng, "err", err)
 			continue
 		}
+		// Contain the child processes before anything can run one. A failure
+		// here is fatal only in "require" mode, which is the point of that mode.
+		if err := r.UseSandbox(sandbox); err != nil {
+			fatal("engine sandbox", "engine", eng, "err", err)
+		}
+		defer r.Close()
 		runners[eng] = r
-		slog.Info("engine ready", "engine", eng, "path", r.ExecPath())
+		slog.Info("engine ready", "engine", eng, "path", r.ExecPath(), "sandboxed", r.Sandboxed())
 	}
 	if len(runners) == 0 {
 		fatal("no engines available: install tofu or terraform")
@@ -97,6 +104,12 @@ func main() {
 	slog.Info("projects store ready", "dir", cfg.DataDir)
 	sc := cache.New(cfg.CacheDir)
 
+	// Refuse to seal anything under a key that cannot protect it. Checked before
+	// the store is built, so a bad key is a clean startup failure rather than
+	// data encrypted under it.
+	if err := secrets.ValidateMasterKey(cfg.SecretKey); err != nil {
+		fatal("ARCLOOM_SECRET_KEY rejected", "err", err)
+	}
 	sec := secrets.NewStore(cfg.SecretsDir, cfg.SecretKey)
 
 	runHist, err := runs.NewDisk(cfg.RunsDir)
@@ -278,6 +291,40 @@ type stdlogBridge struct{}
 func (stdlogBridge) Write(p []byte) (int, error) {
 	slog.Error("stdlog", "msg", strings.TrimRight(string(p), "\n"))
 	return len(p), nil
+}
+
+// engineSandbox describes what an engine child process may reach.
+//
+// The Hide list is ArcLoom's own state, and it is assembled here — the one place
+// that already knows every path — rather than inside internal/runner, which
+// should not have to learn the server's directory layout. Everything on it is
+// something a `local-exec` provisioner would otherwise be able to read straight
+// off disk: the encrypted secret stores, the password hashes and live session
+// tokens that would let it log in as anyone, the API keys and OAuth grants it
+// could authenticate with, and every OTHER project's configuration and state.
+//
+// The run workspace deliberately is NOT hidden — it lives inside DataDir, and
+// the shim binds it back after the mask, so a run sees its own project and no
+// other. PluginCacheDir must stay writable or every init re-downloads.
+func engineSandbox(cfg config.Config) runner.Sandbox {
+	return runner.Sandbox{
+		Mode: cfg.Sandbox,
+		HideDirs: []string{
+			cfg.DataDir,      // every project's model + generated HCL
+			cfg.SecretsDir,   // the encrypted per-project secret stores
+			cfg.UsersDir,     // password hashes
+			cfg.SessionsDir,  // live session tokens
+			cfg.APIKeysDir,   // API key hashes
+			cfg.OAuthDir,     // OAuth clients, grants and access tokens
+			cfg.AuditDir,     // the record of what happened
+			cfg.RunsDir,      // past run logs, which can quote provider errors
+			cfg.ApprovalsDir, // saved plan artifacts (they embed variable values)
+		},
+		HideFiles: []string{
+			cfg.SettingsFile, // SSO client secret, git tokens, Vault token (encrypted)
+		},
+		Writable: []string{cfg.PluginCacheDir, cfg.WorkDir},
+	}
 }
 
 // fatal logs an error record and exits non-zero — the slog replacement for

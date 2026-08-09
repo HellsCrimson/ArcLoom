@@ -196,6 +196,38 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 	})
 }
 
+// requireBrowserSession refuses any request authenticated by a non-browser
+// credential (an API key or an OAuth grant), whatever its scopes.
+//
+// It guards the routes that MINT and REVOKE credentials. Every other gate in
+// this package enforces "a credential restricts, never escalates" by
+// intersecting scopes with the owner's permissions — but credential *creation*
+// is the one action where that rule cannot be expressed as a subtraction: the
+// owner's permissions are the input, so a key with no scopes at all could ask
+// for a key carrying everything its owner holds, over every project, and the
+// intersection would never be consulted. A narrow credential could therefore
+// manufacture a wide one and escape its own restriction entirely.
+//
+// The refusal is absolute rather than an intersection because managing
+// credentials is a deliberate human action: the person doing it is signed into
+// the UI, which is also where the resulting token is shown exactly once. This
+// mirrors requireAdmin's refusal for the same underlying reason — a leaked
+// credential must not be able to widen itself.
+func (s *Server) requireBrowserSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.cfg.AuthEnabled {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if _, viaCred := credentialFromContext(r); viaCred {
+			writeErr(w, http.StatusForbidden,
+				"credentials cannot manage credentials — sign in to ArcLoom to create or revoke one")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`

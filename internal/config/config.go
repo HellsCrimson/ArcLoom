@@ -68,6 +68,16 @@ type Config struct {
 	// client authenticate without a pasted API key (ARCLOOM_MCP_OAUTH, default
 	// true). Inert unless the MCP endpoint is mounted.
 	OAuthEnabled bool
+	// Sandbox selects how far engine child processes are contained:
+	// "auto" (default) sandboxes with bubblewrap when the host supports it and
+	// falls back to the environment scrub alone, "off" scrubs only, "require"
+	// refuses to start rather than run engine operations uncontained.
+	//
+	// It matters because `resources` + `deploy` together are equivalent to
+	// running commands as the server (a local-exec provisioner, or any provider
+	// plugin), so the containment — not the permission check — is what bounds
+	// what those commands can read. See internal/runner/sandbox.go.
+	Sandbox string
 	// MCPEnabled mounts the Model Context Protocol endpoint at /api/mcp
 	// (ARCLOOM_MCP, default true). It is inert without an API key — there is no
 	// other way for a non-browser client to authenticate — so the default is on
@@ -126,6 +136,7 @@ func Load() Config {
 		AuditDir:       env("ARCLOOM_AUDIT_DIR", filepath.Join(filepath.Dir(dataDir), "audit")),
 		ApprovalsDir:   env("ARCLOOM_APPROVALS_DIR", filepath.Join(filepath.Dir(dataDir), "approvals")),
 		SecretKey:      os.Getenv("ARCLOOM_SECRET_KEY"),
+		Sandbox:        env("ARCLOOM_SANDBOX", "auto"),
 
 		LogLevel:  env("ARCLOOM_LOG_LEVEL", "info"),
 		LogFormat: env("ARCLOOM_LOG_FORMAT", "text"),
