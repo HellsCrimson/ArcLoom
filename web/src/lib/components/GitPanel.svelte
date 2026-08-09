@@ -358,7 +358,23 @@
 				<span class="inline-flex items-center gap-0.5 text-[var(--al-danger)]" title="commits behind origin"><ArrowDown size={11} />{status.behind}</span>
 			{/if}
 			<span>· {status.clean ? 'clean' : `${status.files?.length ?? 0} change(s)`}</span>
-			{#if status.hasRemote}<span class="mono">· {status.remoteUrl}</span>{/if}
+			{#if status.hasRemote}<span class="mono min-w-0 truncate">· {status.remoteUrl}</span>{/if}
+			<!-- Push/pull live here, not inside the collapsible Remote section: they are
+			     everyday actions and were unreachable while it was folded. -->
+			<div class="ml-auto flex shrink-0 items-center gap-1.5">
+				{#if status.hasRemote}
+					<button class={btnGhost} onclick={() => sync('push')} disabled={busy === 'push'} title="Push to {status.remoteUrl}">
+						{#if busy === 'push'}<Loader2 size={12} class="animate-spin" />{:else}<Upload size={12} />{/if} Push
+					</button>
+					<button class={btnGhost} onclick={() => sync('pull')} disabled={busy === 'pull'} title="Pull from {status.remoteUrl}">
+						{#if busy === 'pull'}<Loader2 size={12} class="animate-spin" />{:else}<Download size={12} />{/if} Pull
+					</button>
+				{:else}
+					<button class={btnGhost} onclick={() => (showRemote = true)} title="No remote configured yet">
+						<Cloud size={12} /> Add remote
+					</button>
+				{/if}
+			</div>
 		{:else}
 			<span>not a repository yet — your first commit initializes it</span>
 		{/if}
@@ -556,18 +572,15 @@
 					</div>
 				</div>
 
-				<!-- push / pull -->
-				<div class="flex items-end gap-2">
-					<input class="{inp} w-32" placeholder="username" bind:value={username} />
-					<input class="{inp} flex-1" type="password" placeholder={cred?.stored ? 'token (uses saved credential if blank)' : 'token (transient)'} bind:value={token} />
-					<button class={btnGhost} onclick={() => sync('push')} disabled={busy === 'push' || !status?.hasRemote}>
-						{#if busy === 'push'}<Loader2 size={12} class="animate-spin" />{:else}<Upload size={12} />{/if} Push
-					</button>
-					<button class={btnGhost} onclick={() => sync('pull')} disabled={busy === 'pull' || !status?.hasRemote}>
-						{#if busy === 'pull'}<Loader2 size={12} class="animate-spin" />{:else}<Download size={12} />{/if} Pull
-					</button>
+				<!-- transient credentials for the header's push/pull -->
+				<div>
+					<div class="mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--al-muted)]">One-off credentials for push/pull</div>
+					<div class="flex items-end gap-2">
+						<input class="{inp} w-32" placeholder="username" bind:value={username} />
+						<input class="{inp} flex-1" type="password" placeholder={cred?.stored ? 'token (uses saved credential if blank)' : 'token (transient)'} bind:value={token} />
+					</div>
 				</div>
-				<p class="text-[10px] text-[var(--al-muted)]">Saved credentials are encrypted at rest (needs ARCLOOM_SECRET_KEY). The push/pull token above is transient and overrides the saved one for that request only. State and secrets are excluded via .gitignore.</p>
+				<p class="text-[10px] text-[var(--al-muted)]">Push and Pull are at the top of this panel. Saved credentials are encrypted at rest (needs ARCLOOM_SECRET_KEY). The token above is transient and overrides the saved one for that request only. State and secrets are excluded via .gitignore.</p>
 			</div>
 		{/if}
 	</div>
