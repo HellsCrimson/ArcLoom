@@ -16,9 +16,11 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -82,10 +84,21 @@ type Target struct {
 	URL  string
 }
 
-// ValidateURL checks a webhook URL is a plain http(s) endpoint with a host. The
-// URL is operator-supplied (like a Git remote), so this is a shape check rather
-// than a security boundary — it rejects the obviously wrong (file:, missing
-// host) instead of trying to enumerate what an operator may point at.
+// ValidateURL checks a webhook URL is a plain http(s) endpoint with a host, and
+// that it does not point at the two kinds of destination that no real webhook
+// lives on.
+//
+// **RFC1918 is deliberately allowed.** ArcLoom's typical user runs ntfy, Gotify
+// or Mattermost on their own LAN, so refusing private addresses — the textbook
+// SSRF answer — would break the normal case while the actual damage lies
+// elsewhere. What is refused is the cloud metadata service (169.254.169.254 and
+// the rest of link-local), which hands out instance credentials to anything that
+// asks, and loopback, which is where ArcLoom's own API and every other unguarded
+// admin interface on the box listens. Neither has a legitimate webhook on it.
+//
+// The other half of this is in Send: the upstream response body is never
+// returned to the caller, so even an allowed destination is not a way to read
+// something back.
 func ValidateURL(raw string) error {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
@@ -97,8 +110,59 @@ func ValidateURL(raw string) error {
 	if u.Host == "" {
 		return fmt.Errorf("webhook URL is missing a host")
 	}
+	return checkHost(u.Hostname())
+}
+
+// checkHost refuses metadata and loopback destinations.
+//
+// A hostname is resolved so that a name pointing at 169.254.169.254 is caught
+// too; resolution failing is NOT an error here, because a webhook host that does
+// not resolve yet (a container starting, split-horizon DNS) must still be
+// configurable — the request itself will fail later and say so. This is a
+// best-effort refusal of the obviously-wrong, not a guarantee: a name whose
+// answer changes between this check and the request (DNS rebinding) is not
+// something a check at this layer can close.
+func checkHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("webhook URL is missing a host")
+	}
+	ips := []net.IP{}
+	if ip := net.ParseIP(host); ip != nil {
+		ips = append(ips, ip)
+	} else {
+		resolved, err := net.LookupIP(host)
+		if err != nil {
+			return nil // unresolvable today; let the delivery attempt report it
+		}
+		ips = resolved
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() && !loopbackAllowed() {
+			return fmt.Errorf("webhook URL points at this machine (%s); "+
+				"set ARCLOOM_NOTIFY_ALLOW_LOOPBACK=true if the notification service really does run on localhost", ip)
+		}
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("webhook URL points at a link-local address (%s), which is where cloud instance credentials are served", ip)
+		}
+	}
 	return nil
 }
+
+// allowLoopback opens the loopback destination back up. It exists because
+// `network_mode: host` with ntfy or Gotify on 127.0.0.1 is a real homelab
+// layout, and refusing it outright would be telling those users their working
+// setup is wrong. Off by default, because the far more common thing on loopback
+// is an unguarded admin interface — ArcLoom's own API among them.
+//
+// Read through a function rather than captured at init so a test (and httptest,
+// which can only bind loopback) can flip it.
+var allowLoopback atomic.Bool
+
+// AllowLoopback permits webhook delivery to 127.0.0.1/::1. Wired from
+// ARCLOOM_NOTIFY_ALLOW_LOOPBACK.
+func AllowLoopback(v bool) { allowLoopback.Store(v) }
+
+func loopbackAllowed() bool { return allowLoopback.Load() }
 
 // NormalizeKind maps a requested payload kind to a supported one, defaulting to
 // the generic webhook (which is also what an unrecognized stored value degrades
@@ -163,15 +227,21 @@ func Send(ctx context.Context, t Target, ev Event) error {
 		return err
 	}
 	defer res.Body.Close()
+	// The response body is deliberately NOT read back into the error.
+	//
+	// It used to be, up to 2 KiB, and `POST /projects/{id}/notify/test` returns
+	// that error to the caller synchronously — which turned "configure a webhook"
+	// (the `resources` permission, not admin) into a way to fetch a URL from
+	// inside the network and read the answer. Blocking the worst destinations is
+	// half the fix; not echoing what they said is the half that removes the
+	// oracle even for a destination that is legitimately allowed.
+	//
+	// The status line is enough to configure a webhook: a 401/403/404 from Slack
+	// is the diagnosis.
+	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, maxErrBody))
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(res.Body, maxErrBody))
-		detail := strings.TrimSpace(string(msg))
-		if detail != "" {
-			return fmt.Errorf("webhook returned %s: %s", res.Status, detail)
-		}
 		return fmt.Errorf("webhook returned %s", res.Status)
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, maxErrBody))
 	return nil
 }
 

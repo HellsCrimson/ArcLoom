@@ -129,7 +129,7 @@ func (s *Server) currentUser(r *http.Request) (*user.User, *credential, bool) {
 func (s *Server) unauthorized(w http.ResponseWriter, r *http.Request) {
 	if s.oauthEnabled() && strings.HasPrefix(r.URL.Path, "/api/mcp") {
 		w.Header().Set("WWW-Authenticate",
-			`Bearer resource_metadata="`+issuer(r)+`/.well-known/oauth-protected-resource"`)
+			`Bearer resource_metadata="`+s.issuer(r)+`/.well-known/oauth-protected-resource"`)
 	}
 	writeErr(w, http.StatusUnauthorized, "authentication required")
 }

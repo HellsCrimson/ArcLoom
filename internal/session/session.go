@@ -10,7 +10,9 @@ package session
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"io"
 	"time"
@@ -53,4 +55,20 @@ func newToken() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// hashToken is the stored form of a session token.
+//
+// The token used to BE the filename, which meant anyone who could list the
+// sessions directory — a backup, a stray tar, a copied volume — held live
+// credentials outright, with no cracking step. internal/apikey and
+// internal/oauth already stored a hash for exactly this reason; sessions were
+// the odd one out rather than a considered exception.
+//
+// SHA-256 rather than a memory-hard KDF, for the same reason those two give: a
+// token is 256 bits of CSPRNG output with no search space to slow down, and
+// argon2 on every authenticated request would be a self-inflicted DoS.
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }

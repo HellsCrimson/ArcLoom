@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -305,8 +306,14 @@ func TestSendReportsNon2xx(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for a 403 response")
 	}
-	if !strings.Contains(err.Error(), "invalid_token") {
-		t.Fatalf("error should quote the response body: %v", err)
+	if !strings.Contains(err.Error(), "403") {
+		t.Fatalf("error should report the status: %v", err)
+	}
+	// The upstream body must NOT come back: handleTestNotify returns this error
+	// to the caller, and echoing what an arbitrary URL replied is what made the
+	// webhook a read-anything oracle for any user with the `resources` perm.
+	if strings.Contains(err.Error(), "invalid_token") {
+		t.Fatalf("error leaked the upstream response body: %v", err)
 	}
 }
 
@@ -330,5 +337,44 @@ func TestSendRefusesRedirects(t *testing.T) {
 func TestSendRejectsBadURL(t *testing.T) {
 	if err := Send(context.Background(), Target{URL: "file:///tmp/x"}, testEvent()); err == nil {
 		t.Fatal("expected a validation error")
+	}
+}
+
+// TestMain allows loopback for the whole package: httptest can only bind
+// 127.0.0.1, so every delivery test would otherwise be refused by the
+// destination policy. Production defaults to refusing it (see AllowLoopback).
+func TestMain(m *testing.M) {
+	AllowLoopback(true)
+	os.Exit(m.Run())
+}
+
+// TestValidateURLRefusesMetadataAndLoopback is the SSRF boundary: a webhook is
+// configurable with only the `resources` permission, so these destinations must
+// be refused before the server is made to fetch them.
+func TestValidateURLRefusesMetadataAndLoopback(t *testing.T) {
+	AllowLoopback(false)
+	defer AllowLoopback(true)
+
+	for _, bad := range []string{
+		"http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+		"http://[fe80::1]/x",
+		"http://0.0.0.0/x",
+		"http://127.0.0.1:8080/api/projects",
+		"http://localhost:8080/api/projects",
+		"http://[::1]/x",
+	} {
+		if err := ValidateURL(bad); err == nil {
+			t.Errorf("%s should be refused", bad)
+		}
+	}
+	// A LAN address is the NORMAL homelab destination and must keep working.
+	for _, ok := range []string{
+		"http://192.168.1.50:8080/ntfy-topic",
+		"http://10.0.0.5/hooks/x",
+		"https://hooks.slack.com/services/T/B/x",
+	} {
+		if err := ValidateURL(ok); err != nil {
+			t.Errorf("%s should be allowed: %v", ok, err)
+		}
 	}
 }

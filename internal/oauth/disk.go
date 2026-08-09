@@ -94,6 +94,27 @@ func (d *Disk) GetClient(id string) (*Client, error) {
 	return &c, nil
 }
 
+// CountClients counts registered clients. Registration is open and
+// unauthenticated, so the HTTP layer uses this to cap the total.
+func (d *Disk) CountClients() (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	entries, err := os.ReadDir(filepath.Join(d.root, dirClients))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".yaml") {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (d *Disk) SaveCode(c *Code) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

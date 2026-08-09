@@ -21,7 +21,7 @@ func TestShimScrubsArcloomEnv(t *testing.T) {
 	dir := t.TempDir()
 	shim := filepath.Join(dir, "engine")
 	// A stand-in for the engine that just reports what it inherited.
-	script := shimScript("/usr/bin/env", Sandbox{Mode: SandboxOff}, false)
+	script := shimScript("/usr/bin/env", Sandbox{Mode: SandboxOff}, false, "")
 	if err := os.WriteFile(shim, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestShimScrubsArcloomEnv(t *testing.T) {
 func TestShimPassesArguments(t *testing.T) {
 	dir := t.TempDir()
 	shim := filepath.Join(dir, "engine")
-	if err := os.WriteFile(shim, []byte(shimScript("/bin/echo", Sandbox{Mode: SandboxOff}, false)), 0o700); err != nil {
+	if err := os.WriteFile(shim, []byte(shimScript("/bin/echo", Sandbox{Mode: SandboxOff}, false, "")), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	out, err := exec.Command(shim, "plan", "-no-color", "-var", "a b=c d").CombinedOutput()
@@ -62,7 +62,8 @@ func TestShimPassesArguments(t *testing.T) {
 // against real bubblewrap: a command running as the engine must not be able to
 // read the secret store, even though it runs as the same uid as the server.
 func TestSandboxHidesArcloomState(t *testing.T) {
-	if err := probeSandbox(); err != nil {
+	tier, err := probeSandbox()
+	if err != nil {
 		t.Skipf("bubblewrap unusable here: %v", err)
 	}
 	root := t.TempDir()
@@ -79,7 +80,7 @@ func TestSandboxHidesArcloomState(t *testing.T) {
 	}
 
 	shim := filepath.Join(root, "engine")
-	script := shimScript("/bin/sh", Sandbox{Mode: SandboxAuto, HideDirs: []string{secretsDir}}, true)
+	script := shimScript("/bin/sh", Sandbox{Mode: SandboxAuto, HideDirs: []string{secretsDir}}, true, tier)
 	if err := os.WriteFile(shim, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +97,7 @@ func TestSandboxHidesArcloomState(t *testing.T) {
 	// ever run inside the sandbox.
 	cmd = exec.Command(shim, "-c", "echo written > ./probe && cat ./probe")
 	cmd.Dir = workDir
-	out, err := cmd.CombinedOutput()
+	out, err = cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "written") {
 		t.Fatalf("the run workspace must stay writable: %v (%s)", err, out)
 	}
@@ -124,5 +125,45 @@ func TestUseSandboxRequireFailsLoudly(t *testing.T) {
 	}
 	if tf2.execPath == tf2.enginePath {
 		t.Error("child processes should still go through the shim for the env scrub")
+	}
+}
+
+// TestShimMasksFileOnlyIfPresent: bwrap needs the mount target to exist (the
+// root is bound read-only, so it cannot create one), and --ro-bind-try only
+// forgives a missing SOURCE. The settings file does not exist until something is
+// configured, so an unconditional mask aborted every run on a fresh install.
+func TestShimMasksFileOnlyIfPresent(t *testing.T) {
+	root := t.TempDir()
+	settings := filepath.Join(root, "settings.yaml")
+	workDir := filepath.Join(root, "work")
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tier, err := probeSandbox()
+	if err != nil {
+		t.Skipf("bubblewrap unusable here: %v", err)
+	}
+	shim := filepath.Join(root, "engine")
+	script := shimScript("/bin/sh", Sandbox{Mode: SandboxAuto, HideFiles: []string{settings}}, true, tier)
+	if err := os.WriteFile(shim, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Absent: the run must still work rather than aborting on a missing target.
+	cmd := exec.Command(shim, "-c", "echo ran")
+	cmd.Dir = workDir
+	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "ran") {
+		t.Fatalf("a missing mask target must not break the run: %v (%s)", err, out)
+	}
+
+	// Present: it must actually be masked.
+	if err := os.WriteFile(settings, []byte("client_secret: hunter2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command(shim, "-c", "cat "+settings+" 2>&1")
+	cmd.Dir = workDir
+	out, _ := cmd.CombinedOutput()
+	if strings.Contains(string(out), "hunter2") {
+		t.Errorf("settings file was not masked:\n%s", out)
 	}
 }

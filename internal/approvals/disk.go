@@ -39,7 +39,7 @@ type Disk struct {
 
 // NewDisk creates a disk-backed approval store rooted at dir.
 func NewDisk(dir string) (*Disk, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dataDirMode); err != nil {
 		return nil, fmt.Errorf("create approvals dir: %w", err)
 	}
 	return &Disk{root: dir}, nil
@@ -56,18 +56,18 @@ func (d *Disk) Create(a *Approval, planBytes []byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	dir := d.projectDir(a.ProjectID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dataDirMode); err != nil {
 		return err
 	}
 	stem := base(a)
-	if err := os.WriteFile(filepath.Join(dir, stem+".tfplan"), planBytes, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, stem+".tfplan"), planBytes, dataFileMode); err != nil {
 		return fmt.Errorf("write plan artifact: %w", err)
 	}
 	data, err := json.Marshal(a)
 	if err != nil {
 		return fmt.Errorf("marshal approval: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, stem+".json"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, stem+".json"), data, dataFileMode); err != nil {
 		return err
 	}
 	d.pruneLocked(dir)
@@ -123,7 +123,7 @@ func (d *Disk) Consume(projectID, id string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, dataFileMode)
 }
 
 func (d *Disk) InvalidateEnv(projectID, env string) error {
@@ -146,7 +146,7 @@ func (d *Disk) InvalidateEnv(projectID, env string) error {
 		a.Consumed = true
 		a.ConsumedAt = time.Now()
 		if data, err := json.Marshal(a); err == nil {
-			_ = os.WriteFile(path, data, 0o644)
+			_ = os.WriteFile(path, data, dataFileMode)
 		}
 	}
 	return nil
@@ -168,7 +168,7 @@ func (d *Disk) StashPlan(p *PendingPlan, planBytes []byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	stem := d.pendingStem(p.ProjectID, p.Env)
-	if err := os.MkdirAll(filepath.Dir(stem), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(stem), dataDirMode); err != nil {
 		return err
 	}
 	meta, err := json.Marshal(p)
@@ -229,7 +229,7 @@ func (d *Disk) DropStash(projectID, env string) error {
 // sees a partially written plan artifact.
 func writeAtomic(path string, data []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, dataFileMode); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
@@ -321,3 +321,12 @@ func (d *Disk) read(path string) (*Approval, error) {
 	}
 	return &a, nil
 }
+
+// File modes. An approval carries a saved `tfplan` artifact, and a plan file
+// embeds the resolved values of every input variable — so these are among the
+// most secret-bearing files ArcLoom writes, and they were world-readable.
+// Matches the credential stores (secrets/session/apikey/oauth).
+const (
+	dataFileMode = 0o600
+	dataDirMode  = 0o700
+)

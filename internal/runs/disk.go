@@ -30,7 +30,7 @@ type Disk struct {
 
 // NewDisk creates a disk-backed run store rooted at dir.
 func NewDisk(dir string) (*Disk, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dataDirMode); err != nil {
 		return nil, fmt.Errorf("create runs dir: %w", err)
 	}
 	return &Disk{root: dir}, nil
@@ -42,7 +42,7 @@ func (d *Disk) Append(r *Run) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	dir := d.projectDir(r.ProjectID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dataDirMode); err != nil {
 		return err
 	}
 	data, err := json.Marshal(r)
@@ -50,7 +50,7 @@ func (d *Disk) Append(r *Run) error {
 		return fmt.Errorf("marshal run: %w", err)
 	}
 	name := fmt.Sprintf("%020d-%s.json", r.StartedAt.UnixNano(), r.ID)
-	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, name), data, dataFileMode); err != nil {
 		return err
 	}
 	// Prune beyond the retention cap (files sort chronologically by name).
@@ -138,3 +138,10 @@ func (d *Disk) read(path string) (*Run, error) {
 	}
 	return &r, nil
 }
+
+// File modes. A run record holds the full engine log, which can quote provider
+// errors; it is not world-readable.
+const (
+	dataFileMode = 0o600
+	dataDirMode  = 0o700
+)

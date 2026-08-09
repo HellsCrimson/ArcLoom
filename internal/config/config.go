@@ -78,6 +78,15 @@ type Config struct {
 	// plugin), so the containment — not the permission check — is what bounds
 	// what those commands can read. See internal/runner/sandbox.go.
 	Sandbox string
+	// NotifyAllowLoopback permits webhook delivery to 127.0.0.1/::1. Off by
+	// default: loopback is where unguarded admin interfaces live (ArcLoom's own
+	// API included), and a webhook is configurable with only the `resources`
+	// permission. Turned on for a `network_mode: host` install whose ntfy or
+	// Gotify really is on localhost.
+	NotifyAllowLoopback bool
+	// Issuer is the externally reachable base URL advertised in the OAuth
+	// discovery documents. Empty derives it from the request (see api.issuer).
+	Issuer string
 	// MCPEnabled mounts the Model Context Protocol endpoint at /api/mcp
 	// (ARCLOOM_MCP, default true). It is inert without an API key — there is no
 	// other way for a non-browser client to authenticate — so the default is on
@@ -137,6 +146,9 @@ func Load() Config {
 		ApprovalsDir:   env("ARCLOOM_APPROVALS_DIR", filepath.Join(filepath.Dir(dataDir), "approvals")),
 		SecretKey:      os.Getenv("ARCLOOM_SECRET_KEY"),
 		Sandbox:        env("ARCLOOM_SANDBOX", "auto"),
+
+		NotifyAllowLoopback: boolEnv("ARCLOOM_NOTIFY_ALLOW_LOOPBACK", false),
+		Issuer:              strings.TrimRight(os.Getenv("ARCLOOM_ISSUER"), "/"),
 
 		LogLevel:  env("ARCLOOM_LOG_LEVEL", "info"),
 		LogFormat: env("ARCLOOM_LOG_FORMAT", "text"),

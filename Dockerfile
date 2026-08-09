@@ -61,8 +61,24 @@ ENV ARCLOOM_ADDR=:8080 \
 	ARCLOOM_CACHE_DIR=/var/lib/arcloom/cache \
 	TF_PLUGIN_CACHE_DIR=/var/lib/arcloom/cache/plugins \
 	ARCLOOM_WORKDIR=/var/lib/arcloom/work
-RUN mkdir -p /var/lib/arcloom
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# The server runs as a normal account, not root. It executes provider plugins
+# and `local-exec` provisioners (see internal/runner/sandbox.go), so uid 0 is the
+# wrong thing for that code to inherit if it ever escapes the sandbox — or on a
+# host where the sandbox cannot start at all.
+#
+# The entrypoint still STARTS as root so it can adopt a volume created by an
+# older, root-running version; it hands ownership to this user and drops
+# privileges before exec'ing the server. A plain `USER` directive would leave
+# every existing install crash-looping on a data dir it cannot write.
+RUN useradd --system --uid 10001 --home-dir /var/lib/arcloom --shell /usr/sbin/nologin arcloom; \
+	mkdir -p /var/lib/arcloom; \
+	chown -R arcloom:arcloom /var/lib/arcloom; \
+	chmod 0700 /var/lib/arcloom; \
+	chmod +x /usr/local/bin/docker-entrypoint.sh
 VOLUME ["/var/lib/arcloom"]
 
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/arcloom"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD []

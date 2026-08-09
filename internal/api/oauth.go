@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -31,33 +32,66 @@ import (
 // store and the MCP endpoint it exists to serve.
 func (s *Server) oauthEnabled() bool { return s.oauth != nil && s.mcpEnabled() }
 
-// issuer derives the externally reachable base URL from the request. It is taken
-// from the request rather than configured because a homelab install is reached
-// by whatever name the user typed, and a configured issuer that disagrees with
-// it fails discovery in a way nobody can debug.
+// issuer returns the externally reachable base URL advertised in the OAuth
+// discovery documents (and in the WWW-Authenticate header that starts the flow).
 //
-// X-Forwarded-* is honoured so a reverse proxy terminating TLS advertises https,
-// which is what its clients must be told to use.
-func issuer(r *http.Request) string {
+// ARCLOOM_ISSUER wins outright when set, and is the right answer for any
+// deployment behind a proxy. Otherwise it is derived from the request, because a
+// homelab install is reached by whatever name the user typed and a configured
+// issuer that disagrees with that fails discovery in a way nobody can debug.
+//
+// X-Forwarded-* is honoured ONLY from a private peer. It has to be honoured
+// somehow — a proxy terminating TLS is how anyone gets https, and its clients
+// must be told so — but the headers are attacker-controlled on a directly
+// exposed instance, and every value here ends up in a document telling a client
+// where to send its authorization code. Trusting them from a public peer let
+// anyone rewrite `token_endpoint` to a host they own. A reverse proxy sits on
+// loopback or the LAN, so that is the line: it keeps every existing proxied
+// install working untouched while a direct-exposed one stops being spoofable.
+func (s *Server) issuer(r *http.Request) string {
+	if s != nil && s.cfg.Issuer != "" {
+		return s.cfg.Issuer
+	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	if v := r.Header.Get("X-Forwarded-Proto"); v != "" {
-		scheme = strings.TrimSpace(strings.Split(v, ",")[0])
-	}
 	host := r.Host
-	if v := r.Header.Get("X-Forwarded-Host"); v != "" {
-		host = strings.TrimSpace(strings.Split(v, ",")[0])
+	if trustedProxyPeer(r) {
+		if v := r.Header.Get("X-Forwarded-Proto"); v != "" {
+			scheme = strings.TrimSpace(strings.Split(v, ",")[0])
+		}
+		if v := r.Header.Get("X-Forwarded-Host"); v != "" {
+			host = strings.TrimSpace(strings.Split(v, ",")[0])
+		}
 	}
 	return scheme + "://" + host
+}
+
+// trustedProxyPeer reports whether the DIRECT peer is somewhere a reverse proxy
+// plausibly runs: loopback, or a private/link-local address. The peer address is
+// the transport's own, not a header, so it cannot be forged by the client — which
+// is the whole reason it can be used to decide whether a header may be believed.
+//
+// A request with no parseable address (httptest's default, a unix socket) counts
+// as local: those are not the exposed case this guards.
+func trustedProxyPeer(r *http.Request) bool {
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()
 }
 
 // handleProtectedResourceMetadata is RFC 9728: it tells a client which
 // authorization server guards this MCP endpoint. This is the document the 401's
 // WWW-Authenticate header points at, and the first step of the whole flow.
 func (s *Server) handleProtectedResourceMetadata(w http.ResponseWriter, r *http.Request) {
-	base := issuer(r)
+	base := s.issuer(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"resource":                 base + "/api/mcp",
 		"authorization_servers":    []string{base},
@@ -68,7 +102,7 @@ func (s *Server) handleProtectedResourceMetadata(w http.ResponseWriter, r *http.
 
 // handleAuthServerMetadata is RFC 8414.
 func (s *Server) handleAuthServerMetadata(w http.ResponseWriter, r *http.Request) {
-	base := issuer(r)
+	base := s.issuer(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issuer":                   base,
 		"authorization_endpoint":   base + "/oauth/authorize",
@@ -95,6 +129,23 @@ func (s *Server) handleAuthServerMetadata(w http.ResponseWriter, r *http.Request
 // is pin the redirect URIs, because those are the only thing standing between an
 // authorization code and whoever asked for it.
 func (s *Server) handleRegisterClient(w http.ResponseWriter, r *http.Request) {
+	// Unauthenticated and it writes a file, so it is throttled per source IP:
+	// without this, a loop registers clients until the disk fills. The body cap
+	// (maxBodySmall) bounds each request; nothing bounded their number.
+	if ok, retry := s.authLimiter.allow("oauth-register:" + clientIP(r)); !ok {
+		w.Header().Set("Retry-After", retryAfterSeconds(retry))
+		oauthErr(w, http.StatusTooManyRequests, "temporarily_unavailable", "too many registration attempts; try again shortly")
+		return
+	}
+	// A second, absolute bound: throttling slows a flood but does not stop a
+	// patient one. Registrations are cheap to make and never expire, so the
+	// count is capped outright and the oldest unused clients are the operator's
+	// to clear.
+	if n, err := s.oauth.CountClients(); err == nil && n >= maxOAuthClients {
+		oauthErr(w, http.StatusServiceUnavailable, "temporarily_unavailable",
+			"this server has too many registered clients; an administrator must prune them")
+		return
+	}
 	var req struct {
 		ClientName   string   `json:"client_name"`
 		RedirectURIs []string `json:"redirect_uris"`
@@ -299,8 +350,21 @@ func (s *Server) handleAuthorizeApprove(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": target.String()})
 }
 
+// maxOAuthClients bounds how many dynamically registered clients are kept.
+// Generous — a real install has a handful — but finite, because registration is
+// open and unauthenticated and each one is a file.
+const maxOAuthClients = 500
+
 // handleToken is the token endpoint: authorization_code and refresh_token.
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
+	// Also unauthenticated, and the refresh path reads every grant on the
+	// instance to find a matching hash — so an unthrottled caller is an O(n)
+	// disk-read amplifier as well as a (hopeless, 256-bit) guessing channel.
+	if ok, retry := s.authLimiter.allow("oauth-token:" + clientIP(r)); !ok {
+		w.Header().Set("Retry-After", retryAfterSeconds(retry))
+		oauthErr(w, http.StatusTooManyRequests, "temporarily_unavailable", "too many token requests; try again shortly")
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		oauthErr(w, http.StatusBadRequest, "invalid_request", "could not parse form")
 		return

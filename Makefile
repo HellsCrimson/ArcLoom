@@ -13,7 +13,7 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.date=$(DATE)
 
-.PHONY: dev dev-web dev-api build-web build test tidy docker clean
+.PHONY: dev dev-web dev-api build-web build test tidy docker clean seccomp-profile
 
 ## dev-api: run the Go server (serves API; frontend via Vite in dev)
 dev-api:
@@ -52,3 +52,8 @@ clean:
 	rm -rf $(WEBDIR)/build $(EMBEDDIR)
 	mkdir -p $(EMBEDDIR)
 	echo "Populated by the frontend build. In dev, the SPA is served by Vite." > $(EMBEDDIR)/placeholder.txt
+
+# Regenerate the Docker seccomp profile that lets the engine sandbox start
+# (Docker's default blocks bubblewrap's namespace syscalls). See deploy/README.md.
+seccomp-profile:
+	python3 deploy/gen-seccomp.py

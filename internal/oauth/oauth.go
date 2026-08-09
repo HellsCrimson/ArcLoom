@@ -116,6 +116,9 @@ type Store interface {
 	RegisterClient(c *Client) error
 	// GetClient returns a client by id.
 	GetClient(id string) (*Client, error)
+	// CountClients reports how many clients are registered, so the open
+	// registration endpoint can refuse to grow without bound.
+	CountClients() (int, error)
 
 	// SaveCode stores a pending authorization code.
 	SaveCode(c *Code) error

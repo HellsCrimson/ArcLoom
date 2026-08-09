@@ -65,7 +65,11 @@ func (s *Server) handleLint(w http.ResponseWriter, r *http.Request) { s.streamOp
 // provider). Parameters arrive as query values; they are validated here so a
 // bad request fails with a 400 before the SSE stream starts.
 func (s *Server) handleStateImport(w http.ResponseWriter, r *http.Request) {
-	if !validAddress(r.URL.Query().Get("address")) || strings.TrimSpace(r.URL.Query().Get("id")) == "" {
+	// The id is a provider-defined string (an ARN, a UUID, a "vpc-123/subnet-456"
+	// pair), so its only constraint is that it must not read as a CLI flag — it
+	// is the second positional argument to `terraform import`.
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if !validAddress(r.URL.Query().Get("address")) || id == "" || isCLIFlag(id) {
 		writeErr(w, http.StatusBadRequest, "address and id are required")
 		return
 	}
@@ -118,8 +122,21 @@ func (s *Server) handleStateForceUnlock(w http.ResponseWriter, r *http.Request) 
 // that make it an argument at all are enforced.
 func validLockID(id string) bool {
 	id = strings.TrimSpace(id)
-	return id != "" && len(id) <= 200 && !strings.ContainsAny(id, " \t\n")
+	return id != "" && len(id) <= 200 && !strings.ContainsAny(id, " \t\n") && !isCLIFlag(id)
 }
+
+// isCLIFlag reports whether a value would be read by the engine as an option
+// rather than as the operand it is meant to be.
+//
+// These values are passed to the CLI as positional arguments by tfexec, which
+// builds the argv and offers no "--" separator — so a value starting with "-"
+// is parsed as a flag. `-state-out=/somewhere` on a state move, or
+// `-var-file=/etc/shadow` on an import (whose error quotes the file it failed to
+// parse), turns a state operation into an arbitrary write or a file read. It
+// matters most for a **deploy-only** user: they cannot author a provisioner, so
+// unlike a resources+deploy holder they have no other route to the filesystem,
+// and this would be a way past their intended boundary.
+func isCLIFlag(v string) bool { return strings.HasPrefix(strings.TrimSpace(v), "-") }
 
 // handleAcceptDrift persists the refreshed state (apply -refresh-only) so the
 // state catches up to reality. It changes no infrastructure, and it is the only
@@ -147,9 +164,11 @@ func (s *Server) handleStateMv(w http.ResponseWriter, r *http.Request) {
 
 // validAddress is a light sanity check on a state address ("type.name",
 // "module.m.type.name[0]", 'x.y["key"]'); the CLI does the real validation.
+// A leading "-" is refused because the address becomes a positional CLI
+// argument (see isCLIFlag).
 func validAddress(addr string) bool {
 	addr = strings.TrimSpace(addr)
-	return addr != "" && !strings.ContainsAny(addr, " \t\n")
+	return addr != "" && !strings.ContainsAny(addr, " \t\n") && !isCLIFlag(addr)
 }
 
 func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
@@ -256,8 +275,17 @@ func (s *Server) streamOp(w http.ResponseWriter, r *http.Request, op string) {
 	// Stream CLI output line-by-line as "log" events, and mirror it into a
 	// buffer for the run record. The child process is killed via r.Context()
 	// cancellation when the client disconnects.
+	//
+	// Every line is passed through the redactor first, which replaces the secret
+	// values THIS run injected. It applies to both destinations deliberately: the
+	// run record is readable by anyone with project read and survives in backups,
+	// and the live stream is no better a place for a credential. Providers
+	// routinely quote the request they failed on, so "auth failed for token
+	// hunter2" is an ordinary engine error, not an exotic one.
+	redact := newRedactor(vars.TF, vars.Env)
 	var logBuf strings.Builder
 	logW := &lineWriter{emit: func(line string) {
+		line = redact.line(line)
 		logBuf.WriteString(line)
 		logBuf.WriteByte('\n')
 		sse.event("log", map[string]string{"line": line})

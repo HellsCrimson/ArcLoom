@@ -23,6 +23,7 @@ import (
 	"github.com/HellsCrimson/ArcLoom/internal/config"
 	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
 	"github.com/HellsCrimson/ArcLoom/internal/model"
+	"github.com/HellsCrimson/ArcLoom/internal/notify"
 	"github.com/HellsCrimson/ArcLoom/internal/oauth"
 	"github.com/HellsCrimson/ArcLoom/internal/runner"
 	"github.com/HellsCrimson/ArcLoom/internal/runs"
@@ -65,6 +66,10 @@ func main() {
 
 	cfg := config.Load()
 	setupLogging(cfg)
+
+	// Webhook destinations: loopback is refused unless the operator says their
+	// notification service really does run there (network_mode: host).
+	notify.AllowLoopback(cfg.NotifyAllowLoopback)
 
 	// Build a runner per engine that resolves on PATH. Engines that are not
 	// installed are skipped rather than fatal.

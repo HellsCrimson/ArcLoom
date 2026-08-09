@@ -25,6 +25,22 @@ services:
       # ARCLOOM_OIDC_REDIRECT_URL: http://localhost:8080/api/auth/sso/oidc/callback
     volumes:
       - arcloom-cache:/var/lib/arcloom
+    # Engine sandbox (internal/runner/sandbox.go) — recommended, opt-in.
+    #
+    # ArcLoom always scrubs ARCLOOM_* from the engine child, so a `local-exec`
+    # provisioner never sees the master key. The second layer — bubblewrap, which
+    # also hides the secret store, users, sessions and other projects from that
+    # child — needs five namespace/mount syscalls that Docker's DEFAULT seccomp
+    # profile blocks (verified: it fails as root and as non-root alike). ArcLoom
+    # probes at start-up and degrades with a warning, so the container works
+    # either way.
+    #
+    # This profile is Docker's default PLUS those five syscalls — every other
+    # filter stays in place, which is why it is preferable to seccomp:unconfined.
+    # See deploy/README.md for what each syscall is for and how that set was
+    # established. Confirm with the startup log: "sandbox=true".
+    security_opt:
+      - seccomp:./deploy/seccomp-arcloom.json
     healthcheck:
       # Public, dependency-free liveness probe (curl ships in the runtime image).
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]

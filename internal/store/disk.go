@@ -31,7 +31,7 @@ type Disk struct {
 
 // NewDisk creates a disk-backed store rooted at dir.
 func NewDisk(dir string, gen Generator) (*Disk, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dataDirMode); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 	return &Disk{root: dir, gen: gen}, nil
@@ -97,7 +97,7 @@ func (d *Disk) Delete(id string) error {
 // persist writes arcloom.yaml and regenerates generated/main.tf.
 func (d *Disk) persist(p *model.Project) error {
 	dir := d.dir(p.ID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dataDirMode); err != nil {
 		return err
 	}
 	// Stamp the shape on the way out, so every document this binary writes is
@@ -110,7 +110,7 @@ func (d *Disk) persist(p *model.Project) error {
 	if err != nil {
 		return fmt.Errorf("marshal project: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, configFile), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, configFile), data, dataFileMode); err != nil {
 		return err
 	}
 	// Regenerate the .tf so the folder is a usable Terraform/OpenTofu project.
@@ -123,8 +123,8 @@ func (d *Disk) persist(p *model.Project) error {
 			os.RemoveAll(genDir)
 			for rel, content := range files {
 				full := filepath.Join(genDir, rel)
-				if os.MkdirAll(filepath.Dir(full), 0o755) == nil {
-					_ = os.WriteFile(full, content, 0o644)
+				if os.MkdirAll(filepath.Dir(full), dataDirMode) == nil {
+					_ = os.WriteFile(full, content, dataFileMode)
 				}
 			}
 		}
@@ -150,3 +150,12 @@ func (d *Disk) load(id string) (*model.Project, error) {
 	p.Normalize()
 	return &p, nil
 }
+
+// File modes. A project's arcloom.yaml is its whole model and its companion
+// files are user content; neither is world-readable. (Secret VALUES never live
+// here — they are referenced by name and resolved at run time — but the model
+// still describes the infrastructure in full.)
+const (
+	dataFileMode = 0o600
+	dataDirMode  = 0o700
+)

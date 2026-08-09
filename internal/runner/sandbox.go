@@ -78,6 +78,27 @@ const (
 // trade than the problem it solves.
 const bwrapBin = "bwrap"
 
+// Sandbox tiers, strongest first. Which one is usable is PROBED rather than
+// assumed, because it depends on the host's kernel policy and — inside a
+// container — on the runtime's seccomp profile and how it masks /proc.
+//
+// The difference is /proc. Mounting a private procfs inside a user namespace
+// requires the kernel's "fully visible procfs" rule to be satisfied, and Docker
+// deliberately masks paths under /proc (/proc/kcore, /proc/acpi, …), which
+// breaks it. So under Docker the private-proc tier fails and the inherited one
+// works — verified against the real image. The filesystem isolation that
+// matters (ArcLoom's secrets, users, sessions and other projects being absent)
+// is identical in both; only the process view differs.
+const (
+	// tierPrivateProc: a private procfs, so the child cannot even enumerate
+	// processes outside its namespace. Available on a normal host.
+	tierPrivateProc = "private-proc"
+	// tierInheritedProc: the container's procfs, read-only via the root bind.
+	// The PID namespace is still unshared, so the child's own children die with
+	// it; it can see the outer process list. This is the Docker case.
+	tierInheritedProc = "inherited-proc"
+)
+
 // sandboxProbeTimeout bounds the start-up check. A hung probe must not hold up
 // the server.
 const sandboxProbeTimeout = 5 * time.Second
@@ -95,10 +116,12 @@ func (t *TfExec) UseSandbox(s Sandbox) error {
 		mode = SandboxAuto
 	}
 	sandboxed := false
+	tier := ""
 	switch mode {
 	case SandboxOff:
 	case SandboxAuto, SandboxRequire:
-		if err := probeSandbox(); err != nil {
+		t2, err := probeSandbox()
+		if err != nil {
 			if mode == SandboxRequire {
 				return fmt.Errorf("ARCLOOM_SANDBOX=require but %s cannot start: %w", bwrapBin, err)
 			}
@@ -106,7 +129,7 @@ func (t *TfExec) UseSandbox(s Sandbox) error {
 				"engine", t.engine, "err", err,
 				"hint", "install bubblewrap and allow unprivileged user namespaces for filesystem isolation")
 		} else {
-			sandboxed = true
+			sandboxed, tier = true, t2
 		}
 	default:
 		return fmt.Errorf("unknown sandbox mode %q (use auto, off or require)", mode)
@@ -125,38 +148,80 @@ func (t *TfExec) UseSandbox(s Sandbox) error {
 		return fmt.Errorf("create shim dir: %w", err)
 	}
 	shim := filepath.Join(dir, "engine")
-	if err := os.WriteFile(shim, []byte(shimScript(t.realExecPath(), s, sandboxed)), 0o700); err != nil {
+	if err := os.WriteFile(shim, []byte(shimScript(t.realExecPath(), s, sandboxed, tier)), 0o700); err != nil {
 		return fmt.Errorf("write engine shim: %w", err)
 	}
 	t.shimDir = dir
 	t.execPath = shim
 	t.sandboxed = sandboxed
 	slog.Info("engine containment ready", "engine", t.engine,
-		"sandbox", sandboxed, "scrubbed", len(scrubbedNames()))
+		"sandbox", sandboxed, "tier", tier, "scrubbed", len(scrubbedNames()))
+	if tier == tierInheritedProc {
+		slog.Info("engine sandbox is using the inherited /proc (a private one is blocked here, typically by a container runtime masking /proc); filesystem isolation is unaffected",
+			"engine", t.engine)
+	}
 	return nil
 }
 
-// probeSandbox checks that bwrap is not just installed but actually usable.
+// probeSandbox checks that bwrap is not just installed but actually usable, and
+// returns the strongest tier that works here.
+//
 // Unprivileged user namespaces are commonly disabled (a sysctl, a container
 // runtime's seccomp profile, some hardened kernels), and bwrap then fails at
-// the first run rather than at install time — so it is exercised here, once, on
-// a trivial command, instead of surfacing as a mysterious failed apply.
-func probeSandbox() error {
+// the first run rather than at install time — so it is exercised here, once,
+// instead of surfacing as a mysterious failed apply.
+//
+// It probes the tiers in order rather than picking one, because the difference
+// is not a matter of configuration but of what the kernel will permit: under
+// Docker's masked /proc a private procfs cannot be mounted at all, while
+// everything that actually protects ArcLoom's data works fine. Falling back
+// keeps the isolation instead of discarding it over the weaker half.
+func probeSandbox() (string, error) {
 	path, err := exec.LookPath(bwrapBin)
 	if err != nil {
-		return fmt.Errorf("%s not found on PATH", bwrapBin)
+		return "", fmt.Errorf("%s not found on PATH", bwrapBin)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sandboxProbeTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, path, "--ro-bind", "/", "/", "--dev", "/dev", "true")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = err.Error()
+	var firstErr string
+	for _, tier := range []string{tierPrivateProc, tierInheritedProc} {
+		args := append(namespaceArgs(tier), "true")
+		ctx, cancel := context.WithTimeout(context.Background(), sandboxProbeTimeout)
+		out, err := exec.CommandContext(ctx, path, args...).CombinedOutput()
+		cancel()
+		if err == nil {
+			return tier, nil
 		}
-		return fmt.Errorf("%s probe failed: %s", bwrapBin, msg)
+		if firstErr == "" {
+			if firstErr = strings.TrimSpace(string(out)); firstErr == "" {
+				firstErr = err.Error()
+			}
+		}
 	}
-	return nil
+	return "", fmt.Errorf("%s probe failed: %s", bwrapBin, firstErr)
+}
+
+// namespaceArgs are the tier-dependent bwrap options: the root view plus the
+// process view. Kept in one place so the probe and the shim cannot disagree
+// about what was actually tested.
+func namespaceArgs(tier string) []string {
+	args := []string{
+		// Everything readable, then the parts that must not be, masked back out.
+		// An allowlist would be tighter but breaks real installs: providers read
+		// ~/.aws/credentials, /etc/resolv.conf, CA bundles and their own plugin
+		// directories, and guessing that set wrong fails a deploy in a way the
+		// user cannot diagnose.
+		"--ro-bind", "/", "/",
+		"--dev", "/dev",
+		"--tmpfs", "/tmp",
+	}
+	if tier == tierPrivateProc {
+		args = append(args, "--proc", "/proc")
+	}
+	return append(args,
+		// A provisioner that forks a background process must not outlive the run.
+		"--unshare-pid",
+		"--die-with-parent",
+		"--new-session", // no terminal to inject keystrokes into
+	)
 }
 
 // scrubbedNames lists the environment variables the child must not inherit:
@@ -196,7 +261,7 @@ func scrubbedNames() []string {
 // $PWD is the run workspace: tfexec sets the command's directory, so the shim
 // does not need to be told which project it is running for — which is what lets
 // one shim, written once at start-up, serve every project.
-func shimScript(engine string, s Sandbox, sandboxed bool) string {
+func shimScript(engine string, s Sandbox, sandboxed bool, tier string) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
 	b.WriteString("# Generated by ArcLoom. Rewritten on every start; edits are lost.\n")
@@ -211,30 +276,13 @@ func shimScript(engine string, s Sandbox, sandboxed bool) string {
 		b.WriteString("exec " + shQuote(engine) + " \"$@\"\n")
 		return b.String()
 	}
-	args := []string{
-		// Everything readable, then the parts that must not be, masked back out.
-		// An allowlist would be tighter but breaks real installs: providers read
-		// ~/.aws/credentials, /etc/resolv.conf, CA bundles and their own plugin
-		// directories, and guessing that set wrong fails a deploy in a way the
-		// user cannot diagnose.
-		"--ro-bind", "/", "/",
-		"--dev", "/dev",
-		"--proc", "/proc",
-		"--tmpfs", "/tmp",
-	}
+	args := namespaceArgs(tier)
 	// A masked directory becomes an empty tmpfs and a masked file /dev/null:
 	// both mean "this is not here" rather than "you may not read this", so a
 	// provisioner cannot even enumerate what exists.
 	for _, p := range s.HideDirs {
 		if p != "" {
 			args = append(args, "--tmpfs", p)
-		}
-	}
-	for _, p := range s.HideFiles {
-		if p != "" {
-			// -try: the settings file does not exist until something is
-			// configured, and a missing source aborts bwrap outright.
-			args = append(args, "--ro-bind-try", "/dev/null", p)
 		}
 	}
 	// The working directory is restored AFTER the masks: a project's run
@@ -246,28 +294,47 @@ func shimScript(engine string, s Sandbox, sandboxed bool) string {
 			args = append(args, "--bind-try", p, p)
 		}
 	}
-	args = append(args,
-		"--chdir", "$PWD",
-		// A provisioner that forks a background process must not outlive the run.
-		"--unshare-pid",
-		"--die-with-parent",
-		"--new-session", // no terminal to inject keystrokes into
-	)
+	args = append(args, "--chdir", "$PWD")
 
 	b.WriteString("# Filesystem isolation: ArcLoom's secrets, users, sessions, API keys,\n")
 	b.WriteString("# OAuth grants and other projects are absent from this view entirely.\n")
-	b.WriteString("exec " + bwrapBin)
-	for _, a := range args {
-		// $PWD must reach the shell unquoted-but-safe: it is the one value the
-		// shim resolves at run time rather than at write time.
-		if a == "$PWD" {
-			b.WriteString(" \"$PWD\"")
+	b.WriteString("OPTS=" + shQuote(joinArgs(args)) + "\n")
+
+	// File masks are decided at RUN time, not here.
+	//
+	// bwrap needs the mount TARGET to exist — the root is bound read-only, so it
+	// cannot create one — and `--ro-bind-try` only forgives a missing *source*.
+	// The settings file is the case that matters: it does not exist until
+	// something is configured, so masking it unconditionally aborted every run on
+	// a fresh install, while deciding at write time would leave it exposed the
+	// moment it was created later. A shell test costs nothing and is correct in
+	// both directions.
+	for _, p := range s.HideFiles {
+		if p == "" {
 			continue
 		}
-		b.WriteString(" " + shQuote(a))
+		b.WriteString("[ -e " + shQuote(p) + " ] && OPTS=\"$OPTS --ro-bind /dev/null " + shQuote(p) + "\"\n")
 	}
-	b.WriteString(" -- " + shQuote(engine) + " \"$@\"\n")
+	// eval so $OPTS splits into words: the paths were single-quoted on the way in
+	// (shQuote), so one containing a space still arrives as a single argument.
+	b.WriteString("eval \"exec " + bwrapBin + " $OPTS -- " + shQuote(engine) + " \\\"\\$@\\\"\"\n")
 	return b.String()
+}
+
+// joinArgs renders bwrap options as one shell word list, quoting each so a path
+// with a space survives the eval, and leaving "$PWD" to be expanded at run time
+// (it is the run workspace, which differs per project — that is what lets one
+// shim serve them all).
+func joinArgs(args []string) string {
+	var parts []string
+	for _, a := range args {
+		if a == "$PWD" {
+			parts = append(parts, `"$PWD"`)
+			continue
+		}
+		parts = append(parts, shQuote(a))
+	}
+	return strings.Join(parts, " ")
 }
 
 // shQuote renders s as a single-quoted POSIX shell word. Every path here comes

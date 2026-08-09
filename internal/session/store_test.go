@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -158,5 +159,51 @@ func TestValidToken(t *testing.T) {
 		if validToken(s) {
 			t.Errorf("validToken(%q) = true, want false", s)
 		}
+	}
+}
+
+// TestDiskNeverStoresTokenPlaintext: the token is the credential, so a copy of
+// the sessions directory must not be a set of live logins. Before this the file
+// was NAMED after the token, which made a backup or a directory listing enough.
+func TestDiskNeverStoresTokenPlaintext(t *testing.T) {
+	dir := t.TempDir()
+	d, err := NewDisk(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := d.Create("u1", "local", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one session file, got %d", len(entries))
+	}
+	if strings.Contains(entries[0].Name(), s.Token) {
+		t.Errorf("session filename leaks the token: %s", entries[0].Name())
+	}
+	body, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), s.Token) {
+		t.Errorf("session file body leaks the token:\n%s", body)
+	}
+	// ...and the token still resolves, or the hashing broke lookup.
+	got, err := d.Get(s.Token)
+	if err != nil {
+		t.Fatalf("token should still resolve: %v", err)
+	}
+	if got.UserID != "u1" || got.Token != s.Token {
+		t.Errorf("round trip lost data: %+v", got)
+	}
+	if err := d.Delete(s.Token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Get(s.Token); err == nil {
+		t.Error("delete did not revoke the session")
 	}
 }

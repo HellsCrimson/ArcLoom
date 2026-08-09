@@ -118,11 +118,17 @@ func clientIP(r *http.Request) string {
 
 // tooManyAttempts writes a 429 with a Retry-After hint and a generic message
 // (never revealing whether a username exists).
-func tooManyAttempts(w http.ResponseWriter, retryAfter time.Duration) {
-	secs := int(retryAfter.Seconds())
+// retryAfterSeconds renders a Retry-After value, never below one second (a "0"
+// invites an immediate retry, which is the opposite of the point).
+func retryAfterSeconds(d time.Duration) string {
+	secs := int(d.Seconds())
 	if secs < 1 {
 		secs = 1
 	}
-	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	return strconv.Itoa(secs)
+}
+
+func tooManyAttempts(w http.ResponseWriter, retryAfter time.Duration) {
+	w.Header().Set("Retry-After", retryAfterSeconds(retryAfter))
 	writeErr(w, http.StatusTooManyRequests, "too many attempts, please try again later")
 }
