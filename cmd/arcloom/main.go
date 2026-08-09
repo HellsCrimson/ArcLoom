@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/HellsCrimson/ArcLoom/internal/api"
+	"github.com/HellsCrimson/ArcLoom/internal/apikey"
 	"github.com/HellsCrimson/ArcLoom/internal/approvals"
 	"github.com/HellsCrimson/ArcLoom/internal/audit"
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
@@ -109,6 +110,11 @@ func main() {
 	if err != nil {
 		fatal("init approvals", "err", err)
 	}
+	// Scoped API keys: the non-browser credential (CI, scripts, MCP clients).
+	apiKeys, err := apikey.NewDisk(cfg.APIKeysDir)
+	if err != nil {
+		fatal("init api keys", "err", err)
+	}
 	if sec.LocalEnabled() {
 		slog.Info("local secret store enabled", "dir", cfg.SecretsDir)
 	} else {
@@ -165,7 +171,7 @@ func main() {
 
 	// Initial Authenticator is local-only; ReloadAuth then adds OIDC from the
 	// persisted settings (bounded discovery; failure is non-fatal).
-	srv := api.New(cfg, runners, st, sc, sec, webui.FS(), auth.New(auth.NewLocalProvider(users)), sessions, users, set, runHist, auditLog, approvalStore)
+	srv := api.New(cfg, runners, st, sc, sec, webui.FS(), auth.New(auth.NewLocalProvider(users)), sessions, users, set, runHist, auditLog, approvalStore, apiKeys)
 	srv.SetBuildInfo(api.BuildInfo{Version: version, Commit: commit, Date: date})
 	rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
 	if err := srv.ReloadAuth(rctx); err != nil {

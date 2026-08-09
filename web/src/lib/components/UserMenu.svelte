@@ -2,13 +2,20 @@
 	import { auth } from '$lib/stores/auth.svelte';
 	import { theme } from '$lib/stores/theme.svelte';
 	import Modal from '$lib/components/Modal.svelte';
-	import { UserRound, ChevronDown, LogOut, KeyRound, Monitor, Sun, Moon } from 'lucide-svelte';
+	import ApiKeysModal from '$lib/components/ApiKeysModal.svelte';
+	import { UserRound, ChevronDown, LogOut, KeyRound, Monitor, Sun, Moon, Terminal } from 'lucide-svelte';
 
 	const themeBtn = (active: boolean) =>
 		`flex-1 inline-flex items-center justify-center rounded p-1 ${active ? 'bg-[var(--al-accent-weak)] text-[var(--al-accent)]' : 'text-[var(--al-muted)] hover:text-[var(--al-text)]'}`;
 
+	// projects only feeds the API-key form's optional per-project restriction;
+	let { projects = [] }: { projects?: { id: string; name: string }[] } = $props();
+
 	let open = $state(false);
 	let showChange = $state(false);
+	// API keys are self-service (any authenticated user), so they live here rather
+	// than in the admin-only Settings modal.
+	let showKeys = $state(false);
 
 	let current = $state('');
 	let next = $state('');
@@ -94,6 +101,15 @@
 				class="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]"
 				onclick={() => {
 					open = false;
+					showKeys = true;
+				}}
+			>
+				<Terminal size={13} /> API keys
+			</button>
+			<button
+				class="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-[var(--al-text)] hover:bg-[var(--al-panel-2)]"
+				onclick={() => {
+					open = false;
 					auth.logout();
 				}}
 			>
@@ -102,6 +118,8 @@
 		</div>
 	{/if}
 </div>
+
+<ApiKeysModal bind:open={showKeys} {projects} />
 
 <Modal title="Change password" bind:open={showChange}>
 	<div class="space-y-3">

@@ -73,8 +73,16 @@ func (s *Server) requireProjectPerm(perm string) func(http.Handler) http.Handler
 				writeErr(w, http.StatusForbidden, "you do not have permission to do that")
 				return
 			}
-			if id := chi.URLParam(r, "id"); id != "" && !s.projectAllows(u, id, perm) {
+			id := chi.URLParam(r, "id")
+			if id != "" && !s.projectAllows(u, id, perm) {
 				writeErr(w, http.StatusForbidden, "you do not have access to this project")
+				return
+			}
+			// An API key restricts on top of all of the above: its scopes must
+			// include this capability and, if it is project-restricted, this
+			// project. Routes with no {id} pass "" and are checked on scope only.
+			if msg := keyDenies(r, perm, id); msg != "" {
+				writeErr(w, http.StatusForbidden, msg)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -96,8 +104,16 @@ func (s *Server) requireProjectRead(next http.Handler) http.Handler {
 			writeErr(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
-		if id := chi.URLParam(r, "id"); id != "" && !s.projectVisible(u, id) {
+		id := chi.URLParam(r, "id")
+		if id != "" && !s.projectVisible(u, id) {
 			writeErr(w, http.StatusForbidden, "you do not have access to this project")
+			return
+		}
+		// Reads need no scope — any authenticated caller may read — but a
+		// project-restricted key must not read outside its projects either,
+		// so pass an empty perm and let keyDenies check only the restriction.
+		if msg := keyDenies(r, "", id); msg != "" {
+			writeErr(w, http.StatusForbidden, msg)
 			return
 		}
 		next.ServeHTTP(w, r)

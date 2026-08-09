@@ -74,6 +74,12 @@ type instanceInfo struct {
 
 	Paths map[string]string `json:"paths"`
 
+	// MCPEnabled reports whether the Model Context Protocol endpoint is mounted,
+	// and APIKeyCount how many credentials exist — together they answer "can an
+	// agent reach this instance right now", which is not otherwise visible.
+	MCPEnabled  bool `json:"mcpEnabled"`
+	APIKeyCount int  `json:"apiKeyCount"`
+
 	AuthEnabled   bool     `json:"authEnabled"`
 	CookieSecure  bool     `json:"cookieSecure"`
 	AuthProviders []string `json:"authProviders"`
@@ -109,6 +115,8 @@ func (s *Server) handleInstanceInfo(w http.ResponseWriter, r *http.Request) {
 		HeapMB:        int(mem.HeapAlloc / (1 << 20)),
 		DefaultEngine: s.cfg.DefaultEngine,
 		SchemaFormat:  schema.FormatVersion,
+		MCPEnabled:    s.mcpEnabled(),
+		APIKeyCount:   s.apiKeyCount(),
 		Paths: map[string]string{
 			"data":        s.cfg.DataDir,
 			"work":        s.cfg.WorkDir,
@@ -118,6 +126,7 @@ func (s *Server) handleInstanceInfo(w http.ResponseWriter, r *http.Request) {
 			"runs":        s.cfg.RunsDir,
 			"audit":       s.cfg.AuditDir,
 			"approvals":   s.cfg.ApprovalsDir,
+			"apiKeys":     s.cfg.APIKeysDir,
 			"users":       s.cfg.UsersDir,
 			"sessions":    s.cfg.SessionsDir,
 			"settings":    s.cfg.SettingsFile,

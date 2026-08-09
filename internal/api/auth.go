@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/HellsCrimson/ArcLoom/internal/apikey"
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
 	"github.com/HellsCrimson/ArcLoom/internal/settings"
 	"github.com/HellsCrimson/ArcLoom/internal/user"
@@ -72,31 +73,45 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		u, ok := s.currentUser(r)
+		u, key, ok := s.currentUser(r)
 		if !ok {
 			writeErr(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
 		ctx := context.WithValue(r.Context(), userCtxKey{}, u)
+		if key != nil {
+			ctx = context.WithValue(ctx, apiKeyCtxKey{}, key)
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// currentUser resolves the request's session cookie to a live, enabled user.
-func (s *Server) currentUser(r *http.Request) (*user.User, bool) {
+// currentUser resolves the request's credential to a live, enabled user. Two
+// credentials are accepted, and the returned *apikey.Key says which: an
+// `Authorization: Bearer` API key (non-nil key) or the session cookie (nil).
+//
+// Bearer is tried first and is *terminal*: a request that presents a malformed
+// or revoked key is rejected outright rather than silently falling back to any
+// cookie that happens to ride along, so a stale key can never be masked by a
+// browser session and appear to work.
+func (s *Server) currentUser(r *http.Request) (*user.User, *apikey.Key, bool) {
+	if token, ok := bearerToken(r); ok {
+		u, key, ok := s.userForKey(token)
+		return u, key, ok
+	}
 	c, err := r.Cookie(s.cfg.CookieName)
 	if err != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	sess, err := s.sessions.Get(c.Value)
 	if err != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	u, err := s.users.Get(sess.UserID)
 	if err != nil || u.Disabled {
-		return nil, false
+		return nil, nil, false
 	}
-	return u, true
+	return u, nil, true
 }
 
 // userFromContext returns the user injected by requireAuth.
@@ -124,6 +139,10 @@ func (s *Server) requirePerm(perm string) func(http.Handler) http.Handler {
 				writeErr(w, http.StatusForbidden, "you do not have permission to do that")
 				return
 			}
+			if msg := keyDenies(r, perm, ""); msg != "" {
+				writeErr(w, http.StatusForbidden, msg)
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(r.Context()))
 		})
 	}
@@ -139,6 +158,14 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 		u, ok := userFromContext(r)
 		if !ok {
 			writeErr(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		// An API key never carries admin, whoever owns it. This is the boundary
+		// that keeps a leaked key away from user management, the SSO config, the
+		// secret store settings and master-key rotation — the actions that could
+		// be used to escalate out of the key's own scopes.
+		if _, viaKey := keyFromContext(r); viaKey {
+			writeErr(w, http.StatusForbidden, "api keys cannot be used for admin actions")
 			return
 		}
 		if !u.Admin {
@@ -224,8 +251,14 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	if u, ok := s.currentUser(r); ok {
-		resp.User = meUserDTO(u)
+	if u, key, ok := s.currentUser(r); ok {
+		// For a key-authenticated request report what the *credential* can do,
+		// not what its owner could do in a browser: the intersection of the
+		// user's permissions with the key's scopes, and never admin. That makes
+		// /auth/me a usable "what is this key allowed to do" probe for a
+		// non-browser client, and stops the SPA-facing DTO from overstating a
+		// restricted credential.
+		resp.User = meUserDTO(effectiveUser(u, key))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -330,6 +363,16 @@ func (s *Server) expiredCookie() *http.Cookie {
 // matching the Origin/Referer host against the request Host, allowing requests
 // that carry neither (non-browser clients).
 func (s *Server) csrfSafe(r *http.Request) bool {
+	// A request authenticated by an API key carries no ambient authority: the
+	// credential is a header the caller had to set deliberately, not a cookie
+	// the browser attaches on its own, so there is nothing for a cross-site page
+	// to forge. (requireAuth runs on the parent group, so the key is already in
+	// context by the time csrfGuard calls this.) Without this, every non-browser
+	// client — CI, scripts, MCP — would be rejected by the Origin fallback the
+	// moment it sent an Origin header.
+	if _, viaKey := keyFromContext(r); viaKey {
+		return true
+	}
 	switch r.Header.Get("Sec-Fetch-Site") {
 	case "same-origin", "none":
 		return true

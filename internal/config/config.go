@@ -57,6 +57,14 @@ type Config struct {
 	UsersDir string
 	// SessionsDir holds server-side login sessions (never in Git).
 	SessionsDir string
+	// APIKeysDir holds scoped API keys — the non-browser credential used by CI,
+	// scripts and MCP clients (never in Git; stores hashes, not secrets).
+	APIKeysDir string
+	// MCPEnabled mounts the Model Context Protocol endpoint at /api/mcp
+	// (ARCLOOM_MCP, default true). It is inert without an API key — there is no
+	// other way for a non-browser client to authenticate — so the default is on
+	// and the env var exists to switch the surface off outright.
+	MCPEnabled bool
 	// SettingsFile is the app-level settings document (runtime SSO config).
 	SettingsFile string
 	// SessionTTL is how long a login session stays valid (ARCLOOM_SESSION_TTL).
@@ -117,6 +125,8 @@ func Load() Config {
 		AuthEnabled:   boolEnv("ARCLOOM_AUTH", true),
 		UsersDir:      env("ARCLOOM_USERS_DIR", filepath.Join(filepath.Dir(dataDir), "users")),
 		SessionsDir:   env("ARCLOOM_SESSIONS_DIR", filepath.Join(filepath.Dir(dataDir), "sessions")),
+		APIKeysDir:    env("ARCLOOM_APIKEYS_DIR", filepath.Join(filepath.Dir(dataDir), "apikeys")),
+		MCPEnabled:    boolEnv("ARCLOOM_MCP", true),
 		SettingsFile:  env("ARCLOOM_SETTINGS_FILE", filepath.Join(filepath.Dir(dataDir), "settings.yaml")),
 		SessionTTL:    durEnv("ARCLOOM_SESSION_TTL", 7*24*time.Hour),
 		CookieName:    "arcloom_session",

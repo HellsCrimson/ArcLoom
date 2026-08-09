@@ -60,12 +60,19 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Hide projects the caller may not read (per-project access list).
+	// Hide projects the caller may not read (per-project access list), and —
+	// for a key-authenticated request — anything outside the key's project
+	// restriction. The listing has to agree with what the per-project gates
+	// enforce, or a restricted key sees projects that 403 on every follow-up.
 	u, _ := userFromContext(r)
+	key, viaKey := keyFromContext(r)
 	driftStates := s.driftStatuses()
 	out := make([]map[string]any, 0, len(projects))
 	for _, p := range projects {
 		if !s.projectVisible(u, p.ID) {
+			continue
+		}
+		if viaKey && !key.AllowsProject(p.ID) {
 			continue
 		}
 		entry := map[string]any{

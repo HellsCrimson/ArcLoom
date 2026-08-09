@@ -15,6 +15,13 @@ import (
 // auditActions maps "METHOD <route-pattern>" (with the /api prefix stripped) to
 // a friendly action verb. Unmapped mutating routes fall back to "METHOD pattern".
 var auditActions = map[string]string{
+	// Minting a credential is the one action that can outlive a session, so it
+	// is recorded like a secret write. The detail is the request path — never
+	// the token.
+	"POST /keys":               "apikey.create",
+	"DELETE /keys/{kid}":       "apikey.delete",
+	"DELETE /admin/keys/{kid}": "apikey.delete",
+
 	"POST /providers":                            "provider.add",
 	"POST /projects":                             "project.create",
 	"PUT /projects/{id}":                         "project.replace",

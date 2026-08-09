@@ -1808,7 +1808,7 @@
 				<button class={iconBtn} title="Settings" aria-label="Settings" onclick={() => (showSettings = true)}><Settings size={16} /></button>
 			{/if}
 			{#if auth.authEnabled && auth.user}
-				<UserMenu />
+				<UserMenu {projects} />
 			{/if}
 		</div>
 	</header>

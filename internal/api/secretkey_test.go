@@ -27,7 +27,7 @@ func secretKeyServer(t *testing.T, masterKey string) (*Server, http.Handler, *se
 	sec := secrets.NewStore(t.TempDir(), masterKey)
 	cfg := config.Config{AuthEnabled: false, CookieName: "arcloom_session", DataDir: t.TempDir(), SecretKey: masterKey}
 	authn := auth.New(auth.NewLocalProvider(user.NewMemory()))
-	srv := New(cfg, nil, store.NewMemory(), nil, sec, nil, authn, session.NewMemory(), user.NewMemory(), set, nil, nil, nil)
+	srv := New(cfg, nil, store.NewMemory(), nil, sec, nil, authn, session.NewMemory(), user.NewMemory(), set, nil, nil, nil, nil)
 	return srv, srv.Handler(), sec, set
 }
 
@@ -147,7 +147,7 @@ func TestGetSecretKey_ReportsUnreadableItems(t *testing.T) {
 	cfg := config.Config{AuthEnabled: false, CookieName: "arcloom_session", DataDir: t.TempDir(), SecretKey: "wrong-key"}
 	authn := auth.New(auth.NewLocalProvider(user.NewMemory()))
 	srv := New(cfg, nil, store.NewMemory(), nil, secrets.NewStore(dir, "wrong-key"), nil, authn,
-		session.NewMemory(), user.NewMemory(), wrongSet, nil, nil, nil)
+		session.NewMemory(), user.NewMemory(), wrongSet, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/settings/secret-key", nil)
 	rr := httptest.NewRecorder()

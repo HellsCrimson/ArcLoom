@@ -82,6 +82,8 @@ entirely and keep everything you built.
 | **Audit log** | Every mutating action, with actor and target. |
 | **Notifications** | Apply outcomes and drift to Slack, Discord, Teams, Matrix, ntfy, Fluxer or a plain webhook. |
 | **Secrets** | AES-256-GCM on disk, `ARCLOOM_SECRET_*` environment secrets, or **Vault / OpenBao**. Injected as `TF_VAR_*` at run time — never written to HCL, state or Git. Master key rotatable. |
+| **API keys** | Scoped, revocable credentials for CI, scripts and AI agents. A key is always *narrower* than its owner — effective access is their permissions **and** its scopes — and can never perform admin actions. |
+| **MCP server** | Drive ArcLoom from an AI agent over the Model Context Protocol. Tools are filtered by the key's scopes, so a read-only key is never even shown a write tool. See [Connecting an AI agent](#connecting-an-ai-agent). |
 
 ## A closer look
 
@@ -224,6 +226,7 @@ All configuration is environment variables; sensible defaults apply throughout.
 | `ARCLOOM_COOKIE_SECURE` | `true` | Set `false` to allow login over plain HTTP. |
 | `ARCLOOM_SESSION_TTL` | `168h` | Session lifetime. |
 | `ARCLOOM_LOG_LEVEL` / `ARCLOOM_LOG_FORMAT` | `info` / `text` | Structured logging (`json` for shipping). |
+| `ARCLOOM_MCP` | `true` | Mounts the MCP endpoint at `/api/mcp`. It is inert without an API key, so the default is on. |
 
 <details>
 <summary>Paths, caches and OIDC</summary>
@@ -232,7 +235,7 @@ All configuration is environment variables; sensible defaults apply throughout.
 
 | Variable | Purpose |
 |---|---|
-| `ARCLOOM_SECRETS_DIR`, `ARCLOOM_RUNS_DIR`, `ARCLOOM_AUDIT_DIR`, `ARCLOOM_APPROVALS_DIR`, `ARCLOOM_USERS_DIR`, `ARCLOOM_SESSIONS_DIR`, `ARCLOOM_SETTINGS_FILE` | Where each kind of data lives; all default beside `ARCLOOM_DATA`. |
+| `ARCLOOM_SECRETS_DIR`, `ARCLOOM_RUNS_DIR`, `ARCLOOM_AUDIT_DIR`, `ARCLOOM_APPROVALS_DIR`, `ARCLOOM_USERS_DIR`, `ARCLOOM_SESSIONS_DIR`, `ARCLOOM_APIKEYS_DIR`, `ARCLOOM_SETTINGS_FILE` | Where each kind of data lives; all default beside `ARCLOOM_DATA`. |
 | `ARCLOOM_CACHE_DIR`, `TF_PLUGIN_CACHE_DIR` | Normalized provider schemas and shared provider plugins. |
 | `ARCLOOM_VAULT_TOKEN` | Token for an external secret store, so no credential is persisted. |
 | `ARCLOOM_OIDC_ISSUER`, `ARCLOOM_OIDC_CLIENT_ID`, `ARCLOOM_OIDC_CLIENT_SECRET`, `ARCLOOM_OIDC_REDIRECT_URL`, `ARCLOOM_OIDC_SCOPES` | Seed SSO on first run. After that it is editable in **Settings → Single sign-on**, including group → role mapping. |
@@ -244,6 +247,43 @@ continues with local login.
 </details>
 
 `GET /healthz` and `/livez` are public and dependency-free for probes.
+
+## Connecting an AI agent
+
+ArcLoom speaks the **Model Context Protocol** at `/api/mcp` over Streamable HTTP, so an
+agent can read a project, edit resources and run plans. There is nothing to install: the
+server is already running, and a client only needs a URL and a credential.
+
+**1. Mint a key.** User menu → **API keys** → give it a label and tick the scopes it
+needs. Leave every scope unchecked for a read-only key; tick `resources` for a key that
+can edit but not deploy. Optionally limit it to specific projects and give it an expiry.
+The token is shown once.
+
+**2. Register it.** With Claude Code:
+
+```sh
+claude mcp add --transport http arcloom http://your-host:8080/api/mcp \
+  --header "Authorization: Bearer arcl_..."
+```
+
+Or by hand in `.mcp.json` — note that an entry with a `url` but no `type` is read as a
+stdio server and skipped:
+
+```json
+{ "mcpServers": { "arcloom": { "type": "http", "url": "http://your-host:8080/api/mcp",
+    "headers": { "Authorization": "Bearer arcl_..." } } } }
+```
+
+**What the agent gets** is filtered by the key's scopes, so it is never offered a tool it
+would be refused on: reads always; `upsert_resource`, `set_config`, `set_provider`,
+`set_file`, `import_hcl` and provider-schema discovery with `resources`; `plan`, `apply`,
+`validate` and `lint` with `deploy`. Long operations return an `operationId` immediately
+and are polled with `get_operation`.
+
+**Two deliberate omissions.** There is no destroy tool — that stays a human action in the
+UI. And if you turn on the **approval gate** for a project, an agent can plan and apply but
+a human must approve the plan in between; that is the recommended posture for any project
+an agent can reach.
 
 ## Security posture
 

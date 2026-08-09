@@ -169,7 +169,7 @@ func driftTestServer(t *testing.T, fake *fakeRunner) (*Server, runs.Store) {
 		t.Fatal(err)
 	}
 	srv := New(cfg, map[model.Engine]runner.Runner{model.EngineTofu: fake}, st, nil, nil, nil,
-		authn, session.NewMemory(), user.NewMemory(), testSettings(t), rh, nil, appr)
+		authn, session.NewMemory(), user.NewMemory(), testSettings(t), rh, nil, appr, nil)
 	return srv, rh
 }
 

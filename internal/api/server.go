@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/HellsCrimson/ArcLoom/internal/apikey"
 	"github.com/HellsCrimson/ArcLoom/internal/approvals"
 	"github.com/HellsCrimson/ArcLoom/internal/audit"
 	"github.com/HellsCrimson/ArcLoom/internal/auth"
@@ -45,6 +46,7 @@ type Server struct {
 	runs      runs.Store      // may be nil (history disabled, e.g. in tests)
 	audit     audit.Store     // may be nil (audit disabled, e.g. in tests)
 	approvals approvals.Store // may be nil (approval gate disabled, e.g. in tests)
+	apikeys   apikey.Store    // may be nil (bearer auth unavailable, e.g. in tests)
 	registry  *registry.Client
 
 	// authLimiter throttles the argon2-backed password endpoints (login +
@@ -62,6 +64,19 @@ type Server struct {
 	build     BuildInfo
 	startedAt time.Time
 
+	// mux is the router built by Handler, kept so the MCP layer can re-enter it
+	// with a synthetic request (see mcpcall.go) instead of duplicating every
+	// handler's validation. Set once, before the server starts serving.
+	mux atomic.Pointer[chi.Mux]
+
+	// mcpOps tracks MCP-initiated engine runs (plan/apply/...) that stream in
+	// the background, so a tool call can return an id immediately and the agent
+	// can poll it. In-memory by design: an op that did not survive a restart
+	// has no stream to resume either, and the run itself is still in
+	// internal/runs.
+	mcpMu  sync.Mutex
+	mcpOps map[string]*mcpOp
+
 	// Drift scheduler state: latest check outcome per project (in-memory) and
 	// a nudge channel so config changes take effect without waiting a tick.
 	driftMu     sync.Mutex
@@ -70,16 +85,22 @@ type Server struct {
 }
 
 // New builds a Server. runners maps each available engine to its runner.
-func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store, auditLog audit.Store, approvalStore approvals.Store) *Server {
-	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist, audit: auditLog, approvals: approvalStore,
+func New(cfg config.Config, runners map[model.Engine]runner.Runner, st store.Store, sc *cache.SchemaCache, sec *secrets.Store, static fs.FS, authn *auth.Authenticator, sessions session.Store, users user.Store, set *settings.Store, runHist runs.Store, auditLog audit.Store, approvalStore approvals.Store, keys apikey.Store) *Server {
+	s := &Server{cfg: cfg, runners: runners, store: st, cache: sc, secrets: sec, static: static, sessions: sessions, users: users, settings: set, runs: runHist, audit: auditLog, approvals: approvalStore, apikeys: keys,
 		registry:    registry.NewClient(),
 		startedAt:   time.Now(),
 		build:       BuildInfo{Version: "dev"},
 		authLimiter: newRateLimiter(loginBurst, loginRefill),
+		mcpOps:      map[string]*mcpOp{},
 		driftStates: map[string]driftStatus{}, driftKick: make(chan struct{}, 1)}
 	s.auth.Store(authn)
 	return s
 }
+
+// router returns the built router for re-entrant (MCP) calls. Handler stores it
+// before the server starts serving, so it is always set by the time a request
+// can arrive.
+func (s *Server) router() http.Handler { return s.mux.Load() }
 
 // beginEngineOp marks an engine run as in flight and returns its release
 // function; defer it. Used to keep disruptive admin operations (master-key
@@ -152,6 +173,32 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/auth/password", s.handlePasswordChange)
 			r.Get("/engines", s.handleEngines)
 			r.Get("/projects", s.handleListProjects) // filtered by per-project ACL
+
+			// API keys are self-service: any authenticated user manages their
+			// own, and a key can only ever be narrower than its owner (see
+			// normalizeScopes), so this needs no capability of its own.
+			// csrfGuard because these mint and revoke credentials.
+			r.Group(func(r chi.Router) {
+				r.Use(s.csrfGuard)
+				r.Use(s.auditMiddleware)
+				r.Get("/keys", s.handleListAPIKeys)
+				r.Post("/keys", s.handleCreateAPIKey)
+				r.Delete("/keys/{kid}", s.handleDeleteAPIKey)
+			})
+
+			// MCP (Model Context Protocol): one endpoint, all methods. It sits
+			// inside the protected group so requireAuth authenticates it before
+			// any tool runs, and every tool then re-enters this same router —
+			// so per-tool authorization is the ordinary route gate, not a
+			// second implementation. csrfGuard is deliberate: an MCP client
+			// authenticates by bearer, which csrfSafe passes, while a browser
+			// page cannot reach it cross-site.
+			if s.mcpEnabled() {
+				r.Group(func(r chi.Router) {
+					r.Use(s.csrfGuard)
+					r.Handle("/mcp", s.mcpHandler())
+				})
+			}
 
 			// Project reads gated by the per-project access list.
 			r.Group(func(r chi.Router) {
@@ -312,6 +359,8 @@ func (s *Server) Handler() http.Handler {
 				// encrypted secret files and the settings document together.
 				r.Get("/admin/settings/secret-key", s.handleGetSecretKey)
 				r.Post("/admin/settings/secret-key/rotate", s.handleRotateSecretKey)
+				r.Get("/admin/keys", s.handleListAllAPIKeys)
+				r.Delete("/admin/keys/{kid}", s.handleDeleteAPIKey)
 				r.Get("/admin/audit", s.handleListAudit)
 				r.Get("/admin/instance", s.handleInstanceInfo)
 				// ACL editing is admin-only and enforced in the handler.
@@ -323,6 +372,9 @@ func (s *Server) Handler() http.Handler {
 	if s.static != nil {
 		r.Handle("/*", s.spaHandler())
 	}
+	// Keep the router for re-entrant MCP tool calls (mcpcall.go). Stored before
+	// the caller starts serving, so it is never nil under a live request.
+	s.mux.Store(r)
 	return r
 }
 

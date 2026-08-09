@@ -226,6 +226,13 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.sessions.DeleteByUser(targetID)
+	// A key outlives its session, so deleting the account has to take the keys
+	// too — otherwise a deleted user's credential keeps authenticating until it
+	// expires. (userForKey also re-checks the owner on every request, so this is
+	// belt and braces, but it stops the stale files accumulating.)
+	if s.apikeys != nil {
+		_ = s.apikeys.DeleteByUser(targetID)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
