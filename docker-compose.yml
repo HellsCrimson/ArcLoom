@@ -42,8 +42,10 @@ services:
     security_opt:
       - seccomp:./deploy/seccomp-arcloom.json
     healthcheck:
-      # Public, dependency-free liveness probe (curl ships in the runtime image).
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      # The binary probes its own /healthz, so the runtime image no longer ships
+      # curl (see the Dockerfile) — one less fetch tool available to anything
+      # that gains execution in the container.
+      test: ["CMD", "arcloom", "healthcheck"]
       interval: 30s
       timeout: 3s
       retries: 3

@@ -41,10 +41,16 @@ var nameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // blocked are names a project may not set, because setting them is not
 // "configure my provider" but "change what the server runs".
 //
-// This is a PRIVILEGE BOUNDARY, not tidiness: the variables are applied to a
-// process the server spawns, and the permission needed to edit them is
-// `resources` — which is not admin. Without this list any user who can edit a
-// project could run arbitrary code as the ArcLoom process.
+// The variables are applied to a process the SERVER spawns, and the permission
+// needed to edit them is `resources`, not admin — so this keeps a project editor
+// from changing what the server runs.
+//
+// It is NOT what stops `resources` reaching code execution: that permission can
+// already write a `provisioner "local-exec"` block, which no entry here affects
+// (internal/runner/sandbox.go is the containment for it). Treating this list as
+// that boundary is a mistake worth not repeating. What it does buy is the
+// cross-user case — a project editor planting something that fires the next time
+// a `deploy` user runs a plan, which is a privilege they do not otherwise have.
 var blocked = map[string]string{
 	// Arbitrary code execution: the engine binary, or anything it loads.
 	"PATH":                  "it selects which binaries the engine runs",
@@ -55,9 +61,58 @@ var blocked = map[string]string{
 	"HOME":                  "it relocates the CLI's credentials and plugin cache",
 	"SHELL":                 "it selects which shell provisioners run",
 	// Arbitrary CLI flags — including -chdir and alternate provider mirrors.
-	"TF_CLI_ARGS":        "it injects arbitrary CLI arguments into every command",
-	"TF_CLI_CONFIG_FILE": "it repoints provider installation",
-	"TFE_TOKEN":          "it is a credential ArcLoom does not manage",
+	"TF_CLI_ARGS":          "it injects arbitrary CLI arguments into every command",
+	"TF_CLI_CONFIG_FILE":   "it repoints provider installation",
+	"TOFU_CLI_CONFIG_FILE": "it repoints provider installation (the OpenTofu spelling)",
+	"TERRAFORM_CONFIG":     "it repoints provider installation (the legacy spelling)",
+	"XDG_CONFIG_HOME":      "the engine reads its CLI configuration from under it",
+	"TFE_TOKEN":            "it is a credential ArcLoom does not manage",
+
+	// Command execution through git. `terraform init` shells out to the real git
+	// binary for a `git::` module source, and git executes these — so a project
+	// editor could otherwise run commands as the server the next time somebody
+	// with `deploy` ran a plan. That is a cross-user escalation, which the
+	// sandbox bounds but does not prevent.
+	"GIT_SSH":            "git executes it",
+	"GIT_SSH_COMMAND":    "git executes it",
+	"GIT_PROXY_COMMAND":  "git executes it",
+	"GIT_EXTERNAL_DIFF":  "git executes it",
+	"GIT_EDITOR":         "git executes it",
+	"GIT_CONFIG_GLOBAL":  "it can set core.sshCommand, which git executes",
+	"GIT_CONFIG_SYSTEM":  "it can set core.sshCommand, which git executes",
+	"GIT_CONFIG_COUNT":   "it injects arbitrary git config, including commands git executes",
+	"GIT_ALLOW_PROTOCOL": "it re-enables transports git disables for safety",
+
+	// Shell startup files, for the same reason: a provisioner runs through a
+	// shell, and these make it source a script first.
+	"BASH_ENV":     "the shell executes it before running a provisioner",
+	"ENV":          "the shell executes it before running a provisioner",
+	"SHELLOPTS":    "it changes how the shell running a provisioner behaves",
+	"LD_AUDIT":     "it loads arbitrary code into the engine process",
+	"GODEBUG":      "it changes the engine's TLS and runtime behaviour",
+	"GOFLAGS":      "it alters how Go-based tooling builds and runs",
+	"GOPROXY":      "it repoints where Go-based tooling fetches code",
+	"GOPRIVATE":    "it repoints where Go-based tooling fetches code",
+	"GONOSUMDB":    "it disables checksum verification for Go-based tooling",
+	"GONOSUMCHECK": "it disables checksum verification for Go-based tooling",
+	"GOSUMDB":      "it disables checksum verification for Go-based tooling",
+
+	// TLS trust. These decide which certificate authorities the engine and its
+	// providers believe, so setting one turns any proxy into a machine-in-the
+	// -middle that can read the cloud credentials flowing through it.
+	//
+	// Proxy variables themselves (HTTP_PROXY, HTTPS_PROXY, NO_PROXY) are
+	// deliberately ALLOWED: routing engine traffic through a corporate proxy is a
+	// legitimate, common need, and a proxy that cannot forge a certificate sees
+	// only metadata. Blocking the trust store is what keeps that true, so these
+	// two decisions belong together.
+	"SSL_CERT_FILE":       "it decides which certificate authorities the engine trusts",
+	"SSL_CERT_DIR":        "it decides which certificate authorities the engine trusts",
+	"CURL_CA_BUNDLE":      "it decides which certificate authorities the engine trusts",
+	"REQUESTS_CA_BUNDLE":  "it decides which certificate authorities the engine trusts",
+	"NODE_EXTRA_CA_CERTS": "it decides which certificate authorities the engine trusts",
+	"GIT_SSL_CAINFO":      "it decides which certificate authorities git trusts",
+	"GIT_SSL_NO_VERIFY":   "it disables certificate verification for git",
 	// Workspace ownership: these decide where state and plugins live, which the
 	// runner needs to control for the persistent per-project workspace to work.
 	"TF_DATA_DIR":         "ArcLoom owns the run workspace layout",
@@ -92,7 +147,18 @@ var blocked = map[string]string{
 // name is refused outright — the server's own configuration is not a project's
 // business, and an allowlist of two would rot. TF_VAR_* is refused because the
 // secret/variable path owns it: setting one here would collide silently with a
-// resolved secret and there would be no way to see which won.
+// resolved secret and there would be no way to see which won. GIT_CONFIG_KEY_*
+// / GIT_CONFIG_VALUE_* go the same way as GIT_CONFIG_COUNT: together they inject
+// arbitrary git configuration, including commands git will execute.
+//
+// **What this list is and is not.** Editing these needs `resources`, not admin,
+// and they become environment variables of a process the SERVER spawns — so the
+// list keeps a project editor from changing what the server runs. It does NOT
+// make `resources` safe: that permission already implies code execution via a
+// `provisioner "local-exec"` block, which no denylist here can affect. The
+// containment for that is internal/runner/sandbox.go. What this list still buys
+// is the cross-user case: a project editor who cannot run anything themselves
+// planting something that fires when a `deploy` user next runs a plan.
 func Validate(name string) error {
 	n := strings.TrimSpace(name)
 	if n == "" {
@@ -110,6 +176,9 @@ func Validate(name string) error {
 	}
 	if strings.HasPrefix(upper, "ARCLOOM_") {
 		return fmt.Errorf("%s: ARCLOOM_* is the server's own configuration", n)
+	}
+	if strings.HasPrefix(upper, "GIT_CONFIG_KEY_") || strings.HasPrefix(upper, "GIT_CONFIG_VALUE_") {
+		return fmt.Errorf("%s: it injects arbitrary git config, including commands git executes", n)
 	}
 	if why, blocked := blocked[upper]; blocked {
 		return fmt.Errorf("%s: %s", n, why)

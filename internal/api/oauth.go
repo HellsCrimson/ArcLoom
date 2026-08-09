@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -209,10 +211,40 @@ func validRedirectURI(raw string) bool {
 	case "":
 		return false
 	default:
-		// A custom scheme (e.g. "myapp://callback") is a desktop app claiming
+		// A custom scheme (e.g. "cursor://callback") is a desktop app claiming
 		// its own scheme; there is no server to redirect to.
-		return u.Scheme != "javascript" && u.Scheme != "data"
+		//
+		// This stays an allow-anything-but-these rule rather than adopting RFC
+		// 8252's "use a reverse-DNS scheme" advice, because the clients that
+		// actually exist do not follow it — `cursor://`, `vscode://`, `claude://`
+		// have no dot in them, and requiring one would refuse the real editors
+		// this endpoint is for while stopping nobody: registration is open, so an
+		// attacker would simply register `com.evil.app://`. The registered
+		// redirect is not what makes a grant safe — the user approving it is.
+		//
+		// What IS refused is any scheme that turns the redirect into code
+		// execution or a local read in whatever opens it. The consent screen shows
+		// the URI, and a `javascript:` or `file:` "redirect" is not a callback.
+		return !dangerousRedirectSchemes[u.Scheme]
 	}
+}
+
+// dangerousRedirectSchemes are custom schemes that do something other than hand
+// a code to an application: script execution, inline documents, local file
+// access. They are refused whatever else is true of the URI.
+var dangerousRedirectSchemes = map[string]bool{
+	"javascript":       true,
+	"data":             true,
+	"vbscript":         true,
+	"file":             true,
+	"blob":             true,
+	"about":            true,
+	"filesystem":       true,
+	"view-source":      true,
+	"chrome":           true,
+	"chrome-extension": true,
+	"ws":               true,
+	"wss":              true,
 }
 
 // authorizeInfoDTO is what the consent screen renders.
@@ -418,6 +450,16 @@ func (s *Server) tokenFromCode(w http.ResponseWriter, r *http.Request) {
 func (s *Server) tokenFromRefresh(w http.ResponseWriter, r *http.Request) {
 	grant, err := s.oauth.GrantByRefresh(r.Form.Get("refresh_token"))
 	if err != nil {
+		// A replayed (already-rotated) token means two parties hold this grant.
+		// The store has revoked it; record that, because it is the one event here
+		// that indicates a stolen credential rather than an expired one. The
+		// client is told the same "invalid_grant" either way — distinguishing
+		// them would tell an attacker which half they got right.
+		if errors.Is(err, oauth.ErrRefreshReused) {
+			slog.Warn("oauth: refresh token reused; the grant has been revoked",
+				"detail", "a token from a previous rotation was presented, which means it was held by two parties")
+			s.recordAuditAs("", "oauth.grant.revoked.reuse", "refresh token replay detected; grant revoked")
+		}
 		oauthErr(w, http.StatusBadRequest, "invalid_grant", "invalid or expired refresh token")
 		return
 	}
@@ -448,6 +490,9 @@ func (s *Server) issueTokens(w http.ResponseWriter, grant *oauth.Grant) {
 		return
 	}
 	now := time.Now()
+	// Keep the outgoing generation so that presenting it again is recognised as
+	// a replay rather than just failing (see oauth.Grant.PrevRefreshHash).
+	grant.PrevRefreshHash = grant.RefreshHash
 	grant.RefreshHash = oauth.HashToken(refresh)
 	grant.LastUsedAt = &now
 	if err := s.oauth.SaveGrant(grant); err != nil {

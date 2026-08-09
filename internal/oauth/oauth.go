@@ -38,6 +38,11 @@ var (
 	// case — wrong, expired, revoked, already used. Distinguishing them for the
 	// caller would tell an attacker which half they got right.
 	ErrInvalid = errors.New("invalid")
+	// ErrRefreshReused reports that a refresh token from a PREVIOUS generation
+	// was presented, which means two parties hold the grant. It is internal:
+	// the token endpoint answers with the same invalid_grant either way, for the
+	// reason above, but the grant is revoked and the event is logged.
+	ErrRefreshReused = errors.New("refresh token reused")
 )
 
 // Lifetimes. The access token is short so a leaked one is a small window; the
@@ -75,7 +80,15 @@ type Grant struct {
 	Projects []string `yaml:"projects,omitempty"`
 	// RefreshHash is the SHA-256 of the current refresh token. Rotated on every
 	// use (OAuth 2.1), so a replayed refresh token is detectably stale.
-	RefreshHash string     `yaml:"refresh_hash"`
+	RefreshHash string `yaml:"refresh_hash"`
+	// PrevRefreshHash is the generation before it, kept so that presenting an
+	// already-rotated token is DETECTED rather than merely failing. Rotation
+	// alone makes a stolen token stop working; it does not say that a theft
+	// happened, and whichever party redeems second is the one locked out — which
+	// is as likely to be the legitimate client as the thief. Seeing the previous
+	// generation is the signal that two parties hold the same grant, and the
+	// only safe response is to revoke it (see ErrRefreshReused).
+	PrevRefreshHash string `yaml:"prev_refresh_hash,omitempty"`
 	CreatedAt   time.Time  `yaml:"created_at"`
 	ExpiresAt   time.Time  `yaml:"expires_at"`
 	LastUsedAt  *time.Time `yaml:"last_used_at,omitempty"`

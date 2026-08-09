@@ -172,6 +172,14 @@ func (d *Disk) loadGrant(id string) (*Grant, error) {
 	return &g, nil
 }
 
+// GrantByRefresh resolves a refresh token to its grant.
+//
+// Presenting the PREVIOUS generation is treated as theft, not as a stale
+// request: the token has already been exchanged, so two parties hold it. The
+// grant and every token derived from it are deleted before returning
+// ErrRefreshReused — the thief and the legitimate client both lose access, which
+// is the point. Silently failing the replay would leave whichever party redeemed
+// first in possession of the account.
 func (d *Disk) GrantByRefresh(refresh string) (*Grant, error) {
 	h := HashToken(refresh)
 	d.mu.Lock()
@@ -186,6 +194,13 @@ func (d *Disk) GrantByRefresh(refresh string) (*Grant, error) {
 				return nil, ErrInvalid
 			}
 			return g, nil
+		}
+	}
+	for _, g := range grants {
+		if g.PrevRefreshHash != "" && subtleEqual(g.PrevRefreshHash, h) {
+			_ = os.Remove(d.path(dirGrants, g.ID))
+			_ = d.dropTokensFor(g.ID)
+			return nil, ErrRefreshReused
 		}
 	}
 	return nil, ErrInvalid

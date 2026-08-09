@@ -61,6 +61,12 @@ func main() {
 			// Offline master-key rotation (see rekey.go). Runs instead of the
 			// server, so nothing is reading the stores while they are re-sealed.
 			os.Exit(rekeyCmd(os.Args[2:]))
+		case "healthcheck":
+			// Container liveness probe. It exists so the runtime image does not
+			// have to ship curl purely to call its own /healthz: a fetch tool
+			// left in an image is a fetch tool available to anything that gets
+			// execution in it.
+			os.Exit(healthcheckCmd())
 		}
 	}
 

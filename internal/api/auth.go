@@ -414,6 +414,25 @@ func (s *Server) expiredCookie() *http.Cookie {
 // When Fetch Metadata is absent (older browsers, curl, tests) it falls back to
 // matching the Origin/Referer host against the request Host, allowing requests
 // that carry neither (non-browser clients).
+//
+// That last allowance is a deliberate, bounded risk, re-examined during the
+// security audit and kept:
+//
+//   - The exposure is a browser old enough to lack Sec-Fetch-Site (Safari before
+//     16.4) performing a cross-site top-level GET navigation, where the attacker
+//     page also suppresses Referer with a referrer policy. No Origin is sent on a
+//     navigation, so all three signals are missing and the request passes.
+//   - What that reaches is the GET side-effect routes — plan / validate / lint.
+//     They consume server resources; they disclose nothing, because the attacker
+//     cannot read a cross-origin SSE response. Every route that changes
+//     infrastructure or data is a POST, which those browsers do send Origin for.
+//   - Closing it means requiring positive same-origin evidence, which rejects
+//     every non-browser cookie client. That is not a hypothetical cost: it fails
+//     92 tests in this package, all of which are plain httptest requests, and
+//     making them browser-shaped would change what they are testing.
+//
+// If it ever needs closing, the move is to require the evidence only for
+// cookie-authenticated requests to the deploy group, not globally.
 func (s *Server) csrfSafe(r *http.Request) bool {
 	// A request authenticated by an API key carries no ambient authority: the
 	// credential is a header the caller had to set deliberately, not a cookie

@@ -257,13 +257,9 @@ func TestOAuthFullFlow(t *testing.T) {
 	if refreshed["refresh_token"] == oldRefresh {
 		t.Error("refresh token was not rotated")
 	}
-	resp, _ = http.PostForm(ts.URL+"/api/oauth/token", url.Values{
-		"grant_type": {"refresh_token"}, "refresh_token": {oldRefresh},
-	})
-	resp.Body.Close()
-	if resp.StatusCode == 200 {
-		t.Error("a rotated-away refresh token still worked")
-	}
+	// Replaying oldRefresh is checked at the end of this test: it does not just
+	// fail, it revokes the grant (two parties hold it), which would leave the
+	// listing and revocation steps below with nothing to look at.
 
 	// 7. The grant is listed, and revoking kills the live access token at once.
 	var grants []grantDTO
@@ -318,6 +314,69 @@ func freshToken(t *testing.T, ts *httptest.Server, cookie *http.Cookie, clientID
 		t.Fatalf("no access token: %v", tok)
 	}
 	return tok
+}
+
+// TestOAuthRefreshReplayRevokesGrant: rotation makes a stolen refresh token stop
+// working, but says nothing about WHY it stopped, and whichever party redeems
+// second is locked out — as likely the real client as the thief. Presenting an
+// already-rotated token means two parties hold the grant, so the grant goes.
+func TestOAuthRefreshReplayRevokesGrant(t *testing.T) {
+	ts, users, sessions, _ := oauthTestServer(t)
+	mkUser(t, users, "u1", false, user.PermResources)
+	cookie := loginCookie(t, sessions, "u1")
+
+	var reg map[string]any
+	resp0, err := http.Post(ts.URL+"/api/oauth/register", "application/json",
+		strings.NewReader(`{"client_name":"Replay Test","redirect_uris":["http://127.0.0.1:9876/callback"]}`))
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	_ = json.NewDecoder(resp0.Body).Decode(&reg)
+	resp0.Body.Close()
+	clientID, _ := reg["client_id"].(string)
+	if clientID == "" {
+		t.Fatalf("no client_id issued: %v", reg)
+	}
+
+	verifier := "verifier-for-replay-test-000000000000000000"
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	tok := freshToken(t, ts, cookie, clientID, verifier, challenge)
+	oldRefresh := tok["refresh_token"].(string)
+
+	// Normal rotation.
+	resp, _ := http.PostForm(ts.URL+"/api/oauth/token", url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {oldRefresh},
+	})
+	var refreshed map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&refreshed)
+	resp.Body.Close()
+	newAccess, _ := refreshed["access_token"].(string)
+	if newAccess == "" {
+		t.Fatalf("refresh failed: %v", refreshed)
+	}
+
+	// The replay must fail...
+	resp, _ = http.PostForm(ts.URL+"/api/oauth/token", url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {oldRefresh},
+	})
+	resp.Body.Close()
+	if resp.StatusCode == 200 {
+		t.Fatal("a rotated-away refresh token still worked")
+	}
+	// ...and take the whole grant with it, including the access token the other
+	// party is holding right now.
+	req, _ := http.NewRequest("GET", ts.URL+"/api/projects", nil)
+	req.Header.Set("Authorization", "Bearer "+newAccess)
+	resp, _ = http.DefaultClient.Do(req)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("access token survived the replay: got %d, want 401", resp.StatusCode)
+	}
+	var grants []grantDTO
+	if code := getJSON(t, ts, "/api/oauth/grants", cookie, &grants); code != 200 || len(grants) != 0 {
+		t.Errorf("grant survived the replay: code=%d n=%d", code, len(grants))
+	}
 }
 
 // TestOAuthRejectsBadRedirects: open registration means the redirect allowlist

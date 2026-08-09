@@ -55,6 +55,14 @@ func (s *Server) handleRevealSecret(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "secret not found")
 		return
 	}
+	// This is the one response in the API that carries a plaintext secret, so it
+	// must not be retained anywhere on the way back. A POST is not cached by
+	// browsers by default, but "by default" is not the guarantee wanted for a
+	// credential — an intermediary, a debugging proxy or a future client library
+	// with its own cache would all be within their rights. The token endpoint
+	// already says this (oauth.go); this is the same rule.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "value": value})
 }
 

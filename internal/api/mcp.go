@@ -44,10 +44,15 @@ const (
 
 // mcpOp is a background engine run started by a tool call.
 type mcpOp struct {
-	ID        string
-	Project   string
-	Kind      string
-	Env       string
+	ID      string
+	Project string
+	Kind    string
+	Env     string
+	// UserID is who started it. The status payload includes a tail of the
+	// engine output, so an operation is readable only by its owner: the id is a
+	// UUID and not guessable, but "unguessable" is not an authorization check,
+	// and ids travel through agent transcripts and logs where they leak easily.
+	UserID    string
 	StartedAt time.Time
 	w         *bufWriter
 }
@@ -251,8 +256,9 @@ func (s *Server) registerReadTools(srv *mcp.Server, r *http.Request) {
 		return resultFor(s.callAPI(ctx, r, "GET", "/api/projects/"+url.PathEscape(a.ProjectID)+"/drift", nil))
 	})
 
-	// get_operation is a read, but it only ever reports ops this server started,
-	// so it is registered for everyone and filters by nothing else.
+	// get_operation is a read, so it is registered for everyone — but its payload
+	// includes the tail of the engine output, so it is scoped to the operations
+	// the CALLER started (see mcpOperationStatus).
 	type opArgs struct {
 		OperationID string `json:"operationId" jsonschema:"the id returned by plan/apply/validate/lint"`
 	}
@@ -263,7 +269,7 @@ func (s *Server) registerReadTools(srv *mcp.Server, r *http.Request) {
 		if a.OperationID == "" {
 			return errResult("operationId is required"), nil, nil
 		}
-		return s.mcpOperationStatus(a.OperationID)
+		return s.mcpOperationStatus(r, a.OperationID)
 	})
 }
 
@@ -623,6 +629,7 @@ func (s *Server) startMCPOp(r *http.Request, kind, projectID, env, method, path 
 		Project:   projectID,
 		Kind:      kind,
 		Env:       env,
+		UserID:    userIDFor(r),
 		StartedAt: time.Now(),
 		w:         w,
 	}
@@ -654,11 +661,27 @@ func (s *Server) startMCPOp(r *http.Request, kind, projectID, env, method, path 
 	return textResult(string(out)), nil, nil
 }
 
-// mcpOperationStatus reports a background op's progress.
-func (s *Server) mcpOperationStatus(id string) (*mcp.CallToolResult, any, error) {
+// userIDFor returns the authenticated user's id, or "" when auth is disabled
+// (in which case there is one implicit user and nothing to separate).
+func userIDFor(r *http.Request) string {
+	if u, ok := userFromContext(r); ok && u != nil {
+		return u.ID
+	}
+	return ""
+}
+
+// mcpOperationStatus reports a background op's progress. r identifies the
+// caller, whose ownership of the operation is checked before any of its output
+// is returned.
+func (s *Server) mcpOperationStatus(r *http.Request, id string) (*mcp.CallToolResult, any, error) {
 	s.mcpMu.Lock()
 	op, ok := s.mcpOps[id]
 	s.mcpMu.Unlock()
+	// An operation belonging to someone else is reported as unknown rather than
+	// forbidden: the caller has no business learning that the id exists.
+	if ok && op.UserID != userIDFor(r) {
+		ok = false
+	}
 	if !ok {
 		return errResult("unknown operationId %q (operations do not survive a server restart; use list_runs instead)", id), nil, nil
 	}

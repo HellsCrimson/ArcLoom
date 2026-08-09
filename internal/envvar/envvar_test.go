@@ -94,3 +94,41 @@ func TestMerge(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateRefusesExecutionAndTrustVars covers the names added after the
+// security audit. The cross-user case is the one that matters: a project editor
+// holds `resources` and cannot run anything themselves, but these fire the next
+// time somebody with `deploy` runs a plan.
+func TestValidateRefusesExecutionAndTrustVars(t *testing.T) {
+	for _, name := range []string{
+		// git executes these, and `init` shells out to git for a git:: module.
+		"GIT_SSH_COMMAND", "GIT_SSH", "GIT_PROXY_COMMAND", "GIT_EXTERNAL_DIFF",
+		"GIT_CONFIG_GLOBAL", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
+		// the shell sources these before a provisioner runs
+		"BASH_ENV", "ENV", "LD_AUDIT",
+		// certificate trust — what keeps an allowed proxy from being a MITM
+		"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+		"GIT_SSL_NO_VERIFY",
+		// engine configuration ArcLoom owns
+		"TOFU_CLI_CONFIG_FILE", "TERRAFORM_CONFIG", "XDG_CONFIG_HOME", "GODEBUG",
+		// case-insensitivity: the map is keyed upper-case, the check folds
+		"git_ssh_command", "ssl_cert_file",
+	} {
+		if err := Validate(name); err == nil {
+			t.Errorf("%s must be refused", name)
+		}
+	}
+
+	// Proxy variables stay ALLOWED on purpose: routing engine traffic through a
+	// corporate proxy is legitimate, and with the trust store locked down above a
+	// proxy that cannot forge a certificate sees only metadata.
+	for _, name := range []string{
+		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy",
+		// ...as do ordinary provider credentials, which are the whole point.
+		"AWS_PROFILE", "OPENNEBULA_PASSWORD", "VAULT_TOKEN", "KUBECONFIG",
+	} {
+		if err := Validate(name); err != nil {
+			t.Errorf("%s must stay allowed: %v", name, err)
+		}
+	}
+}
