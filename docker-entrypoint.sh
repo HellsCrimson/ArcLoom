@@ -26,6 +26,15 @@ if [ "$(id -u)" = "0" ]; then
 	fi
 	chmod 0700 "$ARCLOOM_HOME" 2>/dev/null || true
 
+	# HOME must be reset explicitly: setpriv changes the credentials and nothing
+	# else, so without this the server would run as arcloom while still pointing
+	# at root's home. That is not cosmetic — /root is 0700 root-only, so every
+	# read under it fails with EACCES rather than ENOENT, and the engines look
+	# there for their CLI configuration, plugin directory and credentials.
+	# OpenTofu reports that failure on STDOUT, which corrupts the output
+	# terraform-exec parses for the version and disables the engine outright.
+	export HOME="$ARCLOOM_HOME" USER="$ARCLOOM_USER" LOGNAME="$ARCLOOM_USER"
+
 	# setpriv ships with util-linux, which is already in the base image — one
 	# less package than gosu, and --init-groups gives the process its
 	# supplementary groups rather than only its primary one.
@@ -36,4 +45,14 @@ fi
 # Already unprivileged: the operator set `user:` in compose, or the runtime
 # assigned a uid. Respect that and start directly — re-dropping is neither
 # possible nor wanted.
+#
+# HOME still needs checking: an explicit `user:` inherits the image's HOME
+# (/root), which that uid usually cannot read, and the engines fail quietly on
+# their CLI config, plugin directory and credentials as a result. Only override
+# it when it is genuinely unusable, so an operator who set HOME deliberately
+# keeps it.
+if [ ! -r "${HOME:-/nonexistent}" ] && [ -r "$ARCLOOM_HOME" ]; then
+	echo "arcloom: HOME=${HOME:-<unset>} is not readable by uid $(id -u); using $ARCLOOM_HOME" >&2
+	export HOME="$ARCLOOM_HOME"
+fi
 exec /usr/local/bin/arcloom "$@"

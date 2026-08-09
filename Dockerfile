@@ -61,6 +61,14 @@ ENV ARCLOOM_ADDR=:8080 \
 	ARCLOOM_CACHE_DIR=/var/lib/arcloom/cache \
 	TF_PLUGIN_CACHE_DIR=/var/lib/arcloom/cache/plugins \
 	ARCLOOM_WORKDIR=/var/lib/arcloom/work
+
+# The engines look under HOME for their CLI config, plugin directory and
+# credentials. The image's default is /root, which is 0700 root-only — so a
+# non-root server gets EACCES there rather than "not found", and OpenTofu
+# reports that failure on STDOUT, corrupting the version output terraform-exec
+# parses (the engine then reads as unusable). Declared here as well as in the
+# entrypoint so it is right however the container is started.
+ENV HOME=/var/lib/arcloom
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # The server runs as a normal account, not root. It executes provider plugins
