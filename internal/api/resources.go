@@ -509,6 +509,7 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var saved model.Resource
+	var conflictID string
 	err = s.store.Update(id, func(p *model.Project) error {
 		slice, ok := resourceSlice(p, req.Module)
 		if req.Kind == "data" {
@@ -525,6 +526,23 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 		if res.ID == "" {
 			res.ID = uuid.NewString()
 		}
+		// A block's ADDRESS is its type and name, so two resources sharing them
+		// generate two `resource "t" "n"` blocks — invalid HCL that nothing
+		// notices until the engine parses it, a plan or several writes later.
+		//
+		// The id is still the upsert key (a rename has to be expressible, and
+		// the UI always resends the id it is editing); what is refused is a
+		// SECOND holder of an address someone else has. That names the existing
+		// id, so a caller that meant to update recovers in one call — which is
+		// the case an agent hits, since it has no id for a resource it did not
+		// just create.
+		for i := range *slice {
+			if (*slice)[i].Type == res.Type && (*slice)[i].Name == res.Name && (*slice)[i].ID != res.ID {
+				conflictID = (*slice)[i].ID
+				return errAddressTaken
+			}
+		}
+
 		// Provider instances always live on the root; local modules inherit them.
 		ensureProvider(p, req.Type, req.ProviderSource)
 
@@ -549,6 +567,16 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 		saved = res
 		return nil
 	})
+	if errors.Is(err, errAddressTaken) {
+		kind := "resource"
+		if req.Kind == "data" {
+			kind = "data source"
+		}
+		writeErr(w, http.StatusConflict, fmt.Sprintf(
+			"%s %q named %q already exists (id %s); pass that id to update it, or use a different name",
+			kind, req.Type, req.Name, conflictID))
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "project or module not found")
 		return
@@ -559,6 +587,10 @@ func (s *Server) handleUpsertResource(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, saved)
 }
+
+// errAddressTaken reports an upsert that would give two resources the same
+// type+name — i.e. the same HCL address — inside one scope.
+var errAddressTaken = errors.New("address taken")
 
 func (s *Server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")

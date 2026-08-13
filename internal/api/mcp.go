@@ -163,6 +163,51 @@ func mustJSON(v any) []byte {
 	return b
 }
 
+// ackResult answers a write whose handler returned the whole project with a
+// compact acknowledgement: what changed, what the project holds now, and any
+// dangling references the write left behind (see modelWarnings).
+//
+// The full document is deliberately dropped. It is the SPA's contract, not a
+// useful tool result — six figures of characters an agent already knows, often
+// past the client's per-result limit, on every single write.
+func ackResult(res apiResult, action string) (*mcp.CallToolResult, any, error) {
+	if !res.ok() {
+		return resultFor(res)
+	}
+	p, err := projectFromBody(res.Body)
+	if err != nil {
+		// The write succeeded — say so rather than failing the tool call, but do
+		// not fall back to echoing a body this size.
+		return textResult(fmt.Sprintf(`{"ok":true,"action":%q,"note":"write succeeded; response could not be summarized"}`, action)), nil, nil
+	}
+	out := map[string]any{
+		"ok":        true,
+		"action":    action,
+		"projectId": p.ID,
+		"counts":    projectCounts(p),
+	}
+	if w := modelWarnings(p); len(w) > 0 {
+		out["warnings"] = w
+	}
+	return textResult(string(mustJSON(out))), nil, nil
+}
+
+// withWarnings attaches model warnings to a write whose own response is already
+// small enough to return verbatim (upsert_resource answers with one resource).
+func (s *Server) withWarnings(ctx context.Context, r *http.Request, projectID string, res apiResult, key string) (*mcp.CallToolResult, any, error) {
+	if !res.ok() {
+		return resultFor(res)
+	}
+	out := map[string]any{"ok": true}
+	if key != "" && res.Body != "" {
+		out[key] = json.RawMessage(res.Body)
+	}
+	if w := s.warningsFor(ctx, r, projectID); len(w) > 0 {
+		out["warnings"] = w
+	}
+	return textResult(string(mustJSON(out))), nil, nil
+}
+
 // --- read tools (no scope required) ---
 
 type projectArgs struct {
@@ -187,14 +232,28 @@ func (s *Server) registerReadTools(srv *mcp.Server, r *http.Request) {
 		return resultFor(s.callAPI(ctx, r, "GET", "/api/projects", nil))
 	})
 
+	type getProjectArgs struct {
+		ProjectID string `json:"projectId" jsonschema:"the ArcLoom project id"`
+		Sections  string `json:"sections,omitempty" jsonschema:"comma-separated top-level keys to return, e.g. \"locals,resources\"; omit for the whole model. A big project runs to six figures of characters, so ask for what you need."`
+	}
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "get_project",
-		Description: "Get a project's full model: providers, resources, data sources, variables, locals, outputs, modules and files. This is the source of truth the UI edits; use it before changing anything.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, a projectArgs) (*mcp.CallToolResult, any, error) {
+		Name: "get_project",
+		Description: "Get a project's model: providers, resources, data sources, variables, locals, outputs, modules, files, and any import/moved blocks. This is the source of truth the UI edits; use it before changing anything. " +
+			"An empty list is omitted rather than sent as [], so a missing key means none — not that the section is unreadable. " +
+			"Note that the variables in the generated variables.tf are not all here: a secret reference auto-declares one at generation time, and those are not part of the model.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, a getProjectArgs) (*mcp.CallToolResult, any, error) {
 		if a.ProjectID == "" {
 			return errResult("projectId is required"), nil, nil
 		}
-		return resultFor(s.callAPI(ctx, r, "GET", "/api/projects/"+url.PathEscape(a.ProjectID), nil))
+		res := s.callAPI(ctx, r, "GET", "/api/projects/"+url.PathEscape(a.ProjectID), nil)
+		if !res.ok() || a.Sections == "" {
+			return resultFor(res)
+		}
+		filtered, err := filterSections(res.Body, a.Sections)
+		if err != nil {
+			return resultFor(res) // fall back to the whole model rather than failing
+		}
+		return textResult(filtered), nil, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -289,14 +348,16 @@ func (s *Server) registerWriteTools(srv *mcp.Server, r *http.Request) {
 		Resource  map[string]any `json:"resource" jsonschema:"the resource object: id (omit to create) type name attrs dependsOn count forEach provider kind module. kind is \"resource\" (default) or \"data\"."`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "upsert_resource",
-		Description: "Create or update a resource or data source. The whole resource is replaced, so always resend dependsOn, count, forEach and provider. Call get_resource_schema first to learn which attributes exist.",
+		Name: "upsert_resource",
+		Description: "Create or update a resource or data source. The whole resource is replaced, so always resend dependsOn, count, forEach and provider. Call get_resource_schema first to learn which attributes exist. " +
+			"The id is the update key: omit it to create, and pass the existing id to change one. Creating a second resource with a type and name another already holds is refused with that resource's id, because the two would generate the same HCL block.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, a upsertArgs) (*mcp.CallToolResult, any, error) {
 		if a.ProjectID == "" || len(a.Resource) == 0 {
 			return errResult("projectId and resource are required"), nil, nil
 		}
-		return resultFor(s.callAPI(ctx, r,
-			"POST", "/api/projects/"+url.PathEscape(a.ProjectID)+"/resources", mustJSON(a.Resource)))
+		res := s.callAPI(ctx, r,
+			"POST", "/api/projects/"+url.PathEscape(a.ProjectID)+"/resources", mustJSON(a.Resource))
+		return s.withWarnings(ctx, r, a.ProjectID, res, "resource")
 	})
 
 	type deleteResourceArgs struct {
@@ -328,17 +389,18 @@ func (s *Server) registerWriteTools(srv *mcp.Server, r *http.Request) {
 
 	type configArgs struct {
 		ProjectID string         `json:"projectId" jsonschema:"the ArcLoom project id"`
-		Config    map[string]any `json:"config" jsonschema:"object with variables, locals and outputs arrays; replaces all three"`
+		Config    map[string]any `json:"config" jsonschema:"object with variables, locals and outputs arrays, plus an optional module name to target a local module instead of the root"`
 	}
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "set_config",
-		Description: "Replace a project's variables, locals and outputs. Send all three lists; anything omitted is cleared.",
+		Name: "set_config",
+		Description: "Replace a project's variables, locals and outputs. Each of the three lists you send replaces the stored one, and a list you omit is cleared — so read them with get_project first (sections: \"variables,locals,outputs\") and send back the full lists. " +
+			"This never touches the variables hclgen auto-declares for secret references; those are derived at generation time and are not part of the config. Pass module to edit a local module's config instead of the root's.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, a configArgs) (*mcp.CallToolResult, any, error) {
 		if a.ProjectID == "" || len(a.Config) == 0 {
 			return errResult("projectId and config are required"), nil, nil
 		}
-		return resultFor(s.callAPI(ctx, r,
-			"PUT", "/api/projects/"+url.PathEscape(a.ProjectID)+"/config", mustJSON(a.Config)))
+		return ackResult(s.callAPI(ctx, r,
+			"PUT", "/api/projects/"+url.PathEscape(a.ProjectID)+"/config", mustJSON(a.Config)), "set_config")
 	})
 
 	type providerArgs struct {
@@ -353,8 +415,8 @@ func (s *Server) registerWriteTools(srv *mcp.Server, r *http.Request) {
 		if a.ProjectID == "" || a.Key == "" || len(a.Config) == 0 {
 			return errResult("projectId, key and config are required"), nil, nil
 		}
-		return resultFor(s.callAPI(ctx, r,
-			"PUT", "/api/projects/"+url.PathEscape(a.ProjectID)+"/providers/"+url.PathEscape(a.Key), mustJSON(a.Config)))
+		return ackResult(s.callAPI(ctx, r,
+			"PUT", "/api/projects/"+url.PathEscape(a.ProjectID)+"/providers/"+url.PathEscape(a.Key), mustJSON(a.Config)), "set_provider")
 	})
 
 	type fileArgs struct {
@@ -371,8 +433,22 @@ func (s *Server) registerWriteTools(srv *mcp.Server, r *http.Request) {
 			return errResult("projectId and path are required"), nil, nil
 		}
 		body, _ := json.Marshal(map[string]string{"path": a.Path, "content": a.Content, "oldPath": a.OldPath})
-		return resultFor(s.callAPI(ctx, r,
-			"PUT", "/api/projects/"+url.PathEscape(a.ProjectID)+"/files", body))
+		return ackResult(s.callAPI(ctx, r,
+			"PUT", "/api/projects/"+url.PathEscape(a.ProjectID)+"/files", body), "set_file")
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "delete_file",
+		Description: "Delete a companion file from the project. Only companion files — generated .tf files are not stored, they are rendered from the model.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, a struct {
+		ProjectID string `json:"projectId" jsonschema:"the ArcLoom project id"`
+		Path      string `json:"path" jsonschema:"the file's path, as listed in the project's files"`
+	}) (*mcp.CallToolResult, any, error) {
+		if a.ProjectID == "" || a.Path == "" {
+			return errResult("projectId and path are required"), nil, nil
+		}
+		return ackResult(s.callAPI(ctx, r, "DELETE",
+			"/api/projects/"+url.PathEscape(a.ProjectID)+"/files?path="+url.QueryEscape(a.Path), nil), "delete_file")
 	})
 
 	type importArgs struct {
@@ -391,7 +467,148 @@ func (s *Server) registerWriteTools(srv *mcp.Server, r *http.Request) {
 			"POST", "/api/projects/"+url.PathEscape(a.ProjectID)+"/import/hcl", body))
 	})
 
+	s.registerRefactorTools(srv, r)
+	s.registerModuleTools(srv, r)
 	s.registerSchemaTools(srv, r)
+}
+
+// registerRefactorTools exposes the two config-driven state operations.
+//
+// They are what makes an address-changing refactor expressible at all. Folding
+// hand-written resources into one for_each'd block renames every address, and
+// an apply that meets a renamed address destroys the real object and creates a
+// new one — so a refactor without these tools is not a slower path, it is a
+// destructive one. The engine's own answer is a `moved` block; ArcLoom models
+// them, and the UI has always been able to write them.
+func (s *Server) registerRefactorTools(srv *mcp.Server, r *http.Request) {
+	type movedBlock struct {
+		From string `json:"from" jsonschema:"the address as the state holds it now, e.g. aws_instance.web"`
+		To   string `json:"to" jsonschema:"the address the config declares now, e.g. aws_instance.main[\"web\"]"`
+		ID   string `json:"id,omitempty" jsonschema:"an existing block's id, from get_project; omit for a new one"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "set_moved",
+		Description: "Replace the project's `moved` blocks — the config-driven way to rename resources without destroying them. " +
+			"Write one per renamed address BEFORE applying a refactor that changes addresses (folding several resources into one for_each, renaming a resource, moving one into a module); the next plan then lists the renames and the apply performs them, in one run. " +
+			"Both fields are static addresses, so an index must be a literal: `x.y[\"web\"]` is fine, `x.y[each.key]` is not. " +
+			"This replaces the whole list, so send every block you want to keep. They are never removed automatically — delete them (send the list without them) once the apply that used them has run.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, a struct {
+		ProjectID string       `json:"projectId" jsonschema:"the ArcLoom project id"`
+		Moved     []movedBlock `json:"moved" jsonschema:"the complete list of moved blocks; an empty list clears them"`
+	}) (*mcp.CallToolResult, any, error) {
+		if a.ProjectID == "" {
+			return errResult("projectId is required"), nil, nil
+		}
+		body, _ := json.Marshal(map[string]any{"moved": a.Moved})
+		return ackResult(s.callAPI(ctx, r,
+			"PUT", "/api/projects/"+url.PathEscape(a.ProjectID)+"/moved", body), "set_moved")
+	})
+
+	type importBlock struct {
+		To       string `json:"to" jsonschema:"the address to adopt into, e.g. aws_instance.main[each.key]"`
+		ID       string `json:"id" jsonschema:"the existing object's id in the provider's terms; may be an expression such as each.value"`
+		ForEach  string `json:"forEach,omitempty" jsonschema:"optional for_each expression, to adopt a whole collection in one block"`
+		Provider string `json:"provider,omitempty" jsonschema:"optional provider reference, \"<key>\" or \"<key>.<alias>\""`
+		BlockID  string `json:"blockId,omitempty" jsonschema:"an existing block's id, from get_project; omit for a new one"`
+	}
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "set_imports",
+		Description: "Replace the project's `import` blocks — how existing infrastructure is adopted into state by the next apply. " +
+			"Unlike a CLI import, the id may be an expression, so a for_each block adopts a whole collection in one pass. " +
+			"Replaces the whole list; blocks are never removed automatically, and one whose target is already in state is a no-op. Needs engine >= 1.5, or >= 1.7 to use forEach.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, a struct {
+		ProjectID string        `json:"projectId" jsonschema:"the ArcLoom project id"`
+		Imports   []importBlock `json:"imports" jsonschema:"the complete list of import blocks; an empty list clears them"`
+	}) (*mcp.CallToolResult, any, error) {
+		if a.ProjectID == "" {
+			return errResult("projectId is required"), nil, nil
+		}
+		list := make([]map[string]string, 0, len(a.Imports))
+		for _, imp := range a.Imports {
+			list = append(list, map[string]string{
+				"id": imp.BlockID, "to": imp.To, "importId": imp.ID,
+				"forEach": imp.ForEach, "provider": imp.Provider,
+			})
+		}
+		body, _ := json.Marshal(map[string]any{"imports": list})
+		return ackResult(s.callAPI(ctx, r,
+			"PUT", "/api/projects/"+url.PathEscape(a.ProjectID)+"/imports", body), "set_imports")
+	})
+}
+
+// registerModuleTools exposes local module definitions and module calls.
+//
+// A call and a definition are different things and both are needed: the
+// definition is the folder (its own variables, resources and outputs, edited
+// with set_config / upsert_resource passing module), the call is the
+// `module "name"` block that uses it. One definition can back several calls.
+func (s *Server) registerModuleTools(srv *mcp.Server, r *http.Request) {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "create_local_module",
+		Description: "Create a local module definition — a modules/<name>/ folder of its own variables, resources and outputs. " +
+			"By default it also adds a call of the same name; pass call:false to define one without using it yet. Edit its contents with set_config and upsert_resource, passing module:\"<name>\".",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, a struct {
+		ProjectID string `json:"projectId" jsonschema:"the ArcLoom project id"`
+		Name      string `json:"name" jsonschema:"the module name: letters, digits, _ and -, starting with a letter or _"`
+		Call      *bool  `json:"call,omitempty" jsonschema:"also add a module call using it (default true)"`
+	}) (*mcp.CallToolResult, any, error) {
+		if a.ProjectID == "" || a.Name == "" {
+			return errResult("projectId and name are required"), nil, nil
+		}
+		body := map[string]any{"name": a.Name}
+		if a.Call != nil {
+			body["call"] = *a.Call
+		}
+		return ackResult(s.callAPI(ctx, r,
+			"POST", "/api/projects/"+url.PathEscape(a.ProjectID)+"/modules/local", mustJSON(body)), "create_local_module")
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "set_module_call",
+		Description: "Create or update a module call — the `module \"<name>\"` block, its source, its input values and its count/for_each. " +
+			"Works for a local source (\"./modules/team\", which must already be defined) and a registry one alike. The whole call is replaced, so resend count, forEach and every input you want to keep; pass rename to change its name.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, a struct {
+		ProjectID string         `json:"projectId" jsonschema:"the ArcLoom project id"`
+		Call      map[string]any `json:"call" jsonschema:"the call: name, source, optional rename, version, config (input values as attribute objects), count, forEach, providers"`
+	}) (*mcp.CallToolResult, any, error) {
+		if a.ProjectID == "" || len(a.Call) == 0 {
+			return errResult("projectId and call are required"), nil, nil
+		}
+		return ackResult(s.callAPI(ctx, r,
+			"PUT", "/api/projects/"+url.PathEscape(a.ProjectID)+"/modules/call", mustJSON(a.Call)), "set_module_call")
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "delete_module_call",
+		Description: "Delete a module call by name. The local module definition it used stays, along with any other call of it; run a plan to see what dropping the call would destroy.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, a struct {
+		ProjectID string `json:"projectId" jsonschema:"the ArcLoom project id"`
+		Name      string `json:"name" jsonschema:"the call's name, as it appears in the project's modules"`
+	}) (*mcp.CallToolResult, any, error) {
+		if a.ProjectID == "" || a.Name == "" {
+			return errResult("projectId and name are required"), nil, nil
+		}
+		return ackResult(s.callAPI(ctx, r, "DELETE",
+			"/api/projects/"+url.PathEscape(a.ProjectID)+"/modules/call/"+url.PathEscape(a.Name), nil), "delete_module_call")
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "delete_local_module",
+		Description: "Delete a local module definition and everything in it. Refused while a call still uses it, naming the calls; force:true deletes those calls too.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, a struct {
+		ProjectID string `json:"projectId" jsonschema:"the ArcLoom project id"`
+		Name      string `json:"name" jsonschema:"the definition's name, as it appears in the project's localModules"`
+		Force     bool   `json:"force,omitempty" jsonschema:"also delete the calls that use it"`
+	}) (*mcp.CallToolResult, any, error) {
+		if a.ProjectID == "" || a.Name == "" {
+			return errResult("projectId and name are required"), nil, nil
+		}
+		path := "/api/projects/" + url.PathEscape(a.ProjectID) + "/modules/local/" + url.PathEscape(a.Name)
+		if a.Force {
+			path += "?force=true"
+		}
+		return ackResult(s.callAPI(ctx, r, "DELETE", path, nil), "delete_local_module")
+	})
 }
 
 // registerSchemaTools exposes provider schema discovery — how an agent learns
@@ -546,6 +763,34 @@ func filterNames(names []string, filter string, limit int) ([]string, bool) {
 	return out, total > len(out)
 }
 
+// filterSections keeps only the named top-level keys of a project document,
+// plus the identity fields, so an agent can read the four locals it is about to
+// rewrite without pulling the resources beside them.
+//
+// Unknown names are not an error: a section that is empty is absent from the
+// document (omitempty), so "give me the moved blocks" of a project with none
+// must answer "none" rather than refuse.
+func filterSections(body, sections string) (string, error) {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &doc); err != nil {
+		return "", err
+	}
+	keep := map[string]bool{"id": true, "name": true, "engine": true}
+	for _, n := range strings.Split(sections, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			keep[n] = true
+		}
+	}
+	out := map[string]json.RawMessage{}
+	for k, v := range doc {
+		if keep[k] {
+			out[k] = v
+		}
+	}
+	b, err := json.Marshal(out)
+	return string(b), err
+}
+
 // filterSchemaFields keeps only the named top-level fields of a normalized
 // schema document, so an agent can ask for three attributes of a type that has
 // two hundred.
@@ -613,6 +858,32 @@ func (s *Server) registerDeployTools(srv *mcp.Server, r *http.Request) {
 		Description: "Apply the pending changes to real infrastructure. This is not reversible. " +
 			"Run plan first and read the result. If the project has the approval gate enabled, a human must approve that plan before this will run — that is the intended way to use this tool.",
 	}, stream("apply", "POST", "/apply"))
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "move_state",
+		Description: "Move one address in the Terraform state (`state mv`), renaming what the state tracks without touching infrastructure. " +
+			"Prefer set_moved for a refactor: a moved block is part of the config, the plan lists every rename and one apply performs them all, while this runs one engine operation per address and each takes the workspace lock. " +
+			"Use this when there is no config to attach a block to. Pass dryRun:true first — only the engine can say whether the move is legal. Returns an operationId; poll with get_operation.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, a struct {
+		ProjectID string `json:"projectId" jsonschema:"the ArcLoom project id"`
+		From      string `json:"from" jsonschema:"the current address, e.g. aws_instance.web"`
+		To        string `json:"to" jsonschema:"the new address, e.g. aws_instance.main[\"web\"]"`
+		Env       string `json:"env,omitempty" jsonschema:"optional environment name; omit for the default environment"`
+		DryRun    bool   `json:"dryRun,omitempty" jsonschema:"ask the engine what it would move, changing nothing"`
+	}) (*mcp.CallToolResult, any, error) {
+		if a.ProjectID == "" || a.From == "" || a.To == "" {
+			return errResult("projectId, from and to are required"), nil, nil
+		}
+		q := url.Values{"from": {a.From}, "to": {a.To}}
+		if a.Env != "" {
+			q.Set("env", a.Env)
+		}
+		if a.DryRun {
+			q.Set("dryRun", "true")
+		}
+		path := "/api/projects/" + url.PathEscape(a.ProjectID) + "/state/mv?" + q.Encode()
+		return s.startMCPOp(r, "state-mv", a.ProjectID, a.Env, "POST", path, nil)
+	})
 
 	// Deliberately no destroy tool. The UI makes you type the project name to
 	// destroy, which is a confirmation an agent can trivially satisfy and a

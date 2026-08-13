@@ -129,22 +129,26 @@ func TestMCPToolsAreScopeFiltered(t *testing.T) {
 			name:       "read-only key",
 			scopes:     nil,
 			wantHave:   []string{"list_projects", "get_project", "get_hcl", "list_state", "get_run"},
-			wantAbsent: []string{"upsert_resource", "set_config", "import_hcl", "plan", "apply", "get_resource_schema"},
+			wantAbsent: []string{"upsert_resource", "set_config", "import_hcl", "plan", "apply", "get_resource_schema", "set_moved", "move_state", "create_local_module"},
 		},
 		{
 			name:   "resources key",
 			scopes: []string{user.PermResources},
 			wantHave: []string{
 				"list_projects", "upsert_resource", "delete_resource", "set_config",
-				"set_provider", "set_file", "import_hcl", "list_resource_types", "get_resource_schema",
+				"set_provider", "set_file", "delete_file", "import_hcl", "list_resource_types", "get_resource_schema",
+				"set_moved", "set_imports",
+				"create_local_module", "set_module_call", "delete_module_call", "delete_local_module",
 			},
-			wantAbsent: []string{"plan", "apply", "validate", "lint"},
+			// move_state runs the engine, so it is a deploy tool even though the
+			// refactor it belongs to is a resources one.
+			wantAbsent: []string{"plan", "apply", "validate", "lint", "move_state"},
 		},
 		{
 			name:       "deploy key",
 			scopes:     []string{user.PermDeploy},
-			wantHave:   []string{"plan", "apply", "validate", "lint", "get_operation"},
-			wantAbsent: []string{"upsert_resource", "get_resource_schema"},
+			wantHave:   []string{"plan", "apply", "validate", "lint", "get_operation", "move_state"},
+			wantAbsent: []string{"upsert_resource", "get_resource_schema", "set_moved"},
 		},
 		{
 			name:       "full key",
@@ -399,5 +403,326 @@ func TestMCPDoesNotAdvertiseListChanged(t *testing.T) {
 	}
 	if strings.Contains(got, `"listChanged":true`) {
 		t.Errorf("advertised a notification a stateless server cannot send: %s", got)
+	}
+}
+
+// resourcesSession is the common fixture for the write tools: a key that may
+// edit p1 and nothing else to set up.
+func resourcesSession(t *testing.T) (*mcp.ClientSession, *store.Memory) {
+	t.Helper()
+	ts, keys, users, st := mcpTestServer(t)
+	mkUser(t, users, "u1", false, user.PermResources)
+	token := mkKey(t, keys, "u1", []string{user.PermResources}, nil)
+	return mcpConnect(t, ts, token), st
+}
+
+// decode parses a tool result, failing the test on anything that is not JSON.
+func decode(t *testing.T, out string) map[string]any {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("tool result is not JSON (%v): %s", err, out)
+	}
+	return doc
+}
+
+// TestMCPMovedBlocksRoundTrip: a refactor that renames addresses is only
+// non-destructive if the rename is expressible, which is what set_moved is for.
+func TestMCPMovedBlocksRoundTrip(t *testing.T) {
+	cs, st := resourcesSession(t)
+
+	out, isErr := callTool(t, cs, "set_moved", map[string]any{
+		"projectId": "p1",
+		"moved": []map[string]any{
+			{"from": "null_resource.affine", "to": `null_resource.main["affine"]`},
+			{"from": "null_resource.qbit", "to": `null_resource.main["qbit"]`},
+		},
+	})
+	if isErr {
+		t.Fatalf("set_moved: %s", out)
+	}
+	if counts := decode(t, out)["counts"].(map[string]any); counts["moved"].(float64) != 2 {
+		t.Errorf("expected 2 moved blocks in the ack, got %v", counts["moved"])
+	}
+	p, _ := st.Get("p1")
+	if len(p.Moved) != 2 || p.Moved[0].From != "null_resource.affine" {
+		t.Fatalf("model did not record the blocks: %+v", p.Moved)
+	}
+	// Every block carries an id, so a later call can keep the ones it means to.
+	if p.Moved[0].ID == "" {
+		t.Error("moved block has no id")
+	}
+
+	// The list is replaced, which is how blocks are removed once applied.
+	if out, isErr = callTool(t, cs, "set_moved", map[string]any{"projectId": "p1", "moved": []map[string]any{}}); isErr {
+		t.Fatalf("clear: %s", out)
+	}
+	if p, _ = st.Get("p1"); len(p.Moved) != 0 {
+		t.Errorf("blocks survived the clear: %+v", p.Moved)
+	}
+}
+
+// A moved block takes a STATIC address; the engine resolves it before
+// evaluating anything, so an each.key index can never work. Re-entering the
+// REST handler is what gets that refusal for free.
+func TestMCPMovedRejectsComputedAddress(t *testing.T) {
+	cs, _ := resourcesSession(t)
+	out, isErr := callTool(t, cs, "set_moved", map[string]any{
+		"projectId": "p1",
+		"moved":     []map[string]any{{"from": "null_resource.a", "to": `null_resource.main[each.key]`}},
+	})
+	if !isErr {
+		t.Fatalf("computed index accepted: %s", out)
+	}
+	if !strings.Contains(out, "address") {
+		t.Errorf("unhelpful refusal: %s", out)
+	}
+}
+
+// TestMCPImportBlocksRoundTrip: the bulk adoption path, whose id may be an
+// expression (which a CLI import can never take).
+func TestMCPImportBlocksRoundTrip(t *testing.T) {
+	cs, st := resourcesSession(t)
+	out, isErr := callTool(t, cs, "set_imports", map[string]any{
+		"projectId": "p1",
+		"imports": []map[string]any{{
+			"to": "null_resource.main[each.key]", "id": "each.value", "forEach": `toset(["a","b"])`,
+		}},
+	})
+	if isErr {
+		t.Fatalf("set_imports: %s", out)
+	}
+	p, _ := st.Get("p1")
+	if len(p.Imports) != 1 || p.Imports[0].ImportID != "each.value" || p.Imports[0].ForEach == "" {
+		t.Fatalf("import block not stored as sent: %+v", p.Imports)
+	}
+}
+
+// TestMCPModuleTools: a definition and a call are different things, and a
+// refactor into a module needs both.
+func TestMCPModuleTools(t *testing.T) {
+	cs, st := resourcesSession(t)
+
+	if out, isErr := callTool(t, cs, "create_local_module", map[string]any{
+		"projectId": "p1", "name": "team", "call": false,
+	}); isErr {
+		t.Fatalf("create_local_module: %s", out)
+	}
+	p, _ := st.Get("p1")
+	if len(p.LocalModules) != 1 || p.LocalModules[0].Name != "team" {
+		t.Fatalf("definition not created: %+v", p.LocalModules)
+	}
+	if len(p.Modules) != 0 {
+		t.Fatalf("call:false still created a call: %+v", p.Modules)
+	}
+
+	if out, isErr := callTool(t, cs, "set_module_call", map[string]any{
+		"projectId": "p1",
+		"call":      map[string]any{"name": "eu", "source": "./modules/team", "forEach": `toset(["a"])`},
+	}); isErr {
+		t.Fatalf("set_module_call: %s", out)
+	}
+	p, _ = st.Get("p1")
+	if len(p.Modules) != 1 || p.Modules[0].Name != "eu" || p.Modules[0].ForEach == "" {
+		t.Fatalf("call not created with its meta-arg: %+v", p.Modules)
+	}
+
+	// The definition is in use, so deleting it is refused rather than silently
+	// leaving a call pointing at a folder that no longer exists.
+	out, isErr := callTool(t, cs, "delete_local_module", map[string]any{"projectId": "p1", "name": "team"})
+	if !isErr {
+		t.Fatalf("deleted a module still in use: %s", out)
+	}
+	if out, isErr = callTool(t, cs, "delete_local_module", map[string]any{
+		"projectId": "p1", "name": "team", "force": true,
+	}); isErr {
+		t.Fatalf("forced delete: %s", out)
+	}
+	if p, _ = st.Get("p1"); len(p.LocalModules) != 0 || len(p.Modules) != 0 {
+		t.Fatalf("force did not take the calls along: %+v / %+v", p.LocalModules, p.Modules)
+	}
+}
+
+// TestMCPWritesDoNotReturnTheProject: the REST handlers answer with the whole
+// model, which is right for the SPA and ruinous as a tool result — a real
+// project runs past the client's per-result limit on every write.
+func TestMCPWritesDoNotReturnTheProject(t *testing.T) {
+	cs, st := resourcesSession(t)
+	// Give the project enough content that passing it through would show.
+	if err := st.Update("p1", func(p *model.Project) error {
+		for i := range 40 {
+			p.Resources = append(p.Resources, model.Resource{
+				ID: "r" + string(rune('a'+i%26)) + string(rune('a'+i/26)), Type: "null_resource",
+				Name:  "n" + string(rune('a'+i%26)) + string(rune('a'+i/26)),
+				Attrs: map[string]model.AttrValue{"triggers": {Mode: model.ModeExpression, Expr: `timestamp()`}},
+			})
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	out, isErr := callTool(t, cs, "set_config", map[string]any{
+		"projectId": "p1",
+		"config":    map[string]any{"locals": []map[string]any{{"name": "a", "value": map[string]any{"mode": "literal", "literal": "x"}}}},
+	})
+	if isErr {
+		t.Fatalf("set_config: %s", out)
+	}
+	if strings.Contains(out, "null_resource") {
+		t.Errorf("the whole project came back in the tool result: %s", out)
+	}
+	doc := decode(t, out)
+	if doc["ok"] != true || doc["projectId"] != "p1" {
+		t.Errorf("ack does not confirm the write: %s", out)
+	}
+	counts, ok := doc["counts"].(map[string]any)
+	if !ok || counts["resources"].(float64) != 40 || counts["locals"].(float64) != 1 {
+		t.Errorf("ack does not report what the project now holds: %s", out)
+	}
+}
+
+// TestMCPWarnsOnUndeclaredVariable: nothing derives a `variable` block from an
+// expression, so `var.x` typed into one generates config that fails at plan
+// time on a variable no file declares. The write still lands — declaration
+// order is the caller's business — but it does not land silently.
+func TestMCPWarnsOnUndeclaredVariable(t *testing.T) {
+	cs, _ := resourcesSession(t)
+	out, isErr := callTool(t, cs, "set_config", map[string]any{
+		"projectId": "p1",
+		"config": map[string]any{"locals": []map[string]any{
+			{"name": "probe", "value": map[string]any{"mode": "expression", "expr": "var.zzz_probe_only"}},
+		}},
+	})
+	if isErr {
+		t.Fatalf("set_config: %s", out)
+	}
+	warnings, _ := decode(t, out)["warnings"].([]any)
+	if len(warnings) != 1 || !strings.Contains(warnings[0].(string), "var.zzz_probe_only") {
+		t.Fatalf("no warning about the undeclared variable: %s", out)
+	}
+
+	// Declaring it clears the warning — the check is about the model, not about
+	// which call wrote what.
+	out, isErr = callTool(t, cs, "set_config", map[string]any{
+		"projectId": "p1",
+		"config": map[string]any{
+			"variables": []map[string]any{{"name": "zzz_probe_only", "type": "string"}},
+			"locals": []map[string]any{
+				{"name": "probe", "value": map[string]any{"mode": "expression", "expr": "var.zzz_probe_only"}},
+			},
+		},
+	})
+	if isErr {
+		t.Fatalf("set_config: %s", out)
+	}
+	if _, ok := decode(t, out)["warnings"]; ok {
+		t.Errorf("warned about a declared variable: %s", out)
+	}
+}
+
+// upsert_resource keeps its small response, and carries the same warning.
+func TestMCPUpsertResourceWarnsAndStaysSmall(t *testing.T) {
+	cs, _ := resourcesSession(t)
+	out, isErr := callTool(t, cs, "upsert_resource", map[string]any{
+		"projectId": "p1",
+		"resource":  map[string]any{"type": "null_resource", "name": "web", "forEach": "local.absent"},
+	})
+	if isErr {
+		t.Fatalf("upsert: %s", out)
+	}
+	doc := decode(t, out)
+	res, ok := doc["resource"].(map[string]any)
+	if !ok || res["name"] != "web" || res["id"] == "" {
+		t.Fatalf("the saved resource (with its id) must come back: %s", out)
+	}
+	warnings, _ := doc["warnings"].([]any)
+	if len(warnings) != 1 || !strings.Contains(warnings[0].(string), "local.absent") {
+		t.Errorf("no warning about the undeclared local: %s", out)
+	}
+}
+
+// TestMCPUpsertRefusesDuplicateAddress: type+name IS the HCL address, so a
+// second holder of one generates two identical blocks — invalid config that
+// nothing notices until a plan, several writes later.
+func TestMCPUpsertRefusesDuplicateAddress(t *testing.T) {
+	cs, st := resourcesSession(t)
+	out, isErr := callTool(t, cs, "upsert_resource", map[string]any{
+		"projectId": "p1",
+		"resource":  map[string]any{"type": "null_resource", "name": "qbittorrent"},
+	})
+	if isErr {
+		t.Fatalf("first create: %s", out)
+	}
+	firstID := decode(t, out)["resource"].(map[string]any)["id"].(string)
+
+	out, isErr = callTool(t, cs, "upsert_resource", map[string]any{
+		"projectId": "p1",
+		"resource":  map[string]any{"type": "null_resource", "name": "qbittorrent"},
+	})
+	if !isErr {
+		t.Fatalf("duplicate address accepted: %s", out)
+	}
+	// The refusal has to name the id, or the caller has no way to update.
+	if !strings.Contains(out, firstID) {
+		t.Errorf("refusal does not name the existing resource: %s", out)
+	}
+	p, _ := st.Get("p1")
+	if len(p.Resources) != 1 {
+		t.Fatalf("project holds %d resources with one address", len(p.Resources))
+	}
+
+	// Passing that id updates instead, which is the recovery the message asks for.
+	if out, isErr = callTool(t, cs, "upsert_resource", map[string]any{
+		"projectId": "p1",
+		"resource":  map[string]any{"id": firstID, "type": "null_resource", "name": "qbittorrent"},
+	}); isErr {
+		t.Fatalf("update by id: %s", out)
+	}
+
+	// A data source shares neither namespace nor address with a resource.
+	if out, isErr = callTool(t, cs, "upsert_resource", map[string]any{
+		"projectId": "p1",
+		"resource":  map[string]any{"type": "null_resource", "name": "qbittorrent", "kind": "data"},
+	}); isErr {
+		t.Errorf("data source blocked by a resource of the same name: %s", out)
+	}
+}
+
+// TestMCPGetProjectSections: reading four locals must not cost the whole model.
+func TestMCPGetProjectSections(t *testing.T) {
+	cs, st := resourcesSession(t)
+	if err := st.Update("p1", func(p *model.Project) error {
+		p.Locals = []model.Local{{Name: "a", Value: model.AttrValue{Mode: model.ModeExpression, Expr: "1"}}}
+		p.Resources = []model.Resource{{ID: "r1", Type: "null_resource", Name: "web"}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	out, isErr := callTool(t, cs, "get_project", map[string]any{"projectId": "p1", "sections": "locals"})
+	if isErr {
+		t.Fatalf("get_project: %s", out)
+	}
+	doc := decode(t, out)
+	if _, ok := doc["locals"]; !ok {
+		t.Errorf("requested section missing: %s", out)
+	}
+	if _, ok := doc["resources"]; ok {
+		t.Errorf("unrequested section returned: %s", out)
+	}
+	// Identity is always kept: a document you cannot tell the project of is worse
+	// than a big one.
+	if doc["id"] != "p1" || doc["name"] != "one" {
+		t.Errorf("filtered document lost its identity: %s", out)
+	}
+
+	// A section that is empty is absent from the model document, so asking for
+	// one must answer "none" rather than fail.
+	if out, isErr = callTool(t, cs, "get_project", map[string]any{"projectId": "p1", "sections": "moved"}); isErr {
+		t.Fatalf("empty section: %s", out)
+	}
+	if _, ok := decode(t, out)["moved"]; ok {
+		t.Errorf("invented a moved list: %s", out)
 	}
 }

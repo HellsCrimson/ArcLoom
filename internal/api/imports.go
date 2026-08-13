@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -97,10 +98,8 @@ func (s *Server) handleSetImports(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
-// itoa avoids pulling strconv in for one error message.
-func itoa(n int) string {
-	if n < 10 {
-		return string(rune('0' + n))
-	}
-	return string(rune('0'+n/10)) + string(rune('0'+n%10))
-}
+// itoa renders a block's 1-based position for an error message. The hand-rolled
+// version this replaced produced punctuation past 99 — reachable, since a
+// refactor that folds hand-written resources into one for_each writes one moved
+// block per address and maxMoved is 500.
+func itoa(n int) string { return strconv.Itoa(n) }

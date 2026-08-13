@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -136,11 +137,13 @@ func TestKeyScopeIntersection(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
+	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			token := mkKey(t, keys, tc.userID, tc.scopes, nil)
-			w := doKey(h, "POST", "/api/projects/p1/resources", token,
-				`{"type":"null_resource","name":"a"}`)
+			// A distinct name per case: the writes that succeed land in the same
+			// project, and two resources may not share one HCL address.
+			body := fmt.Sprintf(`{"type":"null_resource","name":"a%d"}`, i)
+			w := doKey(h, "POST", "/api/projects/p1/resources", token, body)
 			if w.Code != tc.wantWrite {
 				t.Errorf("write: got %d, want %d (%s)", w.Code, tc.wantWrite, w.Body.String())
 			}

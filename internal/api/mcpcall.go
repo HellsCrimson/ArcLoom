@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -10,6 +12,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/HellsCrimson/ArcLoom/internal/hclgen"
+	"github.com/HellsCrimson/ArcLoom/internal/model"
 )
 
 // This file is the bridge between an MCP tool call and the existing REST
@@ -102,6 +107,88 @@ func viaMCP(r *http.Request) bool {
 type apiResult struct {
 	Status int
 	Body   string
+}
+
+// --- response shaping ---
+//
+// Most write handlers answer with the whole project, which is right for the SPA
+// (it re-renders from that document) and wrong for a tool result: a real project
+// runs to six figures of characters, so an agent that writes four locals pays
+// for four copies of everything it did not touch, and each one can overflow the
+// client's tool-result limit. The MCP layer therefore reduces a full-project
+// response to an acknowledgement. The REST contract is untouched.
+
+// maxToolWarnings caps the advisory list so a project with a systematic problem
+// cannot turn every write into a wall of text.
+const maxToolWarnings = 20
+
+// projectCounts reduces a project document to "what is in it now" — enough for
+// an agent to confirm the write landed and notice a list it did not mean to
+// clear, without shipping the model back.
+func projectCounts(p *model.Project) map[string]int {
+	counts := map[string]int{
+		"providers":   len(p.Providers),
+		"resources":   len(p.Resources),
+		"dataSources": len(p.DataSources),
+		"variables":   len(p.Variables),
+		"locals":      len(p.Locals),
+		"outputs":     len(p.Outputs),
+		"modules":     len(p.Modules),
+		"files":       len(p.Files),
+		"imports":     len(p.Imports),
+		"moved":       len(p.Moved),
+	}
+	if len(p.LocalModules) > 0 {
+		counts["localModules"] = len(p.LocalModules)
+	}
+	return counts
+}
+
+// modelWarnings renders the project's dangling var./local. references as advice.
+//
+// Advisory rather than fatal on purpose: writes have no required order, so a
+// local naming a variable the next call declares is a legitimate intermediate
+// state (see hclgen.UndeclaredRefs). What it prevents is the silent version —
+// config that generates cleanly and fails at plan time on a variable nothing
+// declares, with nothing between the write and the failure to say so.
+func modelWarnings(p *model.Project) []string {
+	refs := hclgen.UndeclaredRefs(p)
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if len(out) == maxToolWarnings {
+			out = append(out, fmt.Sprintf("…and %d more undeclared references", len(refs)-maxToolWarnings))
+			break
+		}
+		out = append(out, ref.String())
+	}
+	return out
+}
+
+// projectFromBody decodes a full-project response.
+func projectFromBody(body string) (*model.Project, error) {
+	var p model.Project
+	if err := json.Unmarshal([]byte(body), &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// warningsFor re-reads a project to check it after a write whose own response
+// is too small to check (upsert_resource answers with one resource). It goes
+// back through the router, so the read is authorized like any other.
+func (s *Server) warningsFor(ctx context.Context, orig *http.Request, projectID string) []string {
+	res := s.callAPI(ctx, orig, "GET", "/api/projects/"+url.PathEscape(projectID), nil)
+	if !res.ok() {
+		return nil
+	}
+	p, err := projectFromBody(res.Body)
+	if err != nil {
+		return nil
+	}
+	return modelWarnings(p)
 }
 
 // ok reports whether the call succeeded.
