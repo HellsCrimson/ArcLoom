@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/coreos/go-oidc/v3 v3.20.0
-	github.com/go-chi/chi/v5 v5.3.1
+	github.com/go-chi/chi/v5 v5.4.0
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/google/uuid v1.6.0
